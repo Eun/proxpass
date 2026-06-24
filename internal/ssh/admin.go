@@ -61,13 +61,14 @@ func (b *reqBridge) run(source <-chan *gossh.Request) {
 //nolint:gocognit // SSH admin session handler requires deep branching for request types
 func DefaultAdminHandler(
 	_ func(repo db.Repository, input io.Reader, output io.Writer) error,
+	proxier GuestProxier,
 	logger *log.Logger,
 ) AdminSessionHandler {
 	return func(channel gossh.Channel, reqs <-chan *gossh.Request, repo db.Repository) {
 		defer func() { _ = channel.Close() }()
 
 		// --- Handshake: collect pty-req, wait for shell/exec ---
-		var ptyReq *ptyRequest
+		var ptyReq *PtyRequest
 		var remaining <-chan *gossh.Request
 
 		for req := range reqs {
@@ -193,7 +194,7 @@ func DefaultAdminHandler(
 			proxyReqs := make(chan *gossh.Request, 4)
 			bridge.set(proxyReqs)
 
-			proxyErr := proxyToGuest(channel, proxyReqs, guest, inst, ptyReq, logger)
+			proxyErr := proxier.ProxyToGuest(channel, proxyReqs, guest, inst, ptyReq, logger)
 
 			bridge.set(nil)
 			close(proxyReqs)

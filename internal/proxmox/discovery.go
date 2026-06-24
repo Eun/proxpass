@@ -13,17 +13,19 @@ import (
 // Discovery periodically polls all registered Proxmox instances, discovers
 // their guests, and upserts the results into the database.
 type Discovery struct {
-	repo     db.Repository
-	interval time.Duration
-	logger   *log.Logger
+	repo              db.Repository
+	interval          time.Duration
+	logger            *log.Logger
+	discovererFactory DiscovererFactory
 }
 
 // NewDiscovery creates a new Discovery loop.
-func NewDiscovery(repo db.Repository, interval time.Duration, logger *log.Logger) *Discovery {
+func NewDiscovery(repo db.Repository, interval time.Duration, logger *log.Logger, factory DiscovererFactory) *Discovery {
 	return &Discovery{
-		repo:     repo,
-		interval: interval,
-		logger:   logger,
+		repo:              repo,
+		interval:          interval,
+		logger:            logger,
+		discovererFactory: factory,
 	}
 }
 
@@ -81,9 +83,9 @@ func (d *Discovery) RunOnce(ctx context.Context) error {
 // discoverInstance connects to a single Proxmox host, discovers its guests,
 // and upserts them into the database.
 func (d *Discovery) discoverInstance(ctx context.Context, inst *models.ProxmoxInstance) error {
-	client := NewAPIClient(inst)
+	discoverer := d.discovererFactory(inst)
 
-	guests, err := client.DiscoverGuests(ctx)
+	guests, err := discoverer.DiscoverGuests(ctx)
 	if err != nil {
 		return fmt.Errorf("discover guests on %s: %w", inst.Name, err)
 	}

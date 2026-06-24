@@ -1,0 +1,78 @@
+package proxmox_test
+
+import (
+	"context"
+	"testing"
+
+	"proxpass/internal/models"
+	"proxpass/internal/proxmox"
+	"proxpass/internal/testenv"
+)
+
+func TestAPIClientDiscoverGuests(t *testing.T) {
+	api := testenv.NewMockAPIServer(
+		"user@pam!tok",
+		"secret123",
+	)
+	defer api.Close()
+
+	api.AddLXC("node1", 100, "ct1", "running")
+	api.AddLXC("node1", 101, "ct2", "stopped")
+	api.AddQEMU("node1", 200, "vm1", "running")
+	api.AddQEMU("node2", 300, "vm2", "stopped")
+
+	inst := &models.ProxmoxInstance{
+		APIURL:         api.URL(),
+		APITokenID:     "user@pam!tok",
+		APITokenSecret: "secret123",
+	}
+
+	client := proxmox.NewAPIClient(inst)
+	guests, err := client.DiscoverGuests(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverGuests: %v", err)
+	}
+
+	if len(guests) != 4 {
+		t.Fatalf("expected 4 guests, got %d", len(guests))
+	}
+
+	// Verify types
+	ctCount, vmCount := 0, 0
+	for _, g := range guests {
+		switch g.Type {
+		case models.GuestTypeCT:
+			ctCount++
+		case models.GuestTypeVM:
+			vmCount++
+		}
+	}
+	if ctCount != 2 {
+		t.Errorf("expected 2 CTs, got %d", ctCount)
+	}
+	if vmCount != 2 {
+		t.Errorf("expected 2 VMs, got %d", vmCount)
+	}
+}
+
+func TestAPIClientBadAuth(t *testing.T) {
+	api := testenv.NewMockAPIServer(
+		"user@pam!tok",
+		"secret123",
+	)
+	defer api.Close()
+
+	api.AddLXC("node1", 100, "ct1", "running")
+
+	inst := &models.ProxmoxInstance{
+		APIURL:         api.URL(),
+		APITokenID:     "wrong",
+		APITokenSecret: "wrong",
+	}
+
+	client := proxmox.NewAPIClient(inst)
+	_, err := client.DiscoverGuests(context.Background())
+	if err == nil {
+		t.Fatal("expected auth error, got nil")
+	}
+}

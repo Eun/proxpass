@@ -30,6 +30,7 @@ type Server struct {
 	hostKeyPath  string
 	repo         db.Repository
 	adminHandler AdminSessionHandler
+	proxier      GuestProxier
 	logger       *log.Logger
 	flagAdminKey gossh.PublicKey
 }
@@ -39,6 +40,7 @@ func NewServer(
 	listenAddr, hostKeyPath string,
 	repo db.Repository,
 	adminHandler AdminSessionHandler,
+	proxier GuestProxier,
 	logger *log.Logger,
 ) *Server {
 	return &Server{
@@ -46,8 +48,14 @@ func NewServer(
 		hostKeyPath:  hostKeyPath,
 		repo:         repo,
 		adminHandler: adminHandler,
+		proxier:      proxier,
 		logger:       logger,
 	}
+}
+
+// Proxier returns the server's GuestProxier.
+func (s *Server) Proxier() GuestProxier {
+	return s.proxier
 }
 
 // SetFlagAdmin configures a flag-based admin public key that is
@@ -219,7 +227,7 @@ func (s *Server) handleChannel(conn *gossh.ServerConn, channel gossh.Channel, re
 	case roleAdmin:
 		s.adminHandler(channel, reqs, s.repo)
 	case roleClient:
-		handleClientSession(channel, reqs, conn, s.repo, s.logger)
+		handleClientSession(channel, reqs, conn, s.repo, s.proxier, s.logger)
 	default:
 		s.logger.Printf("unknown role %q for %s", role, conn.User())
 		_, _ = fmt.Fprintf(channel, "access denied\r\n")

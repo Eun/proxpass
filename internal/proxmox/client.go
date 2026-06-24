@@ -158,6 +158,14 @@ func (c *APIClient) getNodeGuests(ctx context.Context, node, kind string, guestT
 	return guests, nil
 }
 
+// Compile-time check: *APIClient must satisfy GuestDiscoverer.
+var _ GuestDiscoverer = (*APIClient)(nil)
+
+// DefaultDiscovererFactory creates an APIClient-based discoverer.
+func DefaultDiscovererFactory(inst *models.ProxmoxInstance) GuestDiscoverer {
+	return NewAPIClient(inst)
+}
+
 // normalizeStatus maps a raw status string to one of the known Status
 // constants. Unknown values default to StatusStopped.
 func normalizeStatus(raw string) models.Status {

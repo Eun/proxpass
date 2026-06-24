@@ -110,11 +110,11 @@ func run(ctx context.Context, cmd *cli.Command) error {
 
 	// Create services.
 	adminHandler := proxssh.DefaultAdminHandler(
-		tui.RunTUI, logger)
+		tui.RunTUI, proxssh.DefaultProxier{}, logger)
 	discovery := proxmox.NewDiscovery(
-		repo, discoveryInterval, logger)
+		repo, discoveryInterval, logger, proxmox.DefaultDiscovererFactory)
 	server := proxssh.NewServer(
-		listenAddr, hostKeyPath, repo, adminHandler, logger)
+		listenAddr, hostKeyPath, repo, adminHandler, proxssh.DefaultProxier{}, logger)
 
 	// Flag-based admin: if both --admin-user and --admin-key
 	// are set, the server accepts that credential as an admin

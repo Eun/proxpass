@@ -25,6 +25,7 @@ func handleClientSession(
 	reqs <-chan *gossh.Request,
 	conn *gossh.ServerConn,
 	repo db.Repository,
+	proxier GuestProxier,
 	logger *log.Logger,
 ) {
 	defer func() { _ = channel.Close() }()
@@ -97,7 +98,7 @@ func handleClientSession(
 	}
 
 	// Collect the initial PTY request (if any) before proxying.
-	var pty *ptyRequest
+	var pty *PtyRequest
 	// We drain requests in the background once the proxy starts, but we need
 	// to handle the initial pty-req and shell/exec first.
 	for req := range reqs {
@@ -122,7 +123,7 @@ func handleClientSession(
 			}
 			// Now proxy the session. Window-change requests that arrive
 			// later are forwarded inside proxyToGuest.
-			if err := proxyToGuest(channel, reqs, guest, inst, pty, logger); err != nil {
+			if err := proxier.ProxyToGuest(channel, reqs, guest, inst, pty, logger); err != nil {
 				logger.Printf("client %s: proxy error: %v", clientName, err)
 				_, _ = fmt.Fprintf(channel.Stderr(), "proxy error: %v\r\n", err)
 			}
@@ -144,7 +145,7 @@ func proxyToGuest(
 	clientReqs <-chan *gossh.Request,
 	guest *models.Guest,
 	inst *models.ProxmoxInstance,
-	ptyReq *ptyRequest,
+	ptyReq *PtyRequest,
 	_ *log.Logger,
 ) error {
 	// Load the private key for the Proxmox host.

@@ -11,8 +11,8 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
-// ptyRequest holds the parsed fields of an SSH "pty-req" request.
-type ptyRequest struct {
+// PtyRequest holds the parsed fields of an SSH "pty-req" request.
+type PtyRequest struct {
 	Term   string
 	Width  uint32
 	Height uint32
@@ -28,7 +28,7 @@ type ptyRequest struct {
 //	uint32  pixel width
 //	uint32  pixel height
 //	string  encoded terminal modes
-func parsePtyReq(data []byte) (*ptyRequest, error) {
+func parsePtyReq(data []byte) (*PtyRequest, error) {
 	if len(data) < 4 {
 		return nil, fmt.Errorf("pty-req payload too short")
 	}
@@ -62,7 +62,7 @@ func parsePtyReq(data []byte) (*ptyRequest, error) {
 		}
 	}
 
-	return &ptyRequest{
+	return &PtyRequest{
 		Term:   term,
 		Width:  width,
 		Height: height,
