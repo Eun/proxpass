@@ -119,6 +119,10 @@ type Model struct {
 	inputStep int  // which input field is active
 	inputDone bool // all fields collected, ready to submit
 
+	// Set when the admin selects a guest to connect to.
+	// The admin handler checks this after the TUI exits.
+	SelectedGuest *models.Guest
+
 	// Status / error line
 	statusMsg string
 }
@@ -130,6 +134,11 @@ func NewModel(repo db.Repository) *Model {
 		ctx:   context.Background(),
 		state: viewMenu,
 	}
+}
+
+// GetSelectedGuest returns the guest selected for connection, or nil.
+func (m *Model) GetSelectedGuest() *models.Guest {
+	return m.SelectedGuest
 }
 
 // Init implements tea.Model.
@@ -249,6 +258,11 @@ func (m *Model) updateNav(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if m.state == viewMenu {
 			return m.selectMenu()
+		}
+		if m.state == viewGuests && len(m.guests) > 0 &&
+			m.cursor < len(m.guests) {
+			m.SelectedGuest = m.guests[m.cursor]
+			return m, tea.Quit
 		}
 
 	case "a":
@@ -910,7 +924,7 @@ func (m *Model) viewGuests(b *strings.Builder) {
 		line := fmt.Sprintf("%-6d %-6s %-24s %-10s %d", g.ID, g.Type, g.Name, g.Status, g.ProxmoxID)
 		b.WriteString(cursor + style.Render(line) + "\n")
 	}
-	b.WriteString("\n" + helpStyle.Render("read-only • esc: back • q: menu") + "\n")
+	b.WriteString("\n" + helpStyle.Render("enter: connect • esc: back • q: menu") + "\n")
 }
 
 // viewEntityList is a shared helper for rendering simple entity lists (clients, groups, etc.).

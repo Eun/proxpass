@@ -259,9 +259,12 @@ func proxyToGuest(
 	}()
 
 	err = session.Wait()
-	// Close the client channel to unblock the io.Copy goroutines that
-	// read from the remote side.
-	_ = clientChan.Close()
+	// Close the remote session and SSH client to unblock the
+	// io.Copy goroutines. We do NOT close clientChan here so
+	// that the admin handler can reuse the channel for the TUI
+	// after the proxy session ends.
+	_ = session.Close()
+	_ = client.Close()
 	wg.Wait()
 	return err
 }

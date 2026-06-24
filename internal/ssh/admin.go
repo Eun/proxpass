@@ -1,10 +1,14 @@
 package ssh
 
 import (
+	"context"
+	"fmt"
 	"io"
 	"log"
+	"sync"
 
 	"proxpass/internal/db"
+	"proxpass/internal/models"
 
 	tea "github.com/charmbracelet/bubbletea"
 	gossh "golang.org/x/crypto/ssh"
@@ -14,9 +18,45 @@ import (
 // It receives the raw SSH channel and request stream.
 type AdminSessionHandler func(channel gossh.Channel, reqs <-chan *gossh.Request, repo db.Repository)
 
+// GuestSelector is implemented by the TUI model to indicate whether
+// the admin selected a guest for connection. Defined here to avoid
+// importing the tui package (which would create an import cycle).
+type GuestSelector interface {
+	GetSelectedGuest() *models.Guest
+}
+
+// reqBridge reads from the original SSH request channel and forwards each
+// request to whichever consumer is currently active. Consumers are swapped
+// atomically via set(). When no consumer is set, requests that require a
+// reply are rejected.
+type reqBridge struct {
+	mu      sync.Mutex
+	current chan *gossh.Request
+}
+
+func (b *reqBridge) set(ch chan *gossh.Request) {
+	b.mu.Lock()
+	b.current = ch
+	b.mu.Unlock()
+}
+
+func (b *reqBridge) run(source <-chan *gossh.Request) {
+	for req := range source {
+		b.mu.Lock()
+		ch := b.current
+		b.mu.Unlock()
+		if ch != nil {
+			ch <- req
+		} else if req.WantReply {
+			_ = req.Reply(false, nil)
+		}
+	}
+}
+
 // DefaultAdminHandler returns an AdminSessionHandler that performs the SSH
-// pty-req / shell handshake and then runs runTUI on the channel.
-// runTUI should be tui.RunTUI (injected to avoid an import cycle).
+// pty-req / shell handshake, runs the TUI, and optionally proxies the admin
+// to a selected guest. When the proxy session ends the TUI is restarted,
+// forming a TUI → proxy → TUI loop until the admin quits normally.
 //
 //nolint:gocognit // SSH admin session handler requires deep branching for request types
 func DefaultAdminHandler(
@@ -26,9 +66,8 @@ func DefaultAdminHandler(
 	return func(channel gossh.Channel, reqs <-chan *gossh.Request, repo db.Repository) {
 		defer func() { _ = channel.Close() }()
 
-		// Drain requests until we get "shell" or "exec". Along the way,
-		// acknowledge "pty-req" and collect the initial terminal size.
-		var initialWidth, initialHeight int
+		// --- Handshake: collect pty-req, wait for shell/exec ---
+		var ptyReq *ptyRequest
 		var remaining <-chan *gossh.Request
 
 		for req := range reqs {
@@ -42,8 +81,7 @@ func DefaultAdminHandler(
 					}
 					continue
 				}
-				initialWidth = int(p.Width)
-				initialHeight = int(p.Height)
+				ptyReq = p
 				if req.WantReply {
 					_ = req.Reply(true, nil)
 				}
@@ -53,9 +91,9 @@ func DefaultAdminHandler(
 					_ = req.Reply(true, nil)
 				}
 				// Remaining requests on this channel (e.g. window-change)
-				// will be forwarded to the Bubble Tea program below.
+				// will be dispatched through the reqBridge below.
 				remaining = reqs
-				goto startTUI
+				goto sessionLoop
 
 			default:
 				if req.WantReply {
@@ -63,26 +101,31 @@ func DefaultAdminHandler(
 				}
 			}
 		}
-		// If the channel closed without a shell request, nothing to do.
+		// Channel closed without a shell request — nothing to do.
 		return
 
-	startTUI:
-		_ = initialWidth  // available for future use
-		_ = initialHeight // available for future use
+	sessionLoop:
+		// Start the persistent request bridge that fans out SSH
+		// requests to whichever consumer (TUI or proxy) is active.
+		bridge := &reqBridge{}
+		go bridge.run(remaining)
 
-		// Build the Bubble Tea program over the SSH channel.
-		opts := []tea.ProgramOption{
-			tea.WithInput(channel),
-			tea.WithOutput(channel),
-			tea.WithAltScreen(),
-		}
-		m := tuiModelFactory(repo)
-		p := tea.NewProgram(m, opts...)
+		for {
+			// ---- Run the TUI ----
+			tuiReqs := make(chan *gossh.Request, 4)
+			bridge.set(tuiReqs)
 
-		// Forward window-change requests as tea.WindowSizeMsg.
-		if remaining != nil {
+			m := tuiModelFactory(repo)
+			p := tea.NewProgram(m,
+				tea.WithInput(channel),
+				tea.WithOutput(channel),
+				tea.WithAltScreen(),
+			)
+
+			// Forward window-change requests to BubbleTea while the TUI
+			// is running.
 			go func() {
-				for req := range remaining {
+				for req := range tuiReqs {
 					switch req.Type {
 					case "window-change":
 						w, h, err := parseWindowChange(req.Payload)
@@ -102,10 +145,64 @@ func DefaultAdminHandler(
 					}
 				}
 			}()
-		}
 
-		if _, err := p.Run(); err != nil {
-			logger.Printf("admin tui error: %v", err)
+			finalModel, err := p.Run()
+			// Stop the bridge from writing to the (about to be closed)
+			// tuiReqs channel, then close it to terminate the forwarder.
+			bridge.set(nil)
+			close(tuiReqs)
+
+			if err != nil {
+				logger.Printf("admin tui error: %v", err)
+				return
+			}
+
+			// Did the admin select a guest to connect to?
+			sel, ok := finalModel.(GuestSelector)
+			if !ok || sel.GetSelectedGuest() == nil {
+				return // normal quit
+			}
+
+			guest := sel.GetSelectedGuest()
+
+			// Resolve the Proxmox instance that owns this guest.
+			ctx := context.Background()
+			instances, err := repo.ListProxmoxInstances(ctx)
+			if err != nil {
+				logger.Printf("admin: failed to list instances: %v", err)
+				_, _ = fmt.Fprintf(channel.Stderr(), "internal error\r\n")
+				return
+			}
+			var inst *models.ProxmoxInstance
+			for _, i := range instances {
+				if i.ID == guest.InstanceID {
+					inst = i
+					break
+				}
+			}
+			if inst == nil {
+				logger.Printf("admin: instance %d not found for guest %s", guest.InstanceID, guest.Name)
+				_, _ = fmt.Fprintf(channel.Stderr(), "instance not found\r\n")
+				return
+			}
+
+			// ---- Proxy to the guest ----
+			_, _ = fmt.Fprintf(channel, "Connecting to %s (%s %d)...\r\n",
+				guest.Name, guest.Type, guest.ProxmoxID)
+
+			proxyReqs := make(chan *gossh.Request, 4)
+			bridge.set(proxyReqs)
+
+			proxyErr := proxyToGuest(channel, proxyReqs, guest, inst, ptyReq, logger)
+
+			bridge.set(nil)
+			close(proxyReqs)
+
+			if proxyErr != nil {
+				logger.Printf("admin: proxy error: %v", proxyErr)
+			}
+
+			// Loop back to restart the TUI.
 		}
 	}
 }
