@@ -37,10 +37,10 @@ func main() {
 	logLevel := flag.String("log-level", envOrDefault("PROXPASS_LOG_LEVEL", "info"), "log level (debug, info, warn, error)")
 	adminUser := flag.String("admin-user",
 		envOrDefault("PROXPASS_ADMIN_USER", ""),
-		"bootstrap admin SSH username")
+		"flag-based admin SSH username (active while set)")
 	adminKey := flag.String("admin-key",
 		envOrDefault("PROXPASS_ADMIN_KEY", ""),
-		"bootstrap admin SSH public key (authorized_key format)")
+		"flag-based admin SSH public key (authorized_key format)")
 	flag.Parse()
 
 	discoveryInterval, err := time.ParseDuration(*discoveryIntervalStr)
@@ -76,13 +76,13 @@ func main() {
 	server := proxssh.NewServer(
 		*listenAddr, *hostKeyPath, repo, adminHandler, logger)
 
-	// Bootstrap admin: if both --admin-user and --admin-key are set,
-	// configure the server to accept that credential as an admin
-	// before consulting the database.
-	if err := configureBootstrapAdmin(
+	// Flag-based admin: if both --admin-user and --admin-key are set,
+	// the server accepts that credential as an admin for the lifetime
+	// of the process, checked before any database lookup.
+	if err := configureFlagAdmin(
 		server, *adminUser, *adminKey, logger,
 	); err != nil {
-		logger.Fatalf("bootstrap admin: %v", err)
+		logger.Fatalf("flag admin: %v", err)
 	}
 
 	// Context canceled on SIGINT / SIGTERM.
@@ -102,9 +102,10 @@ func main() {
 	logger.Println("shutting down")
 }
 
-// configureBootstrapAdmin parses and sets the bootstrap admin on the
-// server if both username and key are provided.
-func configureBootstrapAdmin(
+// configureFlagAdmin parses and sets the flag-based admin on the
+// server if both username and key are provided. The credential
+// stays active for the lifetime of the process.
+func configureFlagAdmin(
 	server *proxssh.Server,
 	username, rawKey string,
 	logger *log.Logger,
@@ -126,9 +127,9 @@ func configureBootstrapAdmin(
 		return fmt.Errorf("invalid SSH public key: %w", err)
 	}
 
-	server.SetBootstrapAdmin(username, pub)
+	server.SetFlagAdmin(username, pub)
 	logger.Printf(
-		"bootstrap admin configured: user=%q", username)
+		"flag-based admin configured: user=%q", username)
 	return nil
 }
 

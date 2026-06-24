@@ -31,8 +31,8 @@ type Server struct {
 	repo          db.Repository
 	adminHandler  AdminSessionHandler
 	logger        *log.Logger
-	bootstrapUser string
-	bootstrapKey  gossh.PublicKey
+	flagAdminUser string
+	flagAdminKey  gossh.PublicKey
 }
 
 // NewServer creates a new SSH server.
@@ -51,12 +51,14 @@ func NewServer(
 	}
 }
 
-// SetBootstrapAdmin configures a bootstrap admin credential that is
-// checked during authentication before any database lookup. This
-// allows the first admin to connect when the DB has no keys yet.
-func (s *Server) SetBootstrapAdmin(username string, key gossh.PublicKey) {
-	s.bootstrapUser = username
-	s.bootstrapKey = key
+// SetFlagAdmin configures a flag-based admin credential that is
+// checked during authentication before any database lookup. The
+// credential remains active for the lifetime of the process as
+// long as the corresponding --admin-user / --admin-key flags (or
+// environment variables) are present.
+func (s *Server) SetFlagAdmin(username string, key gossh.PublicKey) {
+	s.flagAdminUser = username
+	s.flagAdminKey = key
 }
 
 // ListenAndServe starts the SSH server and blocks until ctx is canceled.
@@ -114,9 +116,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 func (s *Server) publicKeyCallback(conn gossh.ConnMetadata, key gossh.PublicKey) (*gossh.Permissions, error) {
 	ctx := context.Background()
 
-	// --- bootstrap admin (flag-based, checked before DB) ---
-	if s.bootstrapKey != nil && conn.User() == s.bootstrapUser {
-		if keysEqual(s.bootstrapKey.Marshal(), key.Marshal()) {
+	// --- flag-based admin (always active while flags are set) ---
+	if s.flagAdminKey != nil && conn.User() == s.flagAdminUser {
+		if keysEqual(s.flagAdminKey.Marshal(), key.Marshal()) {
 			return &gossh.Permissions{
 				Extensions: map[string]string{
 					permRole: roleAdmin,
