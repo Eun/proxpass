@@ -31,7 +31,7 @@ func Seed(repo db.Repository, apiURL, sshHost string, sshPort int, sshKeyPath st
 		APITokenSecret: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
 		SSHHost:        sshHost,
 		SSHPort:        sshPort,
-		SSHUser:        "root",
+		SSHUser:        defaultSSHUser,
 		SSHKeyPath:     sshKeyPath,
 	}
 	if err := repo.AddProxmoxInstance(ctx, inst); err != nil {

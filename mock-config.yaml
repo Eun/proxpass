@@ -1,0 +1,27 @@
+api:
+  listen_addr: ":8006"
+  token_id: "testuser@pam!testtoken"
+  token_secret: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+ssh:
+  listen_addr: ":2223"
+
+nodes:
+  - name: pve1
+    guests:
+      - vmid: 100
+        name: webserver
+        type: lxc
+        status: running
+      - vmid: 101
+        name: database
+        type: lxc
+        status: running
+      - vmid: 200
+        name: devbox
+        type: qemu
+        status: running
+      - vmid: 201
+        name: staging
+        type: qemu
+        status: stopped

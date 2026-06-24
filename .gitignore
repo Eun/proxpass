@@ -2,5 +2,5 @@
 /.idea
 /.vscode
 /proxpass
-/proxpass-demo
+/proxmox-mock
 coverage.out

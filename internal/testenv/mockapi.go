@@ -1,21 +1,25 @@
 package testenv
 
 import (
+	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"time"
 )
 
 const apiDataKey = "data"
 
 // MockAPIServer simulates the Proxmox VE REST API.
 type MockAPIServer struct {
-	mu     sync.RWMutex
-	nodes  map[string]*mockNode // node name → guests
-	token  string               // expected "tokenID=tokenSecret"
-	server *httptest.Server
+	mu         sync.RWMutex
+	nodes      map[string]*mockNode // node name → guests
+	token      string               // expected "tokenID=tokenSecret"
+	server     *httptest.Server     // non-nil for test mode (httptest)
+	httpServer *http.Server         // non-nil for standalone mode
 }
 
 type mockNode struct {
@@ -51,7 +55,12 @@ func (m *MockAPIServer) URL() string {
 }
 
 func (m *MockAPIServer) Close() {
-	m.server.Close()
+	if m.server != nil {
+		m.server.Close()
+	}
+	if m.httpServer != nil {
+		_ = m.httpServer.Shutdown(context.Background())
+	}
 }
 
 // Handler returns the underlying http.Handler for standalone use.
@@ -60,6 +69,47 @@ func (m *MockAPIServer) Handler() http.Handler {
 	mux.HandleFunc("/api2/json/nodes", m.handleNodes)
 	mux.HandleFunc("/api2/json/nodes/", m.handleNodeGuests)
 	return mux
+}
+
+// LoadFromConfig populates the mock API server from a MockConfig.
+func (m *MockAPIServer) LoadFromConfig(cfg *MockConfig) {
+	for _, node := range cfg.Nodes {
+		for _, g := range node.Guests {
+			switch g.Type {
+			case guestTypeLXC:
+				m.AddLXC(node.Name, g.VMID, g.Name, g.Status)
+			case guestTypeQEMU:
+				m.AddQEMU(node.Name, g.VMID, g.Name, g.Status)
+			}
+		}
+	}
+}
+
+// NewMockAPIServerStandalone creates a mock API server that will
+// listen on a fixed address (e.g. ":8006") using plain HTTP.
+// Call ListenAndServe to start it. For unit tests, use
+// NewMockAPIServer which uses httptest on a random port.
+func NewMockAPIServerStandalone(tokenID, tokenSecret string) *MockAPIServer {
+	return &MockAPIServer{
+		nodes: make(map[string]*mockNode),
+		token: tokenID + "=" + tokenSecret,
+	}
+}
+
+// ListenAndServe starts the mock API on the given address using
+// plain HTTP. It blocks until the server is shut down.
+func (m *MockAPIServer) ListenAndServe(addr string) error {
+	m.httpServer = &http.Server{
+		Addr:              addr,
+		Handler:           m.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", addr)
+	if err != nil {
+		return err
+	}
+	return m.httpServer.Serve(ln)
 }
 
 // AddLXC adds a mock LXC container to a node.
@@ -139,9 +189,9 @@ func (m *MockAPIServer) handleNodeGuests(w http.ResponseWriter, r *http.Request)
 
 	var guests []mockGuest
 	switch kind {
-	case "lxc":
+	case guestTypeLXC:
 		guests = n.LXC
-	case "qemu":
+	case guestTypeQEMU:
 		guests = n.QEMU
 	default:
 		http.NotFound(w, r)

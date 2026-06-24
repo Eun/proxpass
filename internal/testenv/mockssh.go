@@ -104,7 +104,7 @@ func NewMockSSHServer() (*MockSSHServer, error) {
 		Host:     "127.0.0.1",
 		Port:     addr.Port,
 		KeyPath:  keyFile.Name(),
-		User:     "root",
+		User:     defaultSSHUser,
 	}
 
 	m.wg.Add(1)
@@ -299,6 +299,78 @@ func (p *MockProxier) ProxyToGuest(
 	}
 
 	return nil
+}
+
+// NewMockSSHServerOnAddr starts a mock SSH server on the given address
+// (e.g. ":2223"). For unit tests use NewMockSSHServer which binds to
+// a random port on 127.0.0.1.
+func NewMockSSHServerOnAddr(addr string) (*MockSSHServer, error) {
+	// Generate server host key
+	_, hostPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("generate host key: %w", err)
+	}
+	hostSigner, err := gossh.NewSignerFromKey(hostPriv)
+	if err != nil {
+		return nil, fmt.Errorf("host signer: %w", err)
+	}
+
+	// Generate client keypair and write private key to temp file
+	clientPub, clientPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("generate client key: %w", err)
+	}
+
+	pemBlock, err := gossh.MarshalPrivateKey(clientPriv, "")
+	if err != nil {
+		return nil, fmt.Errorf("marshal client key: %w", err)
+	}
+	keyFile, err := os.CreateTemp("", "proxpass-mock-key-*")
+	if err != nil {
+		return nil, fmt.Errorf("temp file: %w", err)
+	}
+	_ = pem.Encode(keyFile, pemBlock)
+	_ = keyFile.Close()
+
+	// Server config — accept the generated client public key
+	clientSSHPub, err := gossh.NewPublicKey(clientPub)
+	if err != nil {
+		return nil, fmt.Errorf("client ssh pub: %w", err)
+	}
+	expectedPubBytes := clientSSHPub.Marshal()
+
+	config := &gossh.ServerConfig{
+		PublicKeyCallback: func(_ gossh.ConnMetadata, key gossh.PublicKey) (*gossh.Permissions, error) {
+			if bytes.Equal(key.Marshal(), expectedPubBytes) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("unknown key")
+		},
+	}
+	config.AddHostKey(hostSigner)
+
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("listen %s: %w", addr, err)
+	}
+
+	tcpAddr := ln.Addr().(*net.TCPAddr)
+	m := &MockSSHServer{
+		listener: ln,
+		config:   config,
+		signer:   hostSigner,
+		done:     make(chan struct{}),
+		Host:     "127.0.0.1",
+		Port:     tcpAddr.Port,
+		KeyPath:  keyFile.Name(),
+		User:     defaultSSHUser,
+	}
+
+	m.wg.Add(1)
+	go m.serve()
+
+	return m, nil
 }
 
 // Compile-time check.

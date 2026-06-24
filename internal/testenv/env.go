@@ -22,6 +22,8 @@ type TestEnv struct {
 func New(t *testing.T) *TestEnv {
 	t.Helper()
 
+	cfg := DefaultConfig()
+
 	// Create temp DB
 	f, err := os.CreateTemp("", "proxpass-test-*.db")
 	if err != nil {
@@ -45,16 +47,8 @@ func New(t *testing.T) *TestEnv {
 	}
 
 	// Start mock API server
-	apiSrv := NewMockAPIServer(
-		"testuser@pam!testtoken",
-		"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-	)
-
-	// Add some guests to the mock API
-	apiSrv.AddLXC("pve1", 100, "webserver", "running")
-	apiSrv.AddLXC("pve1", 101, "database", "running")
-	apiSrv.AddQEMU("pve1", 200, "devbox", "running")
-	apiSrv.AddQEMU("pve1", 201, "staging", "stopped")
+	apiSrv := NewMockAPIServer(cfg.API.TokenID, cfg.API.TokenSecret)
+	apiSrv.LoadFromConfig(cfg)
 
 	// Seed the database
 	seed, err := Seed(repo, apiSrv.URL(), sshSrv.Host, sshSrv.Port, sshSrv.KeyPath)
@@ -82,6 +76,8 @@ func New(t *testing.T) *TestEnv {
 // for use in standalone demo binaries. Returns an error instead
 // of calling t.Fatal.
 func NewStandalone() (*TestEnv, error) {
+	cfg := DefaultConfig()
+
 	f, err := os.CreateTemp("", "proxpass-demo-*.db")
 	if err != nil {
 		return nil, fmt.Errorf("temp db: %w", err)
@@ -102,14 +98,8 @@ func NewStandalone() (*TestEnv, error) {
 		return nil, fmt.Errorf("mock ssh: %w", err)
 	}
 
-	apiSrv := NewMockAPIServer(
-		"testuser@pam!testtoken",
-		"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-	)
-	apiSrv.AddLXC("pve1", 100, "webserver", "running")
-	apiSrv.AddLXC("pve1", 101, "database", "running")
-	apiSrv.AddQEMU("pve1", 200, "devbox", "running")
-	apiSrv.AddQEMU("pve1", 201, "staging", "stopped")
+	apiSrv := NewMockAPIServer(cfg.API.TokenID, cfg.API.TokenSecret)
+	apiSrv.LoadFromConfig(cfg)
 
 	seed, err := Seed(repo, apiSrv.URL(), sshSrv.Host, sshSrv.Port, sshSrv.KeyPath)
 	if err != nil {
