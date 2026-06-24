@@ -4,3 +4,5 @@
 /proxpass
 /proxmox-mock
 coverage.out
+*.db
+proxpass_host_key
