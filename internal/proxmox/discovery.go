@@ -27,7 +27,7 @@ func NewDiscovery(repo db.Repository, interval time.Duration, logger *log.Logger
 	}
 }
 
-// Run starts the periodic discovery loop. It blocks until ctx is cancelled.
+// Run starts the periodic discovery loop. It blocks until ctx is canceled.
 // Intended to be launched in a goroutine.
 func (d *Discovery) Run(ctx context.Context) {
 	d.logger.Printf("discovery: starting loop (interval %s)", d.interval)

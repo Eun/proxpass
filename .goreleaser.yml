@@ -1,0 +1,91 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# vim: set ts=2 sw=2 tw=0 fo=cnqoj
+
+version: 2
+project_name: "proxpass"
+builds:
+  -
+    id: "proxpass"
+    binary: "proxpass"
+    main: "./cmd/proxpass"
+    env:
+      - "CGO_ENABLED=0"
+    goos:
+      - "linux"
+      - "darwin"
+      - "windows"
+    goarch:
+      - "386"
+      - "arm"
+      - "arm64"
+      - "amd64"
+    ldflags:
+      - -s
+      - -w
+archives:
+  - name_template: "proxpass_{{.Version}}_{{.Os}}_{{.Arch}}{{if .Arm}}v{{.Arm}}{{end}}"
+checksum:
+  name_template: 'checksums.txt'
+snapshot:
+  version_template: "{{.Tag}}-next"
+changelog:
+  disable: true
+nfpms:
+  -
+    id: "proxpass"
+    package_name: "proxpass"
+    homepage: "https://github.com/Eun/proxpass"
+    maintainer: "Tobias Salzmann <tobias@salzmann.berlin>"
+    description: "Proxmox SSH Proxy"
+    license: "MIT"
+    formats:
+      - "deb"
+      - "rpm"
+    epoch: 1
+dockers:
+  -
+    goos: linux
+    goarch: amd64
+    ids:
+      - "proxpass"
+    use: buildx
+    image_templates:
+      - "{{.Env.REGISTRY}}/{{.Env.IMAGE_NAME}}:{{.Version}}-amd64"
+    dockerfile: ".github/Dockerfile"
+    build_flag_templates:
+      - "--pull"
+      - "--label=org.opencontainers.image.created={{.Date}}"
+      - "--label=org.opencontainers.image.title={{.ProjectName}}"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--build-arg=BINARY=proxpass"
+      - "--platform=linux/amd64"
+  -
+    goos: linux
+    goarch: arm64
+    ids:
+      - "proxpass"
+    use: buildx
+    image_templates:
+      - "{{.Env.REGISTRY}}/{{.Env.IMAGE_NAME}}:{{.Version}}-arm64"
+    dockerfile: ".github/Dockerfile"
+    build_flag_templates:
+      - "--pull"
+      - "--label=org.opencontainers.image.created={{.Date}}"
+      - "--label=org.opencontainers.image.title={{.ProjectName}}"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--build-arg=BINARY=proxpass"
+      - "--platform=linux/arm64"
+docker_manifests:
+  -
+    name_template: "{{.Env.REGISTRY}}/{{.Env.IMAGE_NAME}}:latest"
+    skip_push: '{{ if ne .Env.IS_LATEST_RELEASE "true" }}true{{ end }}'
+    image_templates:
+      - "{{.Env.REGISTRY}}/{{.Env.IMAGE_NAME}}:{{.Version}}-amd64"
+      - "{{.Env.REGISTRY}}/{{.Env.IMAGE_NAME}}:{{.Version}}-arm64"
+  -
+    name_template: "{{.Env.REGISTRY}}/{{.Env.IMAGE_NAME}}:{{.Version}}"
+    image_templates:
+      - "{{.Env.REGISTRY}}/{{.Env.IMAGE_NAME}}:{{.Version}}-amd64"
+      - "{{.Env.REGISTRY}}/{{.Env.IMAGE_NAME}}:{{.Version}}-arm64"

@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+
 	"proxpass/internal/models"
 )
 
@@ -37,8 +38,8 @@ type Repository interface {
 	ListAccessRules(ctx context.Context) ([]*models.AccessRuleRow, error)
 	GrantClientAccess(ctx context.Context, clientID int64, guestIDs []int64) error
 	GrantGroupAccess(ctx context.Context, groupID int64, guestIDs []int64) error
-	RevokeClientAccess(ctx context.Context, clientID int64, guestID int64) error
-	RevokeGroupAccess(ctx context.Context, groupID int64, guestID int64) error
+	RevokeClientAccess(ctx context.Context, clientID, guestID int64) error
+	RevokeGroupAccess(ctx context.Context, groupID, guestID int64) error
 
 	// Default Policy
 	SetDefaultPolicy(ctx context.Context, policy *models.DefaultAccessPolicy) error
@@ -50,5 +51,5 @@ type Repository interface {
 	RemoveAdminKey(ctx context.Context, pubKey string) error
 
 	// Access check (used by the proxy)
-	HasAccess(ctx context.Context, clientID int64, guestID int64) (bool, error)
+	HasAccess(ctx context.Context, clientID, guestID int64) (bool, error)
 }

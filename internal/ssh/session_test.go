@@ -15,7 +15,7 @@ func buildPtyReqPayload(term string, width, height, pixW, pixH uint32, modes []b
 	b4 := make([]byte, 4)
 
 	// term length + term
-	binary.BigEndian.PutUint32(b4, uint32(len(termBytes)))
+	binary.BigEndian.PutUint32(b4, uint32(len(termBytes))) //nolint:gosec // test data, length is controlled
 	buf = append(buf, b4...)
 	buf = append(buf, termBytes...)
 
@@ -33,7 +33,7 @@ func buildPtyReqPayload(term string, width, height, pixW, pixH uint32, modes []b
 	buf = append(buf, b4...)
 
 	// modes length + modes
-	binary.BigEndian.PutUint32(b4, uint32(len(modes)))
+	binary.BigEndian.PutUint32(b4, uint32(len(modes))) //nolint:gosec // test data, length is controlled
 	buf = append(buf, b4...)
 	buf = append(buf, modes...)
 

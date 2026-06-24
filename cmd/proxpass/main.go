@@ -60,14 +60,14 @@ func main() {
 	discovery := proxmox.NewDiscovery(repo, discoveryInterval, logger)
 	server := proxssh.NewServer(*listenAddr, *hostKeyPath, repo, adminHandler, logger)
 
-	// Context cancelled on SIGINT / SIGTERM.
+	// Context canceled on SIGINT / SIGTERM.
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
 	// Run discovery in the background.
 	go discovery.Run(ctx)
 
-	// Run SSH server (blocks until ctx is cancelled or a fatal error occurs).
+	// Run SSH server (blocks until ctx is canceled or a fatal error occurs).
 	logger.Printf("starting SSH server on %s", *listenAddr)
 	if err := server.ListenAndServe(ctx); err != nil && ctx.Err() == nil {
 		logger.Fatalf("ssh server error: %v", err)

@@ -18,6 +18,8 @@ import (
 
 // handleClientSession is invoked for every authenticated client channel.
 // The SSH username on the connection is interpreted as the target guest name.
+//
+//nolint:gocognit // SSH session handling requires sequential branching
 func handleClientSession(
 	channel gossh.Channel,
 	reqs <-chan *gossh.Request,
@@ -143,7 +145,7 @@ func proxyToGuest(
 	guest *models.Guest,
 	inst *models.ProxmoxInstance,
 	ptyReq *ptyRequest,
-	logger *log.Logger,
+	_ *log.Logger,
 ) error {
 	// Load the private key for the Proxmox host.
 	keyBytes, err := os.ReadFile(inst.APIKey)
@@ -157,8 +159,8 @@ func proxyToGuest(
 
 	addr := net.JoinHostPort(inst.Hostname, strconv.Itoa(inst.Port))
 	config := &gossh.ClientConfig{
-		User: "root",
-		Auth: []gossh.AuthMethod{gossh.PublicKeys(signer)},
+		User:            "root",
+		Auth:            []gossh.AuthMethod{gossh.PublicKeys(signer)},
 		HostKeyCallback: gossh.InsecureIgnoreHostKey(), //nolint:gosec // Proxmox host verification is out of scope.
 	}
 

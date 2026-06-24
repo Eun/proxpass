@@ -17,8 +17,10 @@ type AdminSessionHandler func(channel gossh.Channel, reqs <-chan *gossh.Request,
 // DefaultAdminHandler returns an AdminSessionHandler that performs the SSH
 // pty-req / shell handshake and then runs runTUI on the channel.
 // runTUI should be tui.RunTUI (injected to avoid an import cycle).
+//
+//nolint:gocognit // SSH admin session handler requires deep branching for request types
 func DefaultAdminHandler(
-	runTUI func(repo db.Repository, input io.Reader, output io.Writer) error,
+	_ func(repo db.Repository, input io.Reader, output io.Writer) error,
 	logger *log.Logger,
 ) AdminSessionHandler {
 	return func(channel gossh.Channel, reqs <-chan *gossh.Request, repo db.Repository) {

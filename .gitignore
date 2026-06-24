@@ -1,13 +1,5 @@
-# Compiled binary
+/dist
+/.idea
+/.vscode
 /proxpass
-*.exe
-
-# Coverage output
 coverage.out
-
-# IDE
-.idea/
-.vscode/
-
-# OS
-.DS_Store

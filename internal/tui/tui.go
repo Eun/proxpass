@@ -7,12 +7,12 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+
 	"proxpass/internal/db"
 	"proxpass/internal/models"
-
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/lipgloss"
 )
 
 // ---------------------------------------------------------------------------
@@ -29,6 +29,13 @@ var (
 )
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const ruleTypeClient = "client"
+const ruleTypeGroup = "group"
+
+// ---------------------------------------------------------------------------
 // View state machine
 // ---------------------------------------------------------------------------
 
@@ -43,7 +50,7 @@ const (
 	viewAccessRules
 	viewDefaultPolicy
 	viewAdminKeys
-	// Input sub-states
+	// Input sub-states.
 	viewAddInstance
 	viewAddClient
 	viewAddGroup
@@ -117,8 +124,8 @@ type Model struct {
 }
 
 // NewModel creates a new TUI model backed by the given repository.
-func NewModel(repo db.Repository) Model {
-	return Model{
+func NewModel(repo db.Repository) *Model {
+	return &Model{
 		repo:  repo,
 		ctx:   context.Background(),
 		state: viewMenu,
@@ -126,6 +133,8 @@ func NewModel(repo db.Repository) Model {
 }
 
 // Init implements tea.Model.
+//
+//nolint:gocritic // required by tea.Model interface
 func (m Model) Init() tea.Cmd {
 	return nil
 }
@@ -134,9 +143,9 @@ func (m Model) Init() tea.Cmd {
 // Update
 // ---------------------------------------------------------------------------
 
+//nolint:gocritic // required by tea.Model interface
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-
 	// --- async data messages ---
 	case instancesMsg:
 		m.instances = msg
@@ -193,20 +202,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) isInputState() bool {
+func (m *Model) isInputState() bool {
+	//nolint:exhaustive // only input sub-states need explicit handling
 	switch m.state {
 	case viewAddInstance, viewAddClient, viewAddGroup, viewAddAdminKey,
 		viewAddAccessRule, viewAddPolicyEntry:
 		return true
+	default:
+		return false
 	}
-	return false
 }
 
 // ---------------------------------------------------------------------------
 // Navigation update (menu + list screens)
 // ---------------------------------------------------------------------------
 
-func (m Model) updateNav(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) updateNav(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 
 	switch key {
@@ -250,7 +261,8 @@ func (m Model) updateNav(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) listLen() int {
+func (m *Model) listLen() int {
+	//nolint:exhaustive // input sub-states are not list views
 	switch m.state {
 	case viewMenu:
 		return len(menuItems)
@@ -268,40 +280,48 @@ func (m Model) listLen() int {
 		return len(m.policyEntries)
 	case viewAdminKeys:
 		return len(m.adminKeys)
+	default:
+		return 0
 	}
-	return 0
 }
 
-func (m Model) selectMenu() (tea.Model, tea.Cmd) {
+func (m *Model) selectMenu() (tea.Model, tea.Cmd) {
 	switch m.cursor {
 	case 0:
 		m.state = viewInstances
 		m.cursor = 0
-		return m, m.fetchInstances()
+		cmd := m.fetchInstances()
+		return m, cmd
 	case 1:
 		m.state = viewGuests
 		m.cursor = 0
-		return m, m.fetchGuests()
+		cmd := m.fetchGuests()
+		return m, cmd
 	case 2:
 		m.state = viewClients
 		m.cursor = 0
-		return m, m.fetchClients()
+		cmd := m.fetchClients()
+		return m, cmd
 	case 3:
 		m.state = viewGroups
 		m.cursor = 0
-		return m, m.fetchGroups()
+		cmd := m.fetchGroups()
+		return m, cmd
 	case 4:
 		m.state = viewAccessRules
 		m.cursor = 0
-		return m, m.fetchAccessRules()
+		cmd := m.fetchAccessRules()
+		return m, cmd
 	case 5:
 		m.state = viewDefaultPolicy
 		m.cursor = 0
-		return m, m.fetchDefaultPolicy()
+		cmd := m.fetchDefaultPolicy()
+		return m, cmd
 	case 6:
 		m.state = viewAdminKeys
 		m.cursor = 0
-		return m, m.fetchAdminKeys()
+		cmd := m.fetchAdminKeys()
+		return m, cmd
 	case 7:
 		return m, tea.Quit
 	}
@@ -312,7 +332,8 @@ func (m Model) selectMenu() (tea.Model, tea.Cmd) {
 // Add flows – set up text inputs
 // ---------------------------------------------------------------------------
 
-func (m Model) startAdd() (tea.Model, tea.Cmd) {
+func (m *Model) startAdd() (tea.Model, tea.Cmd) {
+	//nolint:exhaustive // only list views support add
 	switch m.state {
 	case viewInstances:
 		m.inputs = makeInputs("Hostname", "Port", "API Key")
@@ -357,7 +378,7 @@ func makeInputs(placeholders ...string) []textinput.Model {
 // Input update (text input forms)
 // ---------------------------------------------------------------------------
 
-func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 
 	switch key {
@@ -368,7 +389,8 @@ func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Cancel the input and go back to the parent list.
 		m.state = m.parentState()
 		m.statusMsg = ""
-		return m, m.refreshCurrent()
+		cmd := m.refreshCurrent()
+		return m, cmd
 
 	case "enter":
 		// Advance to next field or submit.
@@ -387,7 +409,8 @@ func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Model) parentState() viewState {
+func (m *Model) parentState() viewState {
+	//nolint:exhaustive // only input sub-states have a parent
 	switch m.state {
 	case viewAddInstance:
 		return viewInstances
@@ -401,14 +424,16 @@ func (m Model) parentState() viewState {
 		return viewAccessRules
 	case viewAddPolicyEntry:
 		return viewDefaultPolicy
+	default:
+		return viewMenu
 	}
-	return viewMenu
 }
 
-func (m Model) submitAdd() (tea.Model, tea.Cmd) {
+func (m *Model) submitAdd() (tea.Model, tea.Cmd) {
 	parent := m.parentState()
 	m.state = parent
 
+	//nolint:exhaustive // only list-view parents are valid submit targets
 	switch parent {
 	case viewInstances:
 		hostname := strings.TrimSpace(m.inputs[0].Value())
@@ -423,7 +448,8 @@ func (m Model) submitAdd() (tea.Model, tea.Cmd) {
 			m.statusMsg = "Hostname and API key are required"
 			return m, nil
 		}
-		return m, m.addInstance(hostname, port, apiKey)
+		cmd := m.addInstance(hostname, port, apiKey)
+		return m, cmd
 
 	case viewClients:
 		name := strings.TrimSpace(m.inputs[0].Value())
@@ -432,7 +458,8 @@ func (m Model) submitAdd() (tea.Model, tea.Cmd) {
 			m.statusMsg = "Name and public key are required"
 			return m, nil
 		}
-		return m, m.addClient(name, pubKey)
+		cmd := m.addClient(name, pubKey)
+		return m, cmd
 
 	case viewGroups:
 		name := strings.TrimSpace(m.inputs[0].Value())
@@ -440,7 +467,8 @@ func (m Model) submitAdd() (tea.Model, tea.Cmd) {
 			m.statusMsg = "Group name is required"
 			return m, nil
 		}
-		return m, m.addGroup(name)
+		cmd := m.addGroup(name)
+		return m, cmd
 
 	case viewAdminKeys:
 		pubKey := strings.TrimSpace(m.inputs[0].Value())
@@ -448,13 +476,14 @@ func (m Model) submitAdd() (tea.Model, tea.Cmd) {
 			m.statusMsg = "Public key is required"
 			return m, nil
 		}
-		return m, m.addAdminKey(pubKey)
+		cmd := m.addAdminKey(pubKey)
+		return m, cmd
 
 	case viewAccessRules:
 		ruleType := strings.TrimSpace(strings.ToLower(m.inputs[0].Value()))
 		subjectStr := strings.TrimSpace(m.inputs[1].Value())
 		guestStr := strings.TrimSpace(m.inputs[2].Value())
-		if ruleType != "client" && ruleType != "group" {
+		if ruleType != ruleTypeClient && ruleType != ruleTypeGroup {
 			m.statusMsg = "Type must be 'client' or 'group'"
 			return m, nil
 		}
@@ -468,12 +497,13 @@ func (m Model) submitAdd() (tea.Model, tea.Cmd) {
 			m.statusMsg = "Invalid Guest ID"
 			return m, nil
 		}
-		return m, m.addAccessRule(models.RuleType(ruleType), subjectID, guestID)
+		cmd := m.addAccessRule(models.RuleType(ruleType), subjectID, guestID)
+		return m, cmd
 
 	case viewDefaultPolicy:
 		entryType := strings.TrimSpace(strings.ToLower(m.inputs[0].Value()))
 		idStr := strings.TrimSpace(m.inputs[1].Value())
-		if entryType != "client" && entryType != "group" {
+		if entryType != ruleTypeClient && entryType != ruleTypeGroup {
 			m.statusMsg = "Type must be 'client' or 'group'"
 			return m, nil
 		}
@@ -482,7 +512,9 @@ func (m Model) submitAdd() (tea.Model, tea.Cmd) {
 			m.statusMsg = "Invalid ID"
 			return m, nil
 		}
-		return m, m.addPolicyEntry(entryType, id)
+		cmd := m.addPolicyEntry(entryType, id)
+		return m, cmd
+	default:
 	}
 
 	return m, nil
@@ -492,7 +524,9 @@ func (m Model) submitAdd() (tea.Model, tea.Cmd) {
 // Delete
 // ---------------------------------------------------------------------------
 
-func (m Model) deleteSelected() (tea.Model, tea.Cmd) {
+//nolint:gocognit // switch over all view states requires branching
+func (m *Model) deleteSelected() (tea.Model, tea.Cmd) {
+	//nolint:exhaustive // only list views support delete
 	switch m.state {
 	case viewInstances:
 		if m.cursor >= len(m.instances) {
@@ -581,9 +615,9 @@ func (m Model) deleteSelected() (tea.Model, tea.Cmd) {
 				return errMsg{err}
 			}
 			switch parts[0] {
-			case "client":
+			case ruleTypeClient:
 				updated.AuthorizedClientIDs = removeInt64(updated.AuthorizedClientIDs, id)
-			case "group":
+			case ruleTypeGroup:
 				updated.AuthorizedGroupIDs = removeInt64(updated.AuthorizedGroupIDs, id)
 			}
 			if err := m.repo.SetDefaultPolicy(m.ctx, updated); err != nil {
@@ -591,6 +625,7 @@ func (m Model) deleteSelected() (tea.Model, tea.Cmd) {
 			}
 			return doneMsg{}
 		}
+	default:
 	}
 
 	return m, nil
@@ -600,7 +635,7 @@ func (m Model) deleteSelected() (tea.Model, tea.Cmd) {
 // DB command helpers (return tea.Cmd)
 // ---------------------------------------------------------------------------
 
-func (m Model) fetchInstances() tea.Cmd {
+func (m *Model) fetchInstances() tea.Cmd {
 	return func() tea.Msg {
 		list, err := m.repo.ListProxmoxInstances(m.ctx)
 		if err != nil {
@@ -610,7 +645,7 @@ func (m Model) fetchInstances() tea.Cmd {
 	}
 }
 
-func (m Model) fetchGuests() tea.Cmd {
+func (m *Model) fetchGuests() tea.Cmd {
 	return func() tea.Msg {
 		list, err := m.repo.ListGuests(m.ctx)
 		if err != nil {
@@ -620,7 +655,7 @@ func (m Model) fetchGuests() tea.Cmd {
 	}
 }
 
-func (m Model) fetchClients() tea.Cmd {
+func (m *Model) fetchClients() tea.Cmd {
 	return func() tea.Msg {
 		list, err := m.repo.ListClients(m.ctx)
 		if err != nil {
@@ -630,7 +665,7 @@ func (m Model) fetchClients() tea.Cmd {
 	}
 }
 
-func (m Model) fetchGroups() tea.Cmd {
+func (m *Model) fetchGroups() tea.Cmd {
 	return func() tea.Msg {
 		list, err := m.repo.ListGroups(m.ctx)
 		if err != nil {
@@ -640,7 +675,7 @@ func (m Model) fetchGroups() tea.Cmd {
 	}
 }
 
-func (m Model) fetchAdminKeys() tea.Cmd {
+func (m *Model) fetchAdminKeys() tea.Cmd {
 	return func() tea.Msg {
 		list, err := m.repo.ListAdminKeys(m.ctx)
 		if err != nil {
@@ -650,7 +685,7 @@ func (m Model) fetchAdminKeys() tea.Cmd {
 	}
 }
 
-func (m Model) fetchAccessRules() tea.Cmd {
+func (m *Model) fetchAccessRules() tea.Cmd {
 	return func() tea.Msg {
 		list, err := m.repo.ListAccessRules(m.ctx)
 		if err != nil {
@@ -660,7 +695,7 @@ func (m Model) fetchAccessRules() tea.Cmd {
 	}
 }
 
-func (m Model) fetchDefaultPolicy() tea.Cmd {
+func (m *Model) fetchDefaultPolicy() tea.Cmd {
 	return func() tea.Msg {
 		policy, err := m.repo.GetDefaultPolicy(m.ctx)
 		if err != nil {
@@ -670,7 +705,7 @@ func (m Model) fetchDefaultPolicy() tea.Cmd {
 	}
 }
 
-func (m Model) addInstance(hostname string, port int, apiKey string) tea.Cmd {
+func (m *Model) addInstance(hostname string, port int, apiKey string) tea.Cmd {
 	return func() tea.Msg {
 		inst := &models.ProxmoxInstance{Hostname: hostname, Port: port, APIKey: apiKey}
 		if err := m.repo.AddProxmoxInstance(m.ctx, inst); err != nil {
@@ -680,7 +715,7 @@ func (m Model) addInstance(hostname string, port int, apiKey string) tea.Cmd {
 	}
 }
 
-func (m Model) addClient(name, pubKey string) tea.Cmd {
+func (m *Model) addClient(name, pubKey string) tea.Cmd {
 	return func() tea.Msg {
 		c := &models.Client{Name: name, PublicKeys: []string{pubKey}}
 		if err := m.repo.AddClient(m.ctx, c); err != nil {
@@ -690,7 +725,7 @@ func (m Model) addClient(name, pubKey string) tea.Cmd {
 	}
 }
 
-func (m Model) addGroup(name string) tea.Cmd {
+func (m *Model) addGroup(name string) tea.Cmd {
 	return func() tea.Msg {
 		g := &models.Group{Name: name}
 		if err := m.repo.AddGroup(m.ctx, g); err != nil {
@@ -700,7 +735,7 @@ func (m Model) addGroup(name string) tea.Cmd {
 	}
 }
 
-func (m Model) addAdminKey(pubKey string) tea.Cmd {
+func (m *Model) addAdminKey(pubKey string) tea.Cmd {
 	return func() tea.Msg {
 		if err := m.repo.AddAdminKey(m.ctx, pubKey); err != nil {
 			return errMsg{err}
@@ -709,7 +744,7 @@ func (m Model) addAdminKey(pubKey string) tea.Cmd {
 	}
 }
 
-func (m Model) addAccessRule(ruleType models.RuleType, subjectID, guestID int64) tea.Cmd {
+func (m *Model) addAccessRule(ruleType models.RuleType, subjectID, guestID int64) tea.Cmd {
 	return func() tea.Msg {
 		var err error
 		switch ruleType {
@@ -725,7 +760,7 @@ func (m Model) addAccessRule(ruleType models.RuleType, subjectID, guestID int64)
 	}
 }
 
-func (m Model) addPolicyEntry(entryType string, id int64) tea.Cmd {
+func (m *Model) addPolicyEntry(entryType string, id int64) tea.Cmd {
 	policy := m.defaultPolicy
 	return func() tea.Msg {
 		updated := &models.DefaultAccessPolicy{}
@@ -734,9 +769,9 @@ func (m Model) addPolicyEntry(entryType string, id int64) tea.Cmd {
 			updated.AuthorizedGroupIDs = copyInt64Slice(policy.AuthorizedGroupIDs)
 		}
 		switch entryType {
-		case "client":
+		case ruleTypeClient:
 			updated.AuthorizedClientIDs = append(updated.AuthorizedClientIDs, id)
-		case "group":
+		case ruleTypeGroup:
 			updated.AuthorizedGroupIDs = append(updated.AuthorizedGroupIDs, id)
 		}
 		if err := m.repo.SetDefaultPolicy(m.ctx, updated); err != nil {
@@ -746,7 +781,8 @@ func (m Model) addPolicyEntry(entryType string, id int64) tea.Cmd {
 	}
 }
 
-func (m Model) refreshCurrent() tea.Cmd {
+func (m *Model) refreshCurrent() tea.Cmd {
+	//nolint:exhaustive // input sub-states don't refresh
 	switch m.state {
 	case viewInstances:
 		return m.fetchInstances()
@@ -762,14 +798,16 @@ func (m Model) refreshCurrent() tea.Cmd {
 		return m.fetchAccessRules()
 	case viewDefaultPolicy:
 		return m.fetchDefaultPolicy()
+	default:
+		return nil
 	}
-	return nil
 }
 
 // ---------------------------------------------------------------------------
 // View
 // ---------------------------------------------------------------------------
 
+//nolint:gocritic // required by tea.Model interface
 func (m Model) View() string {
 	var b strings.Builder
 
@@ -793,6 +831,7 @@ func (m Model) View() string {
 	case viewAddInstance, viewAddClient, viewAddGroup, viewAddAdminKey,
 		viewAddAccessRule, viewAddPolicyEntry:
 		m.viewInputForm(&b)
+	default:
 	}
 
 	if m.statusMsg != "" {
@@ -802,7 +841,7 @@ func (m Model) View() string {
 	return b.String()
 }
 
-func (m Model) viewMenu(b *strings.Builder) {
+func (m *Model) viewMenu(b *strings.Builder) {
 	b.WriteString(titleStyle.Render("ProxPass Admin Console") + "\n\n")
 	for i, item := range menuItems {
 		cursor := "  "
@@ -816,7 +855,7 @@ func (m Model) viewMenu(b *strings.Builder) {
 	b.WriteString("\n" + helpStyle.Render("j/k or ↑/↓: navigate • enter: select • q: quit") + "\n")
 }
 
-func (m Model) viewInstances(b *strings.Builder) {
+func (m *Model) viewInstances(b *strings.Builder) {
 	b.WriteString(titleStyle.Render("Proxmox Instances") + "\n\n")
 	if len(m.instances) == 0 {
 		b.WriteString("  (none)\n")
@@ -834,7 +873,7 @@ func (m Model) viewInstances(b *strings.Builder) {
 	b.WriteString("\n" + helpStyle.Render("a: add • d: delete • esc: back • q: menu") + "\n")
 }
 
-func (m Model) viewGuests(b *strings.Builder) {
+func (m *Model) viewGuests(b *strings.Builder) {
 	b.WriteString(titleStyle.Render("Guests (discovered)") + "\n\n")
 	if len(m.guests) == 0 {
 		b.WriteString("  (none)\n")
@@ -853,45 +892,41 @@ func (m Model) viewGuests(b *strings.Builder) {
 	b.WriteString("\n" + helpStyle.Render("read-only • esc: back • q: menu") + "\n")
 }
 
-func (m Model) viewClients(b *strings.Builder) {
-	b.WriteString(titleStyle.Render("Clients") + "\n\n")
-	if len(m.clients) == 0 {
+// viewEntityList is a shared helper for rendering simple entity lists (clients, groups, etc.).
+func (m *Model) viewEntityList(b *strings.Builder, title string, items []string, helpText string) {
+	b.WriteString(titleStyle.Render(title) + "\n\n")
+	if len(items) == 0 {
 		b.WriteString("  (none)\n")
 	}
+	for i, item := range items {
+		cursor := "  "
+		style := normalStyle
+		if i == m.cursor {
+			cursor = "> "
+			style = selectedStyle
+		}
+		b.WriteString(cursor + style.Render(item) + "\n")
+	}
+	b.WriteString("\n" + helpStyle.Render(helpText) + "\n")
+}
+
+func (m *Model) viewClients(b *strings.Builder) {
+	items := make([]string, len(m.clients))
 	for i, c := range m.clients {
-		cursor := "  "
-		style := normalStyle
-		if i == m.cursor {
-			cursor = "> "
-			style = selectedStyle
-		}
-		keys := len(c.PublicKeys)
-		line := fmt.Sprintf("[%d] %s (%d key(s))", c.ID, c.Name, keys)
-		b.WriteString(cursor + style.Render(line) + "\n")
+		items[i] = fmt.Sprintf("[%d] %s (%d key(s))", c.ID, c.Name, len(c.PublicKeys))
 	}
-	b.WriteString("\n" + helpStyle.Render("a: add • d: delete • esc: back • q: menu") + "\n")
+	m.viewEntityList(b, "Clients", items, "a: add • d: delete • esc: back • q: menu")
 }
 
-func (m Model) viewGroups(b *strings.Builder) {
-	b.WriteString(titleStyle.Render("Groups") + "\n\n")
-	if len(m.groups) == 0 {
-		b.WriteString("  (none)\n")
-	}
+func (m *Model) viewGroups(b *strings.Builder) {
+	items := make([]string, len(m.groups))
 	for i, g := range m.groups {
-		cursor := "  "
-		style := normalStyle
-		if i == m.cursor {
-			cursor = "> "
-			style = selectedStyle
-		}
-		members := len(g.ClientIDs)
-		line := fmt.Sprintf("[%d] %s (%d member(s))", g.ID, g.Name, members)
-		b.WriteString(cursor + style.Render(line) + "\n")
+		items[i] = fmt.Sprintf("[%d] %s (%d member(s))", g.ID, g.Name, len(g.ClientIDs))
 	}
-	b.WriteString("\n" + helpStyle.Render("a: add • d: delete • esc: back • q: menu") + "\n")
+	m.viewEntityList(b, "Groups", items, "a: add • d: delete • esc: back • q: menu")
 }
 
-func (m Model) viewAccessRules(b *strings.Builder) {
+func (m *Model) viewAccessRules(b *strings.Builder) {
 	b.WriteString(titleStyle.Render("Access Rules") + "\n\n")
 	if len(m.accessRules) == 0 {
 		b.WriteString("  (none)\n")
@@ -910,7 +945,7 @@ func (m Model) viewAccessRules(b *strings.Builder) {
 	b.WriteString("\n" + helpStyle.Render("a: add • d: delete • esc: back • q: menu") + "\n")
 }
 
-func (m Model) viewDefaultPolicy(b *strings.Builder) {
+func (m *Model) viewDefaultPolicy(b *strings.Builder) {
 	b.WriteString(titleStyle.Render("Default Policy") + "\n\n")
 	if len(m.policyEntries) == 0 {
 		b.WriteString("  (no entries)\n")
@@ -927,7 +962,7 @@ func (m Model) viewDefaultPolicy(b *strings.Builder) {
 	b.WriteString("\n" + helpStyle.Render("a: add • d: delete • esc: back • q: menu") + "\n")
 }
 
-func (m Model) viewAdminKeys(b *strings.Builder) {
+func (m *Model) viewAdminKeys(b *strings.Builder) {
 	b.WriteString(titleStyle.Render("Admin Keys") + "\n\n")
 	if len(m.adminKeys) == 0 {
 		b.WriteString("  (none)\n")
@@ -948,8 +983,9 @@ func (m Model) viewAdminKeys(b *strings.Builder) {
 	b.WriteString("\n" + helpStyle.Render("a: add • d: delete • esc: back • q: menu") + "\n")
 }
 
-func (m Model) viewInputForm(b *strings.Builder) {
+func (m *Model) viewInputForm(b *strings.Builder) {
 	var title string
+	//nolint:exhaustive // only input sub-states are rendered here
 	switch m.state {
 	case viewAddInstance:
 		title = "Add Proxmox Instance"
@@ -963,15 +999,16 @@ func (m Model) viewInputForm(b *strings.Builder) {
 		title = "Add Access Rule"
 	case viewAddPolicyEntry:
 		title = "Add Policy Entry"
+	default:
 	}
 	b.WriteString(titleStyle.Render(title) + "\n\n")
 
-	for i, input := range m.inputs {
-		label := input.Placeholder
+	for i := range m.inputs {
+		label := m.inputs[i].Placeholder
 		if i == m.inputStep {
-			b.WriteString(selectedStyle.Render(label+": ") + input.View() + "\n")
+			b.WriteString(selectedStyle.Render(label+": ") + m.inputs[i].View() + "\n")
 		} else {
-			val := input.Value()
+			val := m.inputs[i].Value()
 			if val == "" {
 				val = "(empty)"
 			}

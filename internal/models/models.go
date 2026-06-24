@@ -22,12 +22,12 @@ type ProxmoxInstance struct {
 }
 
 type Guest struct {
-	ID           int64      `json:"id"`
-	Type         GuestType  `json:"type"`
-	Name         string     `json:"name"`
-	Status       Status     `json:"status"`
-	ProxmoxID    int        `json:"proxmox_id"`
-	InstanceID   int64      `json:"instance_id"`
+	ID         int64     `json:"id"`
+	Type       GuestType `json:"type"`
+	Name       string    `json:"name"`
+	Status     Status    `json:"status"`
+	ProxmoxID  int       `json:"proxmox_id"`
+	InstanceID int64     `json:"instance_id"`
 }
 
 type Client struct {

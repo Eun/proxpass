@@ -43,7 +43,7 @@ func NewServer(
 	}
 }
 
-// ListenAndServe starts the SSH server and blocks until ctx is cancelled.
+// ListenAndServe starts the SSH server and blocks until ctx is canceled.
 func (s *Server) ListenAndServe(ctx context.Context) error {
 	signer, err := s.loadOrGenerateHostKey()
 	if err != nil {
@@ -64,7 +64,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 	s.logger.Printf("SSH server listening on %s", s.listenAddr)
 
-	// Close the listener when the context is cancelled so Accept unblocks.
+	// Close the listener when the context is canceled so Accept unblocks.
 	go func() {
 		<-ctx.Done()
 		_ = ln.Close()
@@ -219,7 +219,7 @@ func (s *Server) loadOrGenerateHostKey() (gossh.Signer, error) {
 
 	pemBlock, err := gossh.MarshalPrivateKey(priv, "")
 	if err != nil {
-		return nil, fmt.Errorf("marshalling private key: %w", err)
+		return nil, fmt.Errorf("marshaling private key: %w", err)
 	}
 
 	pemBytes := pem.EncodeToMemory(pemBlock)
@@ -235,7 +235,7 @@ func (s *Server) loadOrGenerateHostKey() (gossh.Signer, error) {
 func waitConn(conn *gossh.ServerConn) <-chan struct{} {
 	ch := make(chan struct{})
 	go func() {
-		conn.Wait() //nolint:errcheck
+		conn.Wait() //nolint:errcheck // Wait returns after connection closes; error is not actionable
 		close(ch)
 	}()
 	return ch

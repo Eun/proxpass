@@ -36,7 +36,7 @@ func parsePtyReq(data []byte) (*ptyRequest, error) {
 	// term (string = uint32 len + bytes)
 	termLen := binary.BigEndian.Uint32(data[0:4])
 	data = data[4:]
-	if uint32(len(data)) < termLen {
+	if uint32(len(data)) < termLen { //nolint:gosec // length bounded by protocol
 		return nil, fmt.Errorf("pty-req: term length exceeds payload")
 	}
 	term := string(data[:termLen])
@@ -56,7 +56,7 @@ func parsePtyReq(data []byte) (*ptyRequest, error) {
 	if len(data) >= 4 {
 		modesLen := binary.BigEndian.Uint32(data[0:4])
 		data = data[4:]
-		if uint32(len(data)) >= modesLen {
+		if uint32(len(data)) >= modesLen { //nolint:gosec // length bounded by protocol
 			modes = make([]byte, modesLen)
 			copy(modes, data[:modesLen])
 		}
@@ -113,7 +113,7 @@ func findClientByKey(repo db.Repository, key gossh.PublicKey) (*models.Client, e
 	return nil, nil
 }
 
-// keysEqual compares two marshalled public key byte slices.
+// keysEqual compares two marshaled public key byte slices.
 func keysEqual(a, b []byte) bool {
 	if len(a) != len(b) {
 		return false

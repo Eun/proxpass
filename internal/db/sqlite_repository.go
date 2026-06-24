@@ -6,7 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite" // register sqlite3 driver
+
 	"proxpass/internal/models"
 )
 
@@ -14,7 +15,7 @@ type sqliteRepo struct {
 	db *sql.DB
 }
 
-func NewSQLiteRepository(dbPath string) (*sqliteRepo, error) {
+func NewSQLiteRepository(dbPath string) (Repository, error) {
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
@@ -64,7 +65,7 @@ func NewSQLiteRepository(dbPath string) (*sqliteRepo, error) {
 	}
 
 	for _, s := range schema {
-		if _, err := db.Exec(s); err != nil {
+		if _, err := db.ExecContext(context.Background(), s); err != nil {
 			return nil, fmt.Errorf("failed to execute schema: %w", err)
 		}
 	}
@@ -300,7 +301,8 @@ func (r *sqliteRepo) ListAccessRules(ctx context.Context) ([]*models.AccessRuleR
 	return list, rows.Err()
 }
 
-func (r *sqliteRepo) GrantClientAccess(ctx context.Context, clientID int64, guestIDs []int64) error {
+// grantAccess is the shared helper for GrantClientAccess and GrantGroupAccess.
+func (r *sqliteRepo) grantAccess(ctx context.Context, ruleType models.RuleType, subjectID int64, guestIDs []int64) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -313,41 +315,29 @@ func (r *sqliteRepo) GrantClientAccess(ctx context.Context, clientID int64, gues
 	}
 	defer func() { _ = stmt.Close() }()
 	for _, gid := range guestIDs {
-		if _, err := stmt.ExecContext(ctx, models.RuleClient, clientID, gid); err != nil {
+		if _, err := stmt.ExecContext(ctx, ruleType, subjectID, gid); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
+}
+
+func (r *sqliteRepo) GrantClientAccess(ctx context.Context, clientID int64, guestIDs []int64) error {
+	return r.grantAccess(ctx, models.RuleClient, clientID, guestIDs)
 }
 
 func (r *sqliteRepo) GrantGroupAccess(ctx context.Context, groupID int64, guestIDs []int64) error {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	stmt, err := tx.PrepareContext(ctx,
-		"INSERT OR IGNORE INTO access_rules (type, subject_id, guest_id) VALUES (?, ?, ?)")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = stmt.Close() }()
-	for _, gid := range guestIDs {
-		if _, err := stmt.ExecContext(ctx, models.RuleGroup, groupID, gid); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
+	return r.grantAccess(ctx, models.RuleGroup, groupID, guestIDs)
 }
 
-func (r *sqliteRepo) RevokeClientAccess(ctx context.Context, clientID int64, guestID int64) error {
+func (r *sqliteRepo) RevokeClientAccess(ctx context.Context, clientID, guestID int64) error {
 	_, err := r.db.ExecContext(ctx,
 		"DELETE FROM access_rules WHERE type = ? AND subject_id = ? AND guest_id = ?",
 		models.RuleClient, clientID, guestID)
 	return err
 }
 
-func (r *sqliteRepo) RevokeGroupAccess(ctx context.Context, groupID int64, guestID int64) error {
+func (r *sqliteRepo) RevokeGroupAccess(ctx context.Context, groupID, guestID int64) error {
 	_, err := r.db.ExecContext(ctx,
 		"DELETE FROM access_rules WHERE type = ? AND subject_id = ? AND guest_id = ?",
 		models.RuleGroup, groupID, guestID)
@@ -415,7 +405,7 @@ func (r *sqliteRepo) RemoveAdminKey(ctx context.Context, pubKey string) error {
 
 // HasAccess returns true if clientID is allowed to reach guestID.
 // Priority: explicit client rule > group rule > default policy.
-func (r *sqliteRepo) HasAccess(ctx context.Context, clientID int64, guestID int64) (bool, error) {
+func (r *sqliteRepo) HasAccess(ctx context.Context, clientID, guestID int64) (bool, error) {
 	// 1. Direct client rule
 	var exists int
 	err := r.db.QueryRowContext(ctx,

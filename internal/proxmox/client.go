@@ -37,7 +37,7 @@ func NewClient(inst *models.ProxmoxInstance) (*Client, error) {
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(signer),
 		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // Proxmox host key verification is not implemented yet
 	}
 
 	addr := net.JoinHostPort(inst.Hostname, strconv.Itoa(inst.Port))
@@ -59,10 +59,7 @@ func (c *Client) DiscoverGuests() ([]*models.Guest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pct list: %w", err)
 	}
-	cts, err := parsePctList(pctOut)
-	if err != nil {
-		return nil, fmt.Errorf("parse pct list: %w", err)
-	}
+	cts := parsePctList(pctOut)
 	guests = append(guests, cts...)
 
 	// --- QEMU VMs via qm list ---
@@ -70,10 +67,7 @@ func (c *Client) DiscoverGuests() ([]*models.Guest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("qm list: %w", err)
 	}
-	vms, err := parseQmList(qmOut)
-	if err != nil {
-		return nil, fmt.Errorf("parse qm list: %w", err)
-	}
+	vms := parseQmList(qmOut)
 	guests = append(guests, vms...)
 
 	return guests, nil
@@ -107,12 +101,12 @@ func (c *Client) runCommand(cmd string) (string, error) {
 //	VMID       Status     Lock         Name
 //	100        running                 mycontainer
 //	101        stopped                 another
-func parsePctList(output string) ([]*models.Guest, error) {
+func parsePctList(output string) []*models.Guest {
 	var guests []*models.Guest
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 	if len(lines) <= 1 {
 		// Header only or empty — no containers.
-		return guests, nil
+		return guests
 	}
 
 	for _, line := range lines[1:] {
@@ -138,21 +132,21 @@ func parsePctList(output string) ([]*models.Guest, error) {
 			Status:    status,
 		})
 	}
-	return guests, nil
+	return guests
 }
 
 // parseQmList parses the tabular output of `qm list`.
 //
 // Expected format:
 //
-//	      VMID NAME                 STATUS     MEM(MB)    BOOTDISK(GB) PID
-//	       200 myvm                 running    2048              32.00 12345
-//	       201 othervm              stopped    1024              20.00 0
-func parseQmList(output string) ([]*models.Guest, error) {
+//	VMID NAME                 STATUS     MEM(MB)    BOOTDISK(GB) PID
+//	 200 myvm                 running    2048              32.00 12345
+//	 201 othervm              stopped    1024              20.00 0
+func parseQmList(output string) []*models.Guest {
 	var guests []*models.Guest
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 	if len(lines) <= 1 {
-		return guests, nil
+		return guests
 	}
 
 	for _, line := range lines[1:] {
@@ -175,7 +169,7 @@ func parseQmList(output string) ([]*models.Guest, error) {
 			Status:    status,
 		})
 	}
-	return guests, nil
+	return guests
 }
 
 // normalizeStatus maps a raw status string to one of the known Status

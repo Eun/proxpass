@@ -6,12 +6,37 @@ import (
 	"proxpass/internal/models"
 )
 
+const testVMName = "myvm"
+
+// assertGuests compares got against want, failing the test on any mismatch.
+func assertGuests(t *testing.T, got, want []*models.Guest, wantN int) {
+	t.Helper()
+	if len(got) != wantN {
+		t.Fatalf("got %d guests, want %d", len(got), wantN)
+	}
+	for i, g := range got {
+		w := want[i]
+		if g.Type != w.Type {
+			t.Errorf("[%d] Type = %q, want %q", i, g.Type, w.Type)
+		}
+		if g.ProxmoxID != w.ProxmoxID {
+			t.Errorf("[%d] ProxmoxID = %d, want %d", i, g.ProxmoxID, w.ProxmoxID)
+		}
+		if g.Name != w.Name {
+			t.Errorf("[%d] Name = %q, want %q", i, g.Name, w.Name)
+		}
+		if g.Status != w.Status {
+			t.Errorf("[%d] Status = %q, want %q", i, g.Status, w.Status)
+		}
+	}
+}
+
 func TestParsePctList(t *testing.T) {
 	tests := []struct {
-		name   string
-		input  string
-		want   []*models.Guest
-		wantN  int
+		name  string
+		input string
+		want  []*models.Guest
+		wantN int
 	}{
 		{
 			name: "multiple entries",
@@ -30,7 +55,7 @@ func TestParsePctList(t *testing.T) {
 			wantN: 0,
 		},
 		{
-			name: "header only",
+			name:  "header only",
 			input: `VMID       Status     Lock         Name`,
 			wantN: 0,
 		},
@@ -102,28 +127,8 @@ abc        running                 bad
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := parsePctList(tc.input)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if len(got) != tc.wantN {
-				t.Fatalf("got %d guests, want %d", len(got), tc.wantN)
-			}
-			for i, g := range got {
-				w := tc.want[i]
-				if g.Type != w.Type {
-					t.Errorf("[%d] Type = %q, want %q", i, g.Type, w.Type)
-				}
-				if g.ProxmoxID != w.ProxmoxID {
-					t.Errorf("[%d] ProxmoxID = %d, want %d", i, g.ProxmoxID, w.ProxmoxID)
-				}
-				if g.Name != w.Name {
-					t.Errorf("[%d] Name = %q, want %q", i, g.Name, w.Name)
-				}
-				if g.Status != w.Status {
-					t.Errorf("[%d] Status = %q, want %q", i, g.Status, w.Status)
-				}
-			}
+			got := parsePctList(tc.input)
+			assertGuests(t, got, tc.want, tc.wantN)
 		})
 	}
 }
@@ -138,10 +143,10 @@ func TestParseQmList(t *testing.T) {
 		{
 			name: "multiple entries",
 			input: `      VMID NAME                 STATUS     MEM(MB)    BOOTDISK(GB) PID
-       200 myvm                 running    2048              32.00 12345
+       200 ` + testVMName + `                 running    2048              32.00 12345
        201 othervm              stopped    1024              20.00 0`,
 			want: []*models.Guest{
-				{Type: models.GuestTypeVM, ProxmoxID: 200, Name: "myvm", Status: models.StatusRunning},
+				{Type: models.GuestTypeVM, ProxmoxID: 200, Name: testVMName, Status: models.StatusRunning},
 				{Type: models.GuestTypeVM, ProxmoxID: 201, Name: "othervm", Status: models.StatusStopped},
 			},
 			wantN: 2,
@@ -152,7 +157,7 @@ func TestParseQmList(t *testing.T) {
 			wantN: 0,
 		},
 		{
-			name: "header only",
+			name:  "header only",
 			input: `      VMID NAME                 STATUS     MEM(MB)    BOOTDISK(GB) PID`,
 			wantN: 0,
 		},
@@ -172,12 +177,12 @@ func TestParseQmList(t *testing.T) {
 		{
 			name: "malformed lines skipped",
 			input: `      VMID NAME                 STATUS     MEM(MB)    BOOTDISK(GB) PID
-       200 myvm                 running    2048              32.00 12345
+       200 ` + testVMName + `                 running    2048              32.00 12345
 garbage
 xy
        201 othervm              stopped    1024              20.00 0`,
 			want: []*models.Guest{
-				{Type: models.GuestTypeVM, ProxmoxID: 200, Name: "myvm", Status: models.StatusRunning},
+				{Type: models.GuestTypeVM, ProxmoxID: 200, Name: testVMName, Status: models.StatusRunning},
 				{Type: models.GuestTypeVM, ProxmoxID: 201, Name: "othervm", Status: models.StatusStopped},
 			},
 			wantN: 2,
@@ -195,9 +200,9 @@ xy
 		{
 			name: "unknown status normalises to stopped",
 			input: `      VMID NAME                 STATUS     MEM(MB)    BOOTDISK(GB) PID
-       200 myvm                 suspended  2048              32.00 0`,
+       200 ` + testVMName + `                 suspended  2048              32.00 0`,
 			want: []*models.Guest{
-				{Type: models.GuestTypeVM, ProxmoxID: 200, Name: "myvm", Status: models.StatusStopped},
+				{Type: models.GuestTypeVM, ProxmoxID: 200, Name: testVMName, Status: models.StatusStopped},
 			},
 			wantN: 1,
 		},
@@ -205,28 +210,8 @@ xy
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := parseQmList(tc.input)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if len(got) != tc.wantN {
-				t.Fatalf("got %d guests, want %d", len(got), tc.wantN)
-			}
-			for i, g := range got {
-				w := tc.want[i]
-				if g.Type != w.Type {
-					t.Errorf("[%d] Type = %q, want %q", i, g.Type, w.Type)
-				}
-				if g.ProxmoxID != w.ProxmoxID {
-					t.Errorf("[%d] ProxmoxID = %d, want %d", i, g.ProxmoxID, w.ProxmoxID)
-				}
-				if g.Name != w.Name {
-					t.Errorf("[%d] Name = %q, want %q", i, g.Name, w.Name)
-				}
-				if g.Status != w.Status {
-					t.Errorf("[%d] Status = %q, want %q", i, g.Status, w.Status)
-				}
-			}
+			got := parseQmList(tc.input)
+			assertGuests(t, got, tc.want, tc.wantN)
 		})
 	}
 }

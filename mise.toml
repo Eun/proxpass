@@ -1,11 +1,24 @@
-[tasks.test]
-description = "Run all unit tests"
-run = "go test ./..."
+[tools]
+go = "1.25.0"
+golangci-lint = "2.12.2"
+goreleaser = "2.16.0"
+
+[tasks.build]
+description = "Build the proxpass binary"
+run = "go build -o proxpass ./cmd/proxpass"
 
 [tasks.lint]
-description = "Run linter"
-run = "golangci-lint run"
+description = "Run golangci-lint"
+run = "golangci-lint run ./..."
 
-[tasks.run]
-description = "Run the application"
-run = "go run cmd/proxpass/main.go"
+[tasks.test]
+description = "Run tests with coverage"
+run = "go test -v -count=1 -cover -coverprofile=coverage.out -covermode=atomic ./..."
+
+[tasks.release]
+description = "Run GoReleaser (snapshot)"
+run = "goreleaser release --snapshot --clean"
+
+[tasks.clean]
+description = "Remove build artifacts"
+run = "rm -rf proxpass dist coverage.out"

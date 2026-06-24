@@ -8,7 +8,9 @@ import (
 	"proxpass/internal/models"
 )
 
-func newTestRepo(t *testing.T) *sqliteRepo {
+const testKey = "key"
+
+func newTestRepo(t *testing.T) Repository {
 	t.Helper()
 	f, err := os.CreateTemp("", "proxpass-test-*.db")
 	if err != nil {
@@ -210,7 +212,7 @@ func TestGroupAccessRules(t *testing.T) {
 	}
 
 	// Create client in that group
-	c := &models.Client{Name: "carol", PublicKeys: []string{"key"}, GroupIDs: []int64{grp.ID}}
+	c := &models.Client{Name: "carol", PublicKeys: []string{testKey}, GroupIDs: []int64{grp.ID}}
 	if err := repo.AddClient(ctx, c); err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +262,7 @@ func TestDefaultPolicy(t *testing.T) {
 	}
 
 	// Create client + guest
-	c := &models.Client{Name: "dave", PublicKeys: []string{"key"}, GroupIDs: []int64{}}
+	c := &models.Client{Name: "dave", PublicKeys: []string{testKey}, GroupIDs: []int64{}}
 	if err := repo.AddClient(ctx, c); err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +308,7 @@ func TestDefaultPolicyGroupAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c := &models.Client{Name: "eve", PublicKeys: []string{"key"}, GroupIDs: []int64{grp.ID}}
+	c := &models.Client{Name: "eve", PublicKeys: []string{testKey}, GroupIDs: []int64{grp.ID}}
 	if err := repo.AddClient(ctx, c); err != nil {
 		t.Fatal(err)
 	}
@@ -361,5 +363,5 @@ func TestAdminKeys(t *testing.T) {
 	}
 }
 
-// Compile-time interface check
+// Compile-time interface check.
 var _ Repository = (*sqliteRepo)(nil)
