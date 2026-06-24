@@ -26,13 +26,12 @@ const (
 
 // Server is the proxpass SSH server.
 type Server struct {
-	listenAddr    string
-	hostKeyPath   string
-	repo          db.Repository
-	adminHandler  AdminSessionHandler
-	logger        *log.Logger
-	flagAdminUser string
-	flagAdminKey  gossh.PublicKey
+	listenAddr   string
+	hostKeyPath  string
+	repo         db.Repository
+	adminHandler AdminSessionHandler
+	logger       *log.Logger
+	flagAdminKey gossh.PublicKey
 }
 
 // NewServer creates a new SSH server.
@@ -51,13 +50,12 @@ func NewServer(
 	}
 }
 
-// SetFlagAdmin configures a flag-based admin credential that is
+// SetFlagAdmin configures a flag-based admin public key that is
 // checked during authentication before any database lookup. The
 // credential remains active for the lifetime of the process as
-// long as the corresponding --admin-user / --admin-key flags (or
-// environment variables) are present.
-func (s *Server) SetFlagAdmin(username string, key gossh.PublicKey) {
-	s.flagAdminUser = username
+// long as the --admin-key flag (or PROXPASS_ADMIN_KEY env var)
+// is present.
+func (s *Server) SetFlagAdmin(key gossh.PublicKey) {
 	s.flagAdminKey = key
 }
 
@@ -116,8 +114,8 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 func (s *Server) publicKeyCallback(conn gossh.ConnMetadata, key gossh.PublicKey) (*gossh.Permissions, error) {
 	ctx := context.Background()
 
-	// --- flag-based admin (always active while flags are set) ---
-	if s.flagAdminKey != nil && conn.User() == s.flagAdminUser {
+	// --- flag-based admin (always active while flag is set) ---
+	if s.flagAdminKey != nil {
 		if keysEqual(s.flagAdminKey.Marshal(), key.Marshal()) {
 			return &gossh.Permissions{
 				Extensions: map[string]string{

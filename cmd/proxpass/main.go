@@ -60,12 +60,6 @@ func run0() int {
 				Sources: cli.EnvVars("PROXPASS_LOG_LEVEL"),
 			},
 			&cli.StringFlag{
-				Name:  "admin-user",
-				Usage: "flag-based admin SSH username (active while set)",
-				Sources: cli.EnvVars(
-					"PROXPASS_ADMIN_USER"),
-			},
-			&cli.StringFlag{
 				Name:  "admin-key",
 				Usage: "flag-based admin SSH public key (authorized_key format)",
 				Sources: cli.EnvVars(
@@ -92,7 +86,6 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	dataPath := cmd.String("data")
 	discoveryInterval := cmd.Duration("discovery-interval")
 	logLevel := cmd.String("log-level")
-	adminUser := cmd.String("admin-user")
 	adminKey := cmd.String("admin-key")
 
 	logger := log.New(os.Stdout, "proxpass: ", log.LstdFlags)
@@ -128,7 +121,7 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	// for the lifetime of the process, checked before any
 	// database lookup.
 	if err := configureFlagAdmin(
-		server, adminUser, adminKey, logger,
+		server, adminKey, logger,
 	); err != nil {
 		return fmt.Errorf("flag admin: %w", err)
 	}
@@ -148,24 +141,17 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	return nil
 }
 
-// configureFlagAdmin parses and sets the flag-based admin on the
-// server if both username and key are provided. The credential
-// stays active for the lifetime of the process.
+// configureFlagAdmin parses and sets the flag-based admin key
+// on the server. The credential stays active for the lifetime
+// of the process.
 func configureFlagAdmin(
 	server *proxssh.Server,
-	username, rawKey string,
+	rawKey string,
 	logger *log.Logger,
 ) error {
-	username = strings.TrimSpace(username)
 	rawKey = strings.TrimSpace(rawKey)
-
-	// Both must be set, or neither.
-	if username == "" && rawKey == "" {
+	if rawKey == "" {
 		return nil
-	}
-	if username == "" || rawKey == "" {
-		return fmt.Errorf(
-			"--admin-user and --admin-key must both be set")
 	}
 
 	pub, err := parsePublicKey(rawKey)
@@ -173,9 +159,8 @@ func configureFlagAdmin(
 		return fmt.Errorf("invalid SSH public key: %w", err)
 	}
 
-	server.SetFlagAdmin(username, pub)
-	logger.Printf(
-		"flag-based admin configured: user=%q", username)
+	server.SetFlagAdmin(pub)
+	logger.Println("flag-based admin key configured")
 	return nil
 }
 
