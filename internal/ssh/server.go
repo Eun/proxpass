@@ -18,13 +18,21 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
+const (
+	roleAdmin  = "admin"
+	roleClient = "client"
+	permRole   = "role"
+)
+
 // Server is the proxpass SSH server.
 type Server struct {
-	listenAddr   string
-	hostKeyPath  string
-	repo         db.Repository
-	adminHandler AdminSessionHandler
-	logger       *log.Logger
+	listenAddr    string
+	hostKeyPath   string
+	repo          db.Repository
+	adminHandler  AdminSessionHandler
+	logger        *log.Logger
+	bootstrapUser string
+	bootstrapKey  gossh.PublicKey
 }
 
 // NewServer creates a new SSH server.
@@ -41,6 +49,14 @@ func NewServer(
 		adminHandler: adminHandler,
 		logger:       logger,
 	}
+}
+
+// SetBootstrapAdmin configures a bootstrap admin credential that is
+// checked during authentication before any database lookup. This
+// allows the first admin to connect when the DB has no keys yet.
+func (s *Server) SetBootstrapAdmin(username string, key gossh.PublicKey) {
+	s.bootstrapUser = username
+	s.bootstrapKey = key
 }
 
 // ListenAndServe starts the SSH server and blocks until ctx is canceled.
@@ -98,6 +114,17 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 func (s *Server) publicKeyCallback(conn gossh.ConnMetadata, key gossh.PublicKey) (*gossh.Permissions, error) {
 	ctx := context.Background()
 
+	// --- bootstrap admin (flag-based, checked before DB) ---
+	if s.bootstrapKey != nil && conn.User() == s.bootstrapUser {
+		if keysEqual(s.bootstrapKey.Marshal(), key.Marshal()) {
+			return &gossh.Permissions{
+				Extensions: map[string]string{
+					permRole: roleAdmin,
+				},
+			}, nil
+		}
+	}
+
 	// --- admin keys ---
 	adminKeys, err := s.repo.ListAdminKeys(ctx)
 	if err != nil {
@@ -107,14 +134,14 @@ func (s *Server) publicKeyCallback(conn gossh.ConnMetadata, key gossh.PublicKey)
 
 	offeredBytes := key.Marshal()
 	for _, raw := range adminKeys {
-		pub, _, _, _, err := gossh.ParseAuthorizedKey([]byte(raw))
-		if err != nil {
+		pub, _, _, _, parseErr := gossh.ParseAuthorizedKey([]byte(raw))
+		if parseErr != nil {
 			continue
 		}
 		if keysEqual(pub.Marshal(), offeredBytes) {
 			return &gossh.Permissions{
 				Extensions: map[string]string{
-					"role": "admin",
+					permRole: roleAdmin,
 				},
 			}, nil
 		}
@@ -129,7 +156,7 @@ func (s *Server) publicKeyCallback(conn gossh.ConnMetadata, key gossh.PublicKey)
 	if client != nil {
 		return &gossh.Permissions{
 			Extensions: map[string]string{
-				"role":        "client",
+				permRole:      roleClient,
 				"client_name": client.Name,
 			},
 		}, nil
@@ -186,12 +213,12 @@ func (s *Server) handleConnection(ctx context.Context, tcpConn net.Conn, config 
 // handleChannel dispatches a session channel to either the admin TUI handler
 // or the client proxy handler based on the role stored during authentication.
 func (s *Server) handleChannel(conn *gossh.ServerConn, channel gossh.Channel, reqs <-chan *gossh.Request) {
-	role := conn.Permissions.Extensions["role"]
+	role := conn.Permissions.Extensions[permRole]
 
 	switch role {
-	case "admin":
+	case roleAdmin:
 		s.adminHandler(channel, reqs, s.repo)
-	case "client":
+	case roleClient:
 		handleClientSession(channel, reqs, conn, s.repo, s.logger)
 	default:
 		s.logger.Printf("unknown role %q for %s", role, conn.User())

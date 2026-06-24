@@ -31,22 +31,32 @@ func main() {
 	listenAddr := flag.String("listen", envOrDefault("PROXPASS_LISTEN", ":2222"), "SSH listen address")
 	hostKeyPath := flag.String("host-key", envOrDefault("PROXPASS_HOST_KEY", "./proxpass_host_key"), "path to SSH host key")
 	dataPath := flag.String("data", envOrDefault("PROXPASS_DATA", "./proxpass.db"), "path to SQLite database")
-	discoveryIntervalStr := flag.String("discovery-interval", envOrDefault("PROXPASS_DISCOVERY_INTERVAL", "5m"), "discovery poll interval")
+	discoveryIntervalStr := flag.String("discovery-interval",
+		envOrDefault("PROXPASS_DISCOVERY_INTERVAL", "5m"),
+		"discovery poll interval")
 	logLevel := flag.String("log-level", envOrDefault("PROXPASS_LOG_LEVEL", "info"), "log level (debug, info, warn, error)")
+	adminUser := flag.String("admin-user",
+		envOrDefault("PROXPASS_ADMIN_USER", ""),
+		"bootstrap admin SSH username")
 	adminKey := flag.String("admin-key",
 		envOrDefault("PROXPASS_ADMIN_KEY", ""),
-		"bootstrap admin public key (added if no admin keys exist)")
+		"bootstrap admin SSH public key (authorized_key format)")
 	flag.Parse()
 
 	discoveryInterval, err := time.ParseDuration(*discoveryIntervalStr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "invalid discovery interval %q: %v\n", *discoveryIntervalStr, err)
+		_, _ = fmt.Fprintf(os.Stderr,
+			"invalid discovery interval %q: %v\n",
+			*discoveryIntervalStr, err)
 		os.Exit(1)
 	}
 
 	logger := log.New(os.Stdout, "proxpass: ", log.LstdFlags)
-	logger.Printf("config: listen=%s host-key=%s data=%s discovery-interval=%s log-level=%s",
-		*listenAddr, *hostKeyPath, *dataPath, discoveryInterval, *logLevel)
+	logger.Printf(
+		"config: listen=%s host-key=%s data=%s "+
+			"discovery-interval=%s log-level=%s",
+		*listenAddr, *hostKeyPath, *dataPath,
+		discoveryInterval, *logLevel)
 
 	// Open database.
 	repo, err := db.NewSQLiteRepository(*dataPath)
@@ -54,21 +64,6 @@ func main() {
 		logger.Fatalf("failed to open database: %v", err)
 	}
 	defer func() { _ = repo.Close() }()
-
-	// Bootstrap: seed an admin key if the database has none.
-	if *adminKey != "" {
-		if err := seedAdminKey(repo, *adminKey, logger); err != nil {
-			logger.Fatalf("failed to seed admin key: %v", err)
-		}
-	} else {
-		keys, err := repo.ListAdminKeys(context.Background())
-		if err != nil {
-			logger.Fatalf("failed to list admin keys: %v", err)
-		}
-		if len(keys) == 0 {
-			logger.Println("WARNING: no admin keys configured. Use --admin-key or PROXPASS_ADMIN_KEY to bootstrap.")
-		}
-	}
 
 	// Wire up the TUI factory so the SSH admin handler can create TUI models.
 	proxssh.SetTUIFactory(func(r db.Repository) tea.Model {
@@ -78,16 +73,27 @@ func main() {
 	// Create services.
 	adminHandler := proxssh.DefaultAdminHandler(tui.RunTUI, logger)
 	discovery := proxmox.NewDiscovery(repo, discoveryInterval, logger)
-	server := proxssh.NewServer(*listenAddr, *hostKeyPath, repo, adminHandler, logger)
+	server := proxssh.NewServer(
+		*listenAddr, *hostKeyPath, repo, adminHandler, logger)
+
+	// Bootstrap admin: if both --admin-user and --admin-key are set,
+	// configure the server to accept that credential as an admin
+	// before consulting the database.
+	if err := configureBootstrapAdmin(
+		server, *adminUser, *adminKey, logger,
+	); err != nil {
+		logger.Fatalf("bootstrap admin: %v", err)
+	}
 
 	// Context canceled on SIGINT / SIGTERM.
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, cancel := signal.NotifyContext(
+		context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
 	// Run discovery in the background.
 	go discovery.Run(ctx)
 
-	// Run SSH server (blocks until ctx is canceled or a fatal error occurs).
+	// Run SSH server (blocks until ctx is canceled or fatal error).
 	logger.Printf("starting SSH server on %s", *listenAddr)
 	if err := server.ListenAndServe(ctx); err != nil && ctx.Err() == nil {
 		logger.Fatalf("ssh server error: %v", err)
@@ -96,34 +102,38 @@ func main() {
 	logger.Println("shutting down")
 }
 
-// seedAdminKey validates and inserts an admin public key if not already present.
-func seedAdminKey(repo db.Repository, raw string, logger *log.Logger) error {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return fmt.Errorf("admin key is empty")
+// configureBootstrapAdmin parses and sets the bootstrap admin on the
+// server if both username and key are provided.
+func configureBootstrapAdmin(
+	server *proxssh.Server,
+	username, rawKey string,
+	logger *log.Logger,
+) error {
+	username = strings.TrimSpace(username)
+	rawKey = strings.TrimSpace(rawKey)
+
+	// Both must be set, or neither.
+	if username == "" && rawKey == "" {
+		return nil
+	}
+	if username == "" || rawKey == "" {
+		return fmt.Errorf(
+			"--admin-user and --admin-key must both be set")
 	}
 
-	// Validate that it parses as an SSH public key.
-	if _, _, _, _, err := gossh.ParseAuthorizedKey([]byte(raw)); err != nil {
+	pub, err := parsePublicKey(rawKey)
+	if err != nil {
 		return fmt.Errorf("invalid SSH public key: %w", err)
 	}
 
-	existing, err := repo.ListAdminKeys(context.Background())
-	if err != nil {
-		return err
-	}
-
-	for _, k := range existing {
-		if strings.TrimSpace(k) == raw {
-			logger.Println("admin key already present, skipping seed")
-			return nil
-		}
-	}
-
-	if err := repo.AddAdminKey(context.Background(), raw); err != nil {
-		return err
-	}
-
-	logger.Println("bootstrap: admin key added successfully")
+	server.SetBootstrapAdmin(username, pub)
+	logger.Printf(
+		"bootstrap admin configured: user=%q", username)
 	return nil
+}
+
+// parsePublicKey extracts the public key from an authorized_key line.
+func parsePublicKey(raw string) (gossh.PublicKey, error) {
+	pub, _, _, _, err := gossh.ParseAuthorizedKey([]byte(raw)) //nolint:dogsled // SSH parsing returns 5 values
+	return pub, err
 }
