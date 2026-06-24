@@ -1,0 +1,11 @@
+[tasks.test]
+description = "Run all unit tests"
+run = "go test ./..."
+
+[tasks.lint]
+description = "Run linter"
+run = "golangci-lint run"
+
+[tasks.run]
+description = "Run the application"
+run = "go run cmd/proxpass/main.go"
