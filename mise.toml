@@ -19,6 +19,10 @@ run = "go test -v -count=1 -cover -coverprofile=coverage.out -covermode=atomic .
 description = "Run GoReleaser (snapshot)"
 run = "goreleaser release --snapshot --clean"
 
+[tasks.demo]
+description = "Run the demo server with mock Proxmox"
+run = "go run ./cmd/proxpass-demo"
+
 [tasks.clean]
 description = "Remove build artifacts"
-run = "rm -rf proxpass dist coverage.out"
+run = "rm -rf proxpass proxpass-demo dist coverage.out"
