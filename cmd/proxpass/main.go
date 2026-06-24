@@ -104,8 +104,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 
 	// Wire up the TUI factory so the SSH admin handler can
 	// create TUI models.
+	df := proxmox.DefaultDiscovererFactory
 	proxssh.SetTUIFactory(func(r db.Repository) tea.Model {
-		return tui.NewModel(r)
+		return tui.NewModel(r, df)
 	})
 
 	// Create services.

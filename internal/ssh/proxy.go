@@ -140,6 +140,8 @@ func handleClientSession(
 // proxyToGuest connects to the Proxmox host via SSH, starts the appropriate
 // console command, and copies data bidirectionally between the client channel
 // and the remote session.
+//
+//nolint:gocognit // SSH proxy requires sequential setup of pipes, goroutines, and teardown
 func proxyToGuest(
 	clientChan gossh.Channel,
 	clientReqs <-chan *gossh.Request,
@@ -213,34 +215,47 @@ func proxyToGuest(
 		return fmt.Errorf("starting command %q: %w", cmd, err)
 	}
 
+	done := make(chan struct{})
 	var wg sync.WaitGroup
 
 	// Forward window-change requests from the client to the remote session.
+	// Uses select on done so we don't block on clientReqs, which isn't closed
+	// until after proxyToGuest returns (the bridge channel is closed in admin.go).
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for req := range clientReqs {
-			switch req.Type {
-			case "window-change":
-				w, h, err := parseWindowChange(req.Payload)
-				if err == nil {
-					_ = session.WindowChange(int(h), int(w))
+		for {
+			select {
+			case <-done:
+				return
+			case req, ok := <-clientReqs:
+				if !ok {
+					return
 				}
-				if req.WantReply {
-					_ = req.Reply(err == nil, nil)
-				}
-			default:
-				if req.WantReply {
-					_ = req.Reply(false, nil)
+				switch req.Type {
+				case "window-change":
+					w, h, parseErr := parseWindowChange(req.Payload)
+					if parseErr == nil {
+						_ = session.WindowChange(int(h), int(w))
+					}
+					if req.WantReply {
+						_ = req.Reply(parseErr == nil, nil)
+					}
+				default:
+					if req.WantReply {
+						_ = req.Reply(false, nil)
+					}
 				}
 			}
 		}
 	}()
 
-	// client → remote stdin
-	wg.Add(1)
+	// client → remote stdin.
+	// NOT in the WaitGroup: clientChan.Read blocks until the admin session
+	// closes the channel, which happens after proxyToGuest returns.
+	// When we close remoteStdin below the goroutine's next Write will fail
+	// and it will exit.
 	go func() {
-		defer wg.Done()
 		_, _ = io.Copy(remoteStdin, clientChan)
 		_ = remoteStdin.Close()
 	}()
@@ -260,10 +275,11 @@ func proxyToGuest(
 	}()
 
 	err = session.Wait()
-	// Close the remote session and SSH client to unblock the
-	// io.Copy goroutines. We do NOT close clientChan here so
-	// that the admin handler can reuse the channel for the TUI
-	// after the proxy session ends.
+	// Signal the request-forwarding goroutine and tear down the remote
+	// side.  We do NOT close clientChan so the admin handler can reuse
+	// the channel for the TUI after the proxy session ends.
+	close(done)
+	_ = remoteStdin.Close()
 	_ = session.Close()
 	_ = client.Close()
 	wg.Wait()

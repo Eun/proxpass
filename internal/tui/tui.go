@@ -13,6 +13,7 @@ import (
 
 	"proxpass/internal/db"
 	"proxpass/internal/models"
+	"proxpass/internal/proxmox"
 )
 
 // ---------------------------------------------------------------------------
@@ -94,8 +95,9 @@ type doneMsg struct{} // generic "operation succeeded"
 
 // Model is the top-level Bubble Tea model for the admin TUI.
 type Model struct {
-	repo db.Repository
-	ctx  context.Context
+	repo              db.Repository
+	discovererFactory proxmox.DiscovererFactory
+	ctx               context.Context
 
 	// Navigation
 	state  viewState
@@ -128,11 +130,12 @@ type Model struct {
 }
 
 // NewModel creates a new TUI model backed by the given repository.
-func NewModel(repo db.Repository) *Model {
+func NewModel(repo db.Repository, df proxmox.DiscovererFactory) *Model {
 	return &Model{
-		repo:  repo,
-		ctx:   context.Background(),
-		state: viewMenu,
+		repo:              repo,
+		discovererFactory: df,
+		ctx:               context.Background(),
+		state:             viewMenu,
 	}
 }
 
@@ -746,6 +749,36 @@ func (m *Model) addInstance(inst *models.ProxmoxInstance) tea.Cmd {
 		if err := m.repo.AddProxmoxInstance(m.ctx, inst); err != nil {
 			return errMsg{err}
 		}
+
+		// Re-read instances to get the assigned ID.
+		instances, err := m.repo.ListProxmoxInstances(m.ctx)
+		if err != nil {
+			return errMsg{err}
+		}
+		var added *models.ProxmoxInstance
+		for _, i := range instances {
+			if i.Name == inst.Name {
+				added = i
+			}
+		}
+		if added == nil {
+			return doneMsg{}
+		}
+
+		// Run discovery on the new instance so guests appear immediately.
+		if m.discovererFactory != nil {
+			discoverer := m.discovererFactory(added)
+			guests, err := discoverer.DiscoverGuests(m.ctx)
+			if err != nil {
+				// Non-fatal — instance was added, discovery failed.
+				return doneMsg{}
+			}
+			for _, g := range guests {
+				g.InstanceID = added.ID
+				_ = m.repo.UpsertGuest(m.ctx, g)
+			}
+		}
+
 		return doneMsg{}
 	}
 }
@@ -1061,7 +1094,7 @@ func (m *Model) viewInputForm(b *strings.Builder) {
 // RunTUI starts the admin TUI with custom input/output streams.
 // This is designed to be called from the SSH server for admin sessions.
 func RunTUI(repo db.Repository, input io.Reader, output io.Writer) error {
-	m := NewModel(repo)
+	m := NewModel(repo, nil)
 	p := tea.NewProgram(m, tea.WithInput(input), tea.WithOutput(output), tea.WithAltScreen())
 	_, err := p.Run()
 	return err
