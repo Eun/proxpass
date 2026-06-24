@@ -31,7 +31,16 @@ func TestProxmoxInstances(t *testing.T) {
 	repo := newTestRepo(t)
 	ctx := context.Background()
 
-	inst := &models.ProxmoxInstance{Hostname: "pve1.local", Port: 8006, APIKey: "secret"}
+	inst := &models.ProxmoxInstance{
+		Name:           "pve1",
+		APIURL:         "https://pve1.local:8006",
+		APITokenID:     "user@pam!token",
+		APITokenSecret: "secret",
+		SSHHost:        "pve1.local",
+		SSHPort:        22,
+		SSHUser:        "root",
+		SSHKeyPath:     "/tmp/key",
+	}
 	if err := repo.AddProxmoxInstance(ctx, inst); err != nil {
 		t.Fatal(err)
 	}
@@ -43,17 +52,17 @@ func TestProxmoxInstances(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 1 || list[0].Hostname != "pve1.local" {
+	if len(list) != 1 || list[0].Name != "pve1" {
 		t.Fatalf("unexpected list: %+v", list)
 	}
 
-	inst.Hostname = "pve1-updated.local"
+	inst.Name = "pve1-updated"
 	if err := repo.UpdateProxmoxInstance(ctx, inst); err != nil {
 		t.Fatal(err)
 	}
 
 	list, _ = repo.ListProxmoxInstances(ctx)
-	if list[0].Hostname != "pve1-updated.local" {
+	if list[0].Name != "pve1-updated" {
 		t.Fatalf("update failed: %+v", list[0])
 	}
 

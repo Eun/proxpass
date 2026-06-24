@@ -1,175 +1,161 @@
 package proxmox
 
 import (
+	"context"
+	"crypto/tls"
+	"encoding/json"
 	"fmt"
-	"net"
-	"os"
-	"strconv"
+	"io"
+	"net/http"
 	"strings"
-
-	"golang.org/x/crypto/ssh"
 
 	"proxpass/internal/models"
 )
 
-// Client holds an SSH connection to a single Proxmox host and exposes
-// methods to discover guests running on that host.
-type Client struct {
-	inst   *models.ProxmoxInstance
-	sshCli *ssh.Client
+// APIClient communicates with the Proxmox VE REST API.
+type APIClient struct {
+	baseURL     string
+	tokenID     string
+	tokenSecret string
+	httpClient  *http.Client
 }
 
-// NewClient connects to the Proxmox host described by inst using the SSH
-// private key located at inst.APIKey.
-func NewClient(inst *models.ProxmoxInstance) (*Client, error) {
-	keyBytes, err := os.ReadFile(inst.APIKey)
-	if err != nil {
-		return nil, fmt.Errorf("read ssh key %s: %w", inst.APIKey, err)
-	}
-
-	signer, err := ssh.ParsePrivateKey(keyBytes)
-	if err != nil {
-		return nil, fmt.Errorf("parse ssh key %s: %w", inst.APIKey, err)
-	}
-
-	config := &ssh.ClientConfig{
-		User: "root",
-		Auth: []ssh.AuthMethod{
-			ssh.PublicKeys(signer),
+// NewAPIClient creates an API client for the given Proxmox instance.
+func NewAPIClient(inst *models.ProxmoxInstance) *APIClient {
+	return &APIClient{
+		baseURL:     strings.TrimRight(inst.APIURL, "/"),
+		tokenID:     inst.APITokenID,
+		tokenSecret: inst.APITokenSecret,
+		httpClient: &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					InsecureSkipVerify: true, //nolint:gosec // Proxmox often uses self-signed certs
+				},
+			},
 		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // Proxmox host key verification is not implemented yet
 	}
-
-	addr := net.JoinHostPort(inst.Hostname, strconv.Itoa(inst.Port))
-	sshCli, err := ssh.Dial("tcp", addr, config)
-	if err != nil {
-		return nil, fmt.Errorf("ssh dial %s: %w", addr, err)
-	}
-
-	return &Client{inst: inst, sshCli: sshCli}, nil
 }
 
-// DiscoverGuests runs `pct list` and `qm list` on the Proxmox host and
-// returns the combined set of Guest structs.
-func (c *Client) DiscoverGuests() ([]*models.Guest, error) {
+// DiscoverGuests queries the Proxmox API for all nodes, then fetches LXC
+// containers and QEMU VMs from each node, returning the combined guest list.
+func (c *APIClient) DiscoverGuests(ctx context.Context) ([]*models.Guest, error) {
+	nodes, err := c.getNodes(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get nodes: %w", err)
+	}
+
 	var guests []*models.Guest
+	for _, node := range nodes {
+		cts, err := c.getNodeGuests(ctx, node, "lxc", models.GuestTypeCT)
+		if err != nil {
+			return nil, fmt.Errorf("get lxc on node %s: %w", node, err)
+		}
+		guests = append(guests, cts...)
 
-	// --- LXC containers via pct list ---
-	pctOut, err := c.runCommand("pct list")
-	if err != nil {
-		return nil, fmt.Errorf("pct list: %w", err)
+		vms, err := c.getNodeGuests(ctx, node, "qemu", models.GuestTypeVM)
+		if err != nil {
+			return nil, fmt.Errorf("get qemu on node %s: %w", node, err)
+		}
+		guests = append(guests, vms...)
 	}
-	cts := parsePctList(pctOut)
-	guests = append(guests, cts...)
-
-	// --- QEMU VMs via qm list ---
-	qmOut, err := c.runCommand("qm list")
-	if err != nil {
-		return nil, fmt.Errorf("qm list: %w", err)
-	}
-	vms := parseQmList(qmOut)
-	guests = append(guests, vms...)
 
 	return guests, nil
 }
 
-// Close closes the underlying SSH connection.
-func (c *Client) Close() error {
-	return c.sshCli.Close()
+// --- Proxmox API response structures ---
+
+type nodesResponse struct {
+	Data []nodeEntry `json:"data"`
 }
 
-// runCommand executes a command on the remote host and returns the combined
-// stdout output as a string.
-func (c *Client) runCommand(cmd string) (string, error) {
-	sess, err := c.sshCli.NewSession()
-	if err != nil {
-		return "", fmt.Errorf("new session: %w", err)
-	}
-	defer func() { _ = sess.Close() }()
-
-	out, err := sess.CombinedOutput(cmd)
-	if err != nil {
-		return "", fmt.Errorf("run %q: %w (output: %s)", cmd, err, string(out))
-	}
-	return string(out), nil
+type nodeEntry struct {
+	Node   string `json:"node"`
+	Status string `json:"status"`
 }
 
-// parsePctList parses the tabular output of `pct list`.
-//
-// Expected format:
-//
-//	VMID       Status     Lock         Name
-//	100        running                 mycontainer
-//	101        stopped                 another
-func parsePctList(output string) []*models.Guest {
-	var guests []*models.Guest
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-	if len(lines) <= 1 {
-		// Header only or empty — no containers.
-		return guests
+type guestsResponse struct {
+	Data []guestEntry `json:"data"`
+}
+
+type guestEntry struct {
+	VMID   int    `json:"vmid"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+// --- internal helpers ---
+
+// doGet performs an authenticated GET and returns the response body.
+func (c *APIClient) doGet(ctx context.Context, path string) ([]byte, error) {
+	url := c.baseURL + path
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+	if err != nil {
+		return nil, fmt.Errorf("new request %s: %w", url, err)
+	}
+	req.Header.Set("Authorization",
+		fmt.Sprintf("PVEAPIToken=%s=%s", c.tokenID, c.tokenSecret))
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("GET %s: %w", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read body %s: %w", url, err)
 	}
 
-	for _, line := range lines[1:] {
-		fields := strings.Fields(line)
-		if len(fields) < 3 {
-			continue
-		}
-		vmid, err := strconv.Atoi(fields[0])
-		if err != nil {
-			continue
-		}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET %s: status %d: %s", url, resp.StatusCode, string(body))
+	}
 
-		status := normalizeStatus(fields[1])
+	return body, nil
+}
 
-		// Name is the last field; the Lock column may be empty, which
-		// causes the field count to vary.
-		name := fields[len(fields)-1]
+// getNodes returns the list of node names from the cluster.
+func (c *APIClient) getNodes(ctx context.Context) ([]string, error) {
+	body, err := c.doGet(ctx, "/api2/json/nodes")
+	if err != nil {
+		return nil, err
+	}
 
+	var resp nodesResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("decode nodes response: %w", err)
+	}
+
+	names := make([]string, 0, len(resp.Data))
+	for _, n := range resp.Data {
+		names = append(names, n.Node)
+	}
+	return names, nil
+}
+
+// getNodeGuests fetches guests of a given kind ("lxc" or "qemu") from a node.
+func (c *APIClient) getNodeGuests(ctx context.Context, node, kind string, guestType models.GuestType) ([]*models.Guest, error) {
+	path := fmt.Sprintf("/api2/json/nodes/%s/%s", node, kind)
+	body, err := c.doGet(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp guestsResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("decode %s response for node %s: %w", kind, node, err)
+	}
+
+	guests := make([]*models.Guest, 0, len(resp.Data))
+	for _, entry := range resp.Data {
 		guests = append(guests, &models.Guest{
-			Type:      models.GuestTypeCT,
-			ProxmoxID: vmid,
-			Name:      name,
-			Status:    status,
+			Type:      guestType,
+			ProxmoxID: entry.VMID,
+			Name:      entry.Name,
+			Status:    normalizeStatus(entry.Status),
 		})
 	}
-	return guests
-}
-
-// parseQmList parses the tabular output of `qm list`.
-//
-// Expected format:
-//
-//	VMID NAME                 STATUS     MEM(MB)    BOOTDISK(GB) PID
-//	 200 myvm                 running    2048              32.00 12345
-//	 201 othervm              stopped    1024              20.00 0
-func parseQmList(output string) []*models.Guest {
-	var guests []*models.Guest
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-	if len(lines) <= 1 {
-		return guests
-	}
-
-	for _, line := range lines[1:] {
-		fields := strings.Fields(line)
-		if len(fields) < 3 {
-			continue
-		}
-		vmid, err := strconv.Atoi(fields[0])
-		if err != nil {
-			continue
-		}
-
-		name := fields[1]
-		status := normalizeStatus(fields[2])
-
-		guests = append(guests, &models.Guest{
-			Type:      models.GuestTypeVM,
-			ProxmoxID: vmid,
-			Name:      name,
-			Status:    status,
-		})
-	}
-	return guests
+	return guests, nil
 }
 
 // normalizeStatus maps a raw status string to one of the known Status

@@ -148,18 +148,18 @@ func proxyToGuest(
 	_ *log.Logger,
 ) error {
 	// Load the private key for the Proxmox host.
-	keyBytes, err := os.ReadFile(inst.APIKey)
+	keyBytes, err := os.ReadFile(inst.SSHKeyPath)
 	if err != nil {
-		return fmt.Errorf("reading proxmox key %s: %w", inst.APIKey, err)
+		return fmt.Errorf("reading proxmox key %s: %w", inst.SSHKeyPath, err)
 	}
 	signer, err := gossh.ParsePrivateKey(keyBytes)
 	if err != nil {
 		return fmt.Errorf("parsing proxmox key: %w", err)
 	}
 
-	addr := net.JoinHostPort(inst.Hostname, strconv.Itoa(inst.Port))
+	addr := net.JoinHostPort(inst.SSHHost, strconv.Itoa(inst.SSHPort))
 	config := &gossh.ClientConfig{
-		User:            "root",
+		User:            inst.SSHUser,
 		Auth:            []gossh.AuthMethod{gossh.PublicKeys(signer)},
 		HostKeyCallback: gossh.InsecureIgnoreHostKey(), //nolint:gosec // Proxmox host verification is out of scope.
 	}

@@ -24,9 +24,14 @@ func NewSQLiteRepository(dbPath string) (Repository, error) {
 	schema := []string{
 		`CREATE TABLE IF NOT EXISTS proxmox_instances (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			hostname TEXT NOT NULL,
-			port INTEGER NOT NULL,
-			api_key TEXT NOT NULL
+			name TEXT NOT NULL,
+			api_url TEXT NOT NULL,
+			api_token_id TEXT NOT NULL,
+			api_token_secret TEXT NOT NULL,
+			ssh_host TEXT NOT NULL,
+			ssh_port INTEGER NOT NULL,
+			ssh_user TEXT NOT NULL,
+			ssh_key_path TEXT NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS guests (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,8 +86,12 @@ func (r *sqliteRepo) Close() error {
 
 func (r *sqliteRepo) AddProxmoxInstance(ctx context.Context, inst *models.ProxmoxInstance) error {
 	res, err := r.db.ExecContext(ctx,
-		"INSERT INTO proxmox_instances (hostname, port, api_key) VALUES (?, ?, ?)",
-		inst.Hostname, inst.Port, inst.APIKey)
+		`INSERT INTO proxmox_instances
+		(name, api_url, api_token_id, api_token_secret, ssh_host, ssh_port, ssh_user, ssh_key_path)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		inst.Name, inst.APIURL, inst.APITokenID, inst.APITokenSecret,
+		inst.SSHHost, inst.SSHPort, inst.SSHUser, inst.SSHKeyPath,
+	)
 	if err != nil {
 		return err
 	}
@@ -91,7 +100,10 @@ func (r *sqliteRepo) AddProxmoxInstance(ctx context.Context, inst *models.Proxmo
 }
 
 func (r *sqliteRepo) ListProxmoxInstances(ctx context.Context) ([]*models.ProxmoxInstance, error) {
-	rows, err := r.db.QueryContext(ctx, "SELECT id, hostname, port, api_key FROM proxmox_instances")
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, name, api_url, api_token_id, api_token_secret,
+		ssh_host, ssh_port, ssh_user, ssh_key_path
+		FROM proxmox_instances`)
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +111,12 @@ func (r *sqliteRepo) ListProxmoxInstances(ctx context.Context) ([]*models.Proxmo
 	var list []*models.ProxmoxInstance
 	for rows.Next() {
 		inst := &models.ProxmoxInstance{}
-		if err := rows.Scan(&inst.ID, &inst.Hostname, &inst.Port, &inst.APIKey); err != nil {
+		if err := rows.Scan(
+			&inst.ID, &inst.Name, &inst.APIURL,
+			&inst.APITokenID, &inst.APITokenSecret,
+			&inst.SSHHost, &inst.SSHPort, &inst.SSHUser,
+			&inst.SSHKeyPath,
+		); err != nil {
 			return nil, err
 		}
 		list = append(list, inst)
@@ -109,8 +126,15 @@ func (r *sqliteRepo) ListProxmoxInstances(ctx context.Context) ([]*models.Proxmo
 
 func (r *sqliteRepo) UpdateProxmoxInstance(ctx context.Context, inst *models.ProxmoxInstance) error {
 	_, err := r.db.ExecContext(ctx,
-		"UPDATE proxmox_instances SET hostname = ?, port = ?, api_key = ? WHERE id = ?",
-		inst.Hostname, inst.Port, inst.APIKey, inst.ID)
+		`UPDATE proxmox_instances SET
+		name = ?, api_url = ?, api_token_id = ?,
+		api_token_secret = ?, ssh_host = ?, ssh_port = ?,
+		ssh_user = ?, ssh_key_path = ?
+		WHERE id = ?`,
+		inst.Name, inst.APIURL, inst.APITokenID,
+		inst.APITokenSecret, inst.SSHHost, inst.SSHPort,
+		inst.SSHUser, inst.SSHKeyPath, inst.ID,
+	)
 	return err
 }
 

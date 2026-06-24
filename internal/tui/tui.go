@@ -336,7 +336,12 @@ func (m *Model) startAdd() (tea.Model, tea.Cmd) {
 	//nolint:exhaustive // only list views support add
 	switch m.state {
 	case viewInstances:
-		m.inputs = makeInputs("Hostname", "Port", "API Key")
+		m.inputs = makeInputs(
+			"Name", "API URL", "API Token ID",
+			"API Token Secret",
+			"SSH Host", "SSH Port", "SSH User",
+			"SSH Key Path",
+		)
 		m.state = viewAddInstance
 	case viewClients:
 		m.inputs = makeInputs("Client Name", "Public Key")
@@ -436,19 +441,36 @@ func (m *Model) submitAdd() (tea.Model, tea.Cmd) {
 	//nolint:exhaustive // only list-view parents are valid submit targets
 	switch parent {
 	case viewInstances:
-		hostname := strings.TrimSpace(m.inputs[0].Value())
-		portStr := strings.TrimSpace(m.inputs[1].Value())
-		apiKey := strings.TrimSpace(m.inputs[2].Value())
-		port, err := strconv.Atoi(portStr)
+		name := strings.TrimSpace(m.inputs[0].Value())
+		apiURL := strings.TrimSpace(m.inputs[1].Value())
+		tokenID := strings.TrimSpace(m.inputs[2].Value())
+		tokenSecret := strings.TrimSpace(m.inputs[3].Value())
+		sshHost := strings.TrimSpace(m.inputs[4].Value())
+		sshPortStr := strings.TrimSpace(m.inputs[5].Value())
+		sshUser := strings.TrimSpace(m.inputs[6].Value())
+		sshKeyPath := strings.TrimSpace(m.inputs[7].Value())
+		sshPort, err := strconv.Atoi(sshPortStr)
 		if err != nil {
-			m.statusMsg = "Invalid port number"
+			m.statusMsg = "Invalid SSH port number"
 			return m, nil
 		}
-		if hostname == "" || apiKey == "" {
-			m.statusMsg = "Hostname and API key are required"
+		if name == "" || apiURL == "" || tokenID == "" ||
+			tokenSecret == "" || sshHost == "" ||
+			sshUser == "" || sshKeyPath == "" {
+			m.statusMsg = "All fields are required"
 			return m, nil
 		}
-		cmd := m.addInstance(hostname, port, apiKey)
+		inst := &models.ProxmoxInstance{
+			Name:           name,
+			APIURL:         apiURL,
+			APITokenID:     tokenID,
+			APITokenSecret: tokenSecret,
+			SSHHost:        sshHost,
+			SSHPort:        sshPort,
+			SSHUser:        sshUser,
+			SSHKeyPath:     sshKeyPath,
+		}
+		cmd := m.addInstance(inst)
 		return m, cmd
 
 	case viewClients:
@@ -705,9 +727,8 @@ func (m *Model) fetchDefaultPolicy() tea.Cmd {
 	}
 }
 
-func (m *Model) addInstance(hostname string, port int, apiKey string) tea.Cmd {
+func (m *Model) addInstance(inst *models.ProxmoxInstance) tea.Cmd {
 	return func() tea.Msg {
-		inst := &models.ProxmoxInstance{Hostname: hostname, Port: port, APIKey: apiKey}
 		if err := m.repo.AddProxmoxInstance(m.ctx, inst); err != nil {
 			return errMsg{err}
 		}
@@ -867,7 +888,7 @@ func (m *Model) viewInstances(b *strings.Builder) {
 			cursor = "> "
 			style = selectedStyle
 		}
-		line := fmt.Sprintf("[%d] %s:%d", inst.ID, inst.Hostname, inst.Port)
+		line := fmt.Sprintf("[%d] %s", inst.ID, inst.Name)
 		b.WriteString(cursor + style.Render(line) + "\n")
 	}
 	b.WriteString("\n" + helpStyle.Render("a: add • d: delete • esc: back • q: menu") + "\n")

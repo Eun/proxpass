@@ -71,7 +71,7 @@ func (d *Discovery) RunOnce(ctx context.Context) error {
 			return err
 		}
 		if err := d.discoverInstance(ctx, inst); err != nil {
-			d.logger.Printf("discovery: instance %s (id=%d): %v", inst.Hostname, inst.ID, err)
+			d.logger.Printf("discovery: instance %s (id=%d): %v", inst.Name, inst.ID, err)
 			lastErr = err
 		}
 	}
@@ -81,18 +81,14 @@ func (d *Discovery) RunOnce(ctx context.Context) error {
 // discoverInstance connects to a single Proxmox host, discovers its guests,
 // and upserts them into the database.
 func (d *Discovery) discoverInstance(ctx context.Context, inst *models.ProxmoxInstance) error {
-	client, err := NewClient(inst)
-	if err != nil {
-		return fmt.Errorf("connect to %s: %w", inst.Hostname, err)
-	}
-	defer func() { _ = client.Close() }()
+	client := NewAPIClient(inst)
 
-	guests, err := client.DiscoverGuests()
+	guests, err := client.DiscoverGuests(ctx)
 	if err != nil {
-		return fmt.Errorf("discover guests on %s: %w", inst.Hostname, err)
+		return fmt.Errorf("discover guests on %s: %w", inst.Name, err)
 	}
 
-	d.logger.Printf("discovery: instance %s: found %d guests", inst.Hostname, len(guests))
+	d.logger.Printf("discovery: instance %s: found %d guests", inst.Name, len(guests))
 
 	for _, g := range guests {
 		if err := ctx.Err(); err != nil {

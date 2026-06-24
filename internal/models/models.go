@@ -15,10 +15,15 @@ const (
 )
 
 type ProxmoxInstance struct {
-	ID       int64  `json:"id"`
-	Hostname string `json:"hostname"`
-	Port     int    `json:"port"`
-	APIKey   string `json:"api_key"`
+	ID             int64  `json:"id"`
+	Name           string `json:"name"`
+	APIURL         string `json:"api_url"`
+	APITokenID     string `json:"api_token_id"`
+	APITokenSecret string `json:"api_token_secret"`
+	SSHHost        string `json:"ssh_host"`
+	SSHPort        int    `json:"ssh_port"`
+	SSHUser        string `json:"ssh_user"`
+	SSHKeyPath     string `json:"ssh_key_path"`
 }
 
 type Guest struct {
