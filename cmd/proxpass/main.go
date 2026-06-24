@@ -7,10 +7,12 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	gossh "golang.org/x/crypto/ssh"
 
 	"proxpass/internal/db"
 	"proxpass/internal/proxmox"
@@ -31,6 +33,9 @@ func main() {
 	dataPath := flag.String("data", envOrDefault("PROXPASS_DATA", "./proxpass.db"), "path to SQLite database")
 	discoveryIntervalStr := flag.String("discovery-interval", envOrDefault("PROXPASS_DISCOVERY_INTERVAL", "5m"), "discovery poll interval")
 	logLevel := flag.String("log-level", envOrDefault("PROXPASS_LOG_LEVEL", "info"), "log level (debug, info, warn, error)")
+	adminKey := flag.String("admin-key",
+		envOrDefault("PROXPASS_ADMIN_KEY", ""),
+		"bootstrap admin public key (added if no admin keys exist)")
 	flag.Parse()
 
 	discoveryInterval, err := time.ParseDuration(*discoveryIntervalStr)
@@ -49,6 +54,21 @@ func main() {
 		logger.Fatalf("failed to open database: %v", err)
 	}
 	defer func() { _ = repo.Close() }()
+
+	// Bootstrap: seed an admin key if the database has none.
+	if *adminKey != "" {
+		if err := seedAdminKey(repo, *adminKey, logger); err != nil {
+			logger.Fatalf("failed to seed admin key: %v", err)
+		}
+	} else {
+		keys, err := repo.ListAdminKeys(context.Background())
+		if err != nil {
+			logger.Fatalf("failed to list admin keys: %v", err)
+		}
+		if len(keys) == 0 {
+			logger.Println("WARNING: no admin keys configured. Use --admin-key or PROXPASS_ADMIN_KEY to bootstrap.")
+		}
+	}
 
 	// Wire up the TUI factory so the SSH admin handler can create TUI models.
 	proxssh.SetTUIFactory(func(r db.Repository) tea.Model {
@@ -74,4 +94,36 @@ func main() {
 	}
 
 	logger.Println("shutting down")
+}
+
+// seedAdminKey validates and inserts an admin public key if not already present.
+func seedAdminKey(repo db.Repository, raw string, logger *log.Logger) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fmt.Errorf("admin key is empty")
+	}
+
+	// Validate that it parses as an SSH public key.
+	if _, _, _, _, err := gossh.ParseAuthorizedKey([]byte(raw)); err != nil {
+		return fmt.Errorf("invalid SSH public key: %w", err)
+	}
+
+	existing, err := repo.ListAdminKeys(context.Background())
+	if err != nil {
+		return err
+	}
+
+	for _, k := range existing {
+		if strings.TrimSpace(k) == raw {
+			logger.Println("admin key already present, skipping seed")
+			return nil
+		}
+	}
+
+	if err := repo.AddAdminKey(context.Background(), raw); err != nil {
+		return err
+	}
+
+	logger.Println("bootstrap: admin key added successfully")
+	return nil
 }
