@@ -1,13 +1,14 @@
 # ProxPass
 
-A standalone SSH proxy for Proxmox VE that routes client connections to LXC containers and QEMU virtual machines. Administrators manage access through an interactive TUI delivered over SSH.
+A standalone SSH proxy for Proxmox VE that routes client connections to LXC containers and QEMU virtual machines. Administrators manage access through a CLI delivered over SSH.
 
 ## Features
 
 - **SSH Proxy** — Clients SSH in and are transparently proxied to Proxmox guests (`pct enter` for containers, `qm terminal` for VMs)
 - **Public Key Authentication** — Both admin and client access is controlled via SSH public keys
-- **Auto-Discovery** — Periodically discovers containers and VMs from configured Proxmox hosts via `pct list` / `qm list`
-- **Admin TUI** — Full Bubble Tea interactive console for managing instances, clients, groups, access rules, and admin keys
+- **Auto-Discovery** — Periodically discovers containers and VMs from configured Proxmox hosts via the REST API
+- **Admin CLI over SSH** — Full command-line interface for managing instances, clients, groups, access rules, and admin keys
+- **Flexible Guest Resolution** — Connect by VMID (`ssh 100@host`), type+VMID (`ssh ct100@host`), or name (`ssh webserver@host`)
 - **Access Control** — Per-client and per-group access rules with a global default policy fallback
 - **SQLite Storage** — Single-file embedded database, no external dependencies
 
@@ -17,14 +18,78 @@ A standalone SSH proxy for Proxmox VE that routes client connections to LXC cont
 # Build
 mise run build
 
-# Run with a flag-based admin key (active as long as the flag is set)
+# Run with a flag-based admin key
 ./proxpass --admin-key "$(cat ~/.ssh/id_ed25519.pub)"
 
-# Connect as admin (any SSH username works, identity is key-based)
+# Connect as admin and view help
 ssh -p 2222 admin@localhost
 ```
 
-Once connected to the TUI, add your public key as a persistent admin key in the database. After that the `--admin-key` flag is no longer required (but can be kept as a fallback).
+## Admin CLI
+
+The admin CLI is accessed over SSH. Commands are passed as the SSH exec command:
+
+```bash
+# List all commands
+ssh -p 2222 admin@proxpass
+
+# Manage Proxmox instances
+ssh -p 2222 admin@proxpass instance ls
+ssh -p 2222 admin@proxpass instance add \
+  --name pve1 \
+  --api-url https://pve:8006 \
+  --token-id "user@pam!token" \
+  --token-secret "uuid" \
+  --ssh-host pve1 \
+  --ssh-key-path /root/.ssh/id_ed25519
+ssh -p 2222 admin@proxpass instance rm --name pve1
+
+# List and connect to guests
+ssh -p 2222 admin@proxpass guest ls
+ssh -p 2222 admin@proxpass guest ls --json
+ssh -p 2222 admin@proxpass guest connect webserver
+ssh -p 2222 admin@proxpass guest connect 100
+ssh -p 2222 admin@proxpass guest connect ct100
+
+# Manage clients
+ssh -p 2222 admin@proxpass client ls
+ssh -p 2222 admin@proxpass client add --name alice \
+  --key "ssh-ed25519 AAAA..." --key "ssh-rsa AAAA..."
+ssh -p 2222 admin@proxpass client rm --name alice
+
+# Manage groups
+ssh -p 2222 admin@proxpass group ls
+ssh -p 2222 admin@proxpass group add --name developers \
+  --member alice --member bob
+ssh -p 2222 admin@proxpass group rm --name developers
+
+# Manage access rules
+ssh -p 2222 admin@proxpass access ls
+ssh -p 2222 admin@proxpass access grant \
+  --client alice --guest webserver
+ssh -p 2222 admin@proxpass access grant \
+  --group developers --guest devbox
+ssh -p 2222 admin@proxpass access revoke \
+  --client alice --guest webserver
+
+# Manage default policy
+ssh -p 2222 admin@proxpass policy ls
+ssh -p 2222 admin@proxpass policy add --client alice
+ssh -p 2222 admin@proxpass policy add --group developers
+ssh -p 2222 admin@proxpass policy rm --client alice
+
+# Manage admin keys
+ssh -p 2222 admin@proxpass admin-key ls
+ssh -p 2222 admin@proxpass admin-key add \
+  --key "ssh-ed25519 AAAA..."
+ssh -p 2222 admin@proxpass admin-key rm \
+  --key "ssh-ed25519 AAAA..."
+
+# Trigger discovery manually
+ssh -p 2222 admin@proxpass discover
+```
+
+All `ls` commands support `--json` for machine-readable output.
 
 ## Configuration
 
@@ -41,42 +106,37 @@ All flags can also be set via environment variables.
 
 ### Flag-based admin key
 
-The `--admin-key` flag accepts an SSH public key in `authorized_keys` format. When set, this key is treated as an admin key **for the lifetime of the process**, checked before any database lookup. This serves two purposes:
+The `--admin-key` flag accepts an SSH public key in `authorized_keys` format. When set, this key is treated as an admin key **for the lifetime of the process**, checked before any database lookup. Users are identified solely by their public key — the SSH username is not used for authentication.
 
-1. **Initial setup** — On a fresh database with no admin keys, this is the only way to connect and reach the TUI to persist keys.
-2. **Permanent override** — The key remains active as long as the flag (or `PROXPASS_ADMIN_KEY` env var) is present. Removing the flag revokes this access immediately.
+## Client Connections
 
-Users are identified solely by their public key — the SSH username is not used for authentication.
+Clients connect using the guest identifier as the SSH username:
 
 ```bash
-# Via flag
-./proxpass --admin-key "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA..."
+# By VMID
+ssh -p 2222 100@proxpass-host
 
-# Via environment variable
-export PROXPASS_ADMIN_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA..."
-./proxpass
+# By type+VMID (disambiguates collisions)
+ssh -p 2222 ct100@proxpass-host
+ssh -p 2222 vm200@proxpass-host
+
+# By name (case-insensitive)
+ssh -p 2222 webserver@proxpass-host
 ```
-
-## How It Works
-
-1. **Admin** connects via SSH with a recognized admin key → gets the Bubble Tea TUI
-2. **Admin** adds Proxmox instances (hostname + SSH key path) via the TUI
-3. **Discovery** periodically SSHes into each Proxmox host and runs `pct list` / `qm list`
-4. **Admin** adds clients (name + public key) and grants them access to specific guests
-5. **Client** connects via SSH using the guest name as the username: `ssh -p 2222 mycontainer@proxy-host`
-6. **Proxy** authenticates the client by key, checks access rules, then proxies the session to the Proxmox host
 
 ## Architecture
 
 ```
 proxpass/
 ├── cmd/proxpass/          # CLI entry point (urfave/cli v3)
+├── cmd/proxmox-mock/      # Mock Proxmox service for testing
 └── internal/
+    ├── cli/               # Admin CLI commands
     ├── models/            # Data types
     ├── db/                # SQLite repository
-    ├── proxmox/           # Proxmox SSH client & discovery
+    ├── proxmox/           # Proxmox API client & discovery
     ├── ssh/               # SSH server, auth, proxy
-    └── tui/               # Bubble Tea admin interface
+    └── testenv/           # Test infrastructure & mocks
 ```
 
 ## Access Control
@@ -101,6 +161,9 @@ mise run lint
 
 # Build
 mise run build
+
+# Run mock Proxmox service
+mise run mock
 
 # Snapshot release (local only)
 mise run release

@@ -10,14 +10,12 @@ import (
 	"syscall"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	cli "github.com/urfave/cli/v3"
 	gossh "golang.org/x/crypto/ssh"
 
 	"proxpass/internal/db"
 	"proxpass/internal/proxmox"
 	proxssh "proxpass/internal/ssh"
-	"proxpass/internal/tui"
 )
 
 func main() {
@@ -102,16 +100,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	}
 	defer func() { _ = repo.Close() }()
 
-	// Wire up the TUI factory so the SSH admin handler can
-	// create TUI models.
-	df := proxmox.DefaultDiscovererFactory
-	proxssh.SetTUIFactory(func(r db.Repository) tea.Model {
-		return tui.NewModel(r, df)
-	})
-
 	// Create services.
 	adminHandler := proxssh.DefaultAdminHandler(
-		tui.RunTUI, proxssh.DefaultProxier{}, logger)
+		proxssh.DefaultProxier{}, proxmox.DefaultDiscovererFactory, logger)
 	discovery := proxmox.NewDiscovery(
 		repo, discoveryInterval, logger, proxmox.DefaultDiscovererFactory)
 	server := proxssh.NewServer(

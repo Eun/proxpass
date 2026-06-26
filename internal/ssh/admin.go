@@ -3,71 +3,31 @@ package ssh
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
-	"sync"
+	"strings"
 
+	"proxpass/internal/cli"
 	"proxpass/internal/db"
-	"proxpass/internal/models"
+	"proxpass/internal/proxmox"
 
-	tea "github.com/charmbracelet/bubbletea"
 	gossh "golang.org/x/crypto/ssh"
 )
 
 // AdminSessionHandler is called for every authenticated admin session.
-// It receives the raw SSH channel and request stream.
 type AdminSessionHandler func(channel gossh.Channel, reqs <-chan *gossh.Request, repo db.Repository)
 
-// GuestSelector is implemented by the TUI model to indicate whether
-// the admin selected a guest for connection. Defined here to avoid
-// importing the tui package (which would create an import cycle).
-type GuestSelector interface {
-	GetSelectedGuest() *models.Guest
-}
-
-// reqBridge reads from the original SSH request channel and forwards each
-// request to whichever consumer is currently active. Consumers are swapped
-// atomically via set(). When no consumer is set, requests that require a
-// reply are rejected.
-type reqBridge struct {
-	mu      sync.Mutex
-	current chan *gossh.Request
-}
-
-func (b *reqBridge) set(ch chan *gossh.Request) {
-	b.mu.Lock()
-	b.current = ch
-	b.mu.Unlock()
-}
-
-func (b *reqBridge) run(source <-chan *gossh.Request) {
-	for req := range source {
-		b.mu.Lock()
-		ch := b.current
-		b.mu.Unlock()
-		if ch != nil {
-			ch <- req
-		} else if req.WantReply {
-			_ = req.Reply(false, nil)
-		}
-	}
-}
-
-// DefaultAdminHandler returns an AdminSessionHandler that performs the SSH
-// pty-req / shell handshake, runs the TUI, and optionally proxies the admin
-// to a selected guest. When the proxy session ends the TUI is restarted,
-// forming a TUI → proxy → TUI loop until the admin quits normally.
-//
-//nolint:gocognit // SSH admin session handler requires deep branching for request types
-func DefaultAdminHandler(
-	_ func(repo db.Repository, input io.Reader, output io.Writer) error,
+// DefaultAdminHandler returns an AdminSessionHandler that runs
+// CLI commands received via SSH exec requests.
+func DefaultAdminHandler( //nolint:gocognit // SSH session handler
 	proxier GuestProxier,
+	discoverer proxmox.DiscovererFactory,
 	logger *log.Logger,
 ) AdminSessionHandler {
 	return func(channel gossh.Channel, reqs <-chan *gossh.Request, repo db.Repository) {
 		defer func() { _ = channel.Close() }()
 
-		// --- Handshake: collect pty-req, wait for shell/exec ---
+		// Wait for shell or exec request.
+		var execCmd string
 		var ptyReq *PtyRequest
 		var remaining <-chan *gossh.Request
 
@@ -87,14 +47,27 @@ func DefaultAdminHandler(
 					_ = req.Reply(true, nil)
 				}
 
-			case "shell", "exec":
+			case "exec":
 				if req.WantReply {
 					_ = req.Reply(true, nil)
 				}
-				// Remaining requests on this channel (e.g. window-change)
-				// will be dispatched through the reqBridge below.
+				// Parse command from exec payload: uint32 len + string
+				if len(req.Payload) >= 4 {
+					cmdLen := int(req.Payload[0])<<24 | int(req.Payload[1])<<16 | int(req.Payload[2])<<8 | int(req.Payload[3])
+					if len(req.Payload) >= 4+cmdLen {
+						execCmd = string(req.Payload[4 : 4+cmdLen])
+					}
+				}
 				remaining = reqs
-				goto sessionLoop
+				goto handleCommand
+
+			case "shell":
+				if req.WantReply {
+					_ = req.Reply(true, nil)
+				}
+				// Interactive shell — show help
+				remaining = reqs
+				goto handleCommand
 
 			default:
 				if req.WantReply {
@@ -102,119 +75,85 @@ func DefaultAdminHandler(
 				}
 			}
 		}
-		// Channel closed without a shell request — nothing to do.
 		return
 
-	sessionLoop:
-		// Start the persistent request bridge that fans out SSH
-		// requests to whichever consumer (TUI or proxy) is active.
-		bridge := &reqBridge{}
-		go bridge.run(remaining)
-
-		for {
-			// ---- Run the TUI ----
-			tuiReqs := make(chan *gossh.Request, 4)
-			bridge.set(tuiReqs)
-
-			m := tuiModelFactory(repo)
-			p := tea.NewProgram(m,
-				tea.WithInput(channel),
-				tea.WithOutput(channel),
-				tea.WithAltScreen(),
-			)
-
-			// Forward window-change requests to BubbleTea while the TUI
-			// is running.
-			go func() {
-				for req := range tuiReqs {
-					switch req.Type {
-					case "window-change":
-						w, h, err := parseWindowChange(req.Payload)
-						if err == nil {
-							p.Send(tea.WindowSizeMsg{
-								Width:  int(w),
-								Height: int(h),
-							})
-						}
-						if req.WantReply {
-							_ = req.Reply(err == nil, nil)
-						}
-					default:
-						if req.WantReply {
-							_ = req.Reply(false, nil)
-						}
-					}
-				}
-			}()
-
-			finalModel, err := p.Run()
-			// Stop the bridge from writing to the (about to be closed)
-			// tuiReqs channel, then close it to terminate the forwarder.
-			bridge.set(nil)
-			close(tuiReqs)
-
-			if err != nil {
-				logger.Printf("admin tui error: %v", err)
-				return
-			}
-
-			// Did the admin select a guest to connect to?
-			sel, ok := finalModel.(GuestSelector)
-			if !ok || sel.GetSelectedGuest() == nil {
-				return // normal quit
-			}
-
-			guest := sel.GetSelectedGuest()
-
-			// Resolve the Proxmox instance that owns this guest.
-			ctx := context.Background()
-			instances, err := repo.ListProxmoxInstances(ctx)
-			if err != nil {
-				logger.Printf("admin: failed to list instances: %v", err)
-				_, _ = fmt.Fprintf(channel.Stderr(), "internal error\r\n")
-				return
-			}
-			var inst *models.ProxmoxInstance
-			for _, i := range instances {
-				if i.ID == guest.InstanceID {
-					inst = i
-					break
+	handleCommand:
+		// Discard remaining requests in background
+		go func() {
+			for req := range remaining {
+				if req.WantReply {
+					_ = req.Reply(false, nil)
 				}
 			}
-			if inst == nil {
-				logger.Printf("admin: instance %d not found for guest %s", guest.InstanceID, guest.Name)
-				_, _ = fmt.Fprintf(channel.Stderr(), "instance not found\r\n")
-				return
-			}
+		}()
 
-			// ---- Proxy to the guest ----
+		deps := &cli.Deps{
+			Repo:       repo,
+			Discoverer: discoverer,
+			Out:        channel,
+			ErrOut:     channel.Stderr(),
+		}
+
+		var argv []string
+		if execCmd != "" {
+			// Split the exec command into argv
+			argv = append([]string{"proxpass"}, splitArgs(execCmd)...)
+		} else {
+			// Interactive shell — show usage
+			argv = []string{"proxpass", "--help"}
+		}
+
+		root := cli.Build(deps)
+		if err := root.Run(context.Background(), argv); err != nil {
+			_, _ = fmt.Fprintf(channel.Stderr(), "Error: %v\r\n", err)
+		}
+
+		// If guest connect was requested, proxy to the guest
+		if deps.ConnectRequest != nil {
 			_, _ = fmt.Fprintf(channel, "Connecting to %s (%s %d)...\r\n",
-				guest.Name, guest.Type, guest.ProxmoxID)
+				deps.ConnectRequest.Guest.Name,
+				deps.ConnectRequest.Guest.Type,
+				deps.ConnectRequest.Guest.ProxmoxID)
 
 			proxyReqs := make(chan *gossh.Request, 4)
-			bridge.set(proxyReqs)
+			// remaining is already being drained above; for proxy we
+			// don't need request forwarding since the CLI session is over
+			defer close(proxyReqs)
 
-			proxyErr := proxier.ProxyToGuest(channel, proxyReqs, guest, inst, ptyReq, logger)
-
-			bridge.set(nil)
-			close(proxyReqs)
-
-			if proxyErr != nil {
-				logger.Printf("admin: proxy error: %v", proxyErr)
+			if err := proxier.ProxyToGuest(
+				channel, proxyReqs,
+				deps.ConnectRequest.Guest,
+				deps.ConnectRequest.Instance,
+				ptyReq, logger,
+			); err != nil {
+				logger.Printf("admin: proxy error: %v", err)
 			}
-
-			// Loop back to restart the TUI.
 		}
 	}
 }
 
-// tuiModelFactory is a compile-time pluggable factory so that admin.go does
-// not import the tui package (which would create a cycle via db).  It is set
-// by the caller via SetTUIFactory.
-var tuiModelFactory func(repo db.Repository) tea.Model
+// splitArgs does a simple shell-like split of a command string.
+// It handles double-quoted strings but not single quotes or escapes.
+func splitArgs(s string) []string {
+	var args []string
+	var current strings.Builder
+	inQuote := false
 
-// SetTUIFactory installs the factory function used by DefaultAdminHandler to
-// create a new TUI model. Call this once from main before starting the server.
-func SetTUIFactory(f func(repo db.Repository) tea.Model) {
-	tuiModelFactory = f
+	for _, r := range s {
+		switch {
+		case r == '"':
+			inQuote = !inQuote
+		case r == ' ' && !inQuote:
+			if current.Len() > 0 {
+				args = append(args, current.String())
+				current.Reset()
+			}
+		default:
+			current.WriteRune(r)
+		}
+	}
+	if current.Len() > 0 {
+		args = append(args, current.String())
+	}
+	return args
 }
