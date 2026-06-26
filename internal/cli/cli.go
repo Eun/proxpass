@@ -30,8 +30,10 @@ type Deps struct {
 // The returned command is designed to be run inside an SSH exec session.
 func Build(deps *Deps) *ucli.Command {
 	return &ucli.Command{
-		Name:  "proxpass",
-		Usage: "ProxPass admin CLI",
+		Name:      "proxpass",
+		Usage:     "ProxPass admin CLI",
+		Writer:    deps.Out,
+		ErrWriter: deps.ErrOut,
 		Commands: []*ucli.Command{
 			instanceCmd(deps),
 			guestCmd(deps),
