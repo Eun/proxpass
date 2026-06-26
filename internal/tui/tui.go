@@ -161,6 +161,21 @@ func (m Model) Init() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// When a form is active, delegate everything to it.
 	if m.isInputState() && m.form != nil {
+		// Intercept Esc to cancel the form — huh only binds
+		// Quit to ctrl+c by default.
+		if keyMsg, ok := msg.(tea.KeyMsg); ok {
+			switch keyMsg.String() {
+			case "esc":
+				m.state = m.parentState()
+				m.form = nil
+				m.statusMsg = ""
+				return m, tea.Batch(
+					tea.ClearScreen, m.refreshCurrent())
+			case "ctrl+c":
+				return m, tea.Quit
+			}
+		}
+
 		model, cmd := m.form.Update(msg)
 		if f, ok := model.(*huh.Form); ok {
 			m.form = f
@@ -170,8 +185,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.form.State == huh.StateAborted {
 			m.state = m.parentState()
+			m.form = nil
 			m.statusMsg = ""
-			return m, tea.Batch(tea.ClearScreen, m.refreshCurrent())
+			return m, tea.Batch(
+				tea.ClearScreen, m.refreshCurrent())
 		}
 		return m, cmd
 	}
