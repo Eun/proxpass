@@ -32,7 +32,7 @@ func run0() int {
 			&cli.StringFlag{
 				Name:    "config",
 				Aliases: []string{"c"},
-				Usage:   "path to YAML config file",
+				Usage:   "path to YAML config file (default: proxmox-mock.yaml)",
 				Sources: cli.EnvVars("PROXMOX_MOCK_CONFIG"),
 			},
 		},
@@ -54,19 +54,15 @@ func run(_ context.Context, cmd *cli.Command) error {
 	logger := log.New(os.Stdout, "proxmox-mock: ", log.LstdFlags)
 
 	configPath := cmd.String("config")
-
-	var cfg *testenv.MockConfig
-	if configPath != "" {
-		var err error
-		cfg, err = testenv.LoadConfig(configPath)
-		if err != nil {
-			return fmt.Errorf("load config: %w", err)
-		}
-		logger.Printf("loaded config from %s", configPath)
-	} else {
-		cfg = testenv.DefaultConfig()
-		logger.Println("using built-in default config")
+	if configPath == "" {
+		configPath = "proxmox-mock.yaml"
 	}
+
+	cfg, err := testenv.LoadConfig(configPath)
+	if err != nil {
+		return fmt.Errorf("load config %s: %w", configPath, err)
+	}
+	logger.Printf("loaded config from %s", configPath)
 
 	// Start mock API server.
 	apiSrv := testenv.NewMockAPIServerStandalone(
