@@ -197,7 +197,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case doneMsg:
 		m.statusMsg = ""
-		return m, m.refreshCurrent()
+		return m, tea.Batch(tea.ClearScreen, m.refreshCurrent())
 	case errMsg:
 		m.statusMsg = "Error: " + msg.Error()
 		return m, nil
@@ -240,14 +240,14 @@ func (m *Model) updateNav(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.state = viewMenu
 		m.cursor = 0
 		m.statusMsg = ""
-		return m, nil
+		return m, tea.ClearScreen
 
 	case "esc", "backspace":
 		if m.state != viewMenu {
 			m.state = viewMenu
 			m.cursor = 0
 			m.statusMsg = ""
-			return m, nil
+			return m, tea.ClearScreen
 		}
 
 	case "up", "k":
@@ -307,38 +307,31 @@ func (m *Model) selectMenu() (tea.Model, tea.Cmd) {
 	case 0:
 		m.state = viewInstances
 		m.cursor = 0
-		cmd := m.fetchInstances()
-		return m, cmd
+		return m, tea.Batch(tea.ClearScreen, m.fetchInstances())
 	case 1:
 		m.state = viewGuests
 		m.cursor = 0
-		cmd := m.fetchGuests()
-		return m, cmd
+		return m, tea.Batch(tea.ClearScreen, m.fetchGuests())
 	case 2:
 		m.state = viewClients
 		m.cursor = 0
-		cmd := m.fetchClients()
-		return m, cmd
+		return m, tea.Batch(tea.ClearScreen, m.fetchClients())
 	case 3:
 		m.state = viewGroups
 		m.cursor = 0
-		cmd := m.fetchGroups()
-		return m, cmd
+		return m, tea.Batch(tea.ClearScreen, m.fetchGroups())
 	case 4:
 		m.state = viewAccessRules
 		m.cursor = 0
-		cmd := m.fetchAccessRules()
-		return m, cmd
+		return m, tea.Batch(tea.ClearScreen, m.fetchAccessRules())
 	case 5:
 		m.state = viewDefaultPolicy
 		m.cursor = 0
-		cmd := m.fetchDefaultPolicy()
-		return m, cmd
+		return m, tea.Batch(tea.ClearScreen, m.fetchDefaultPolicy())
 	case 6:
 		m.state = viewAdminKeys
 		m.cursor = 0
-		cmd := m.fetchAdminKeys()
-		return m, cmd
+		return m, tea.Batch(tea.ClearScreen, m.fetchAdminKeys())
 	case 7:
 		return m, tea.Quit
 	}
@@ -381,7 +374,7 @@ func (m *Model) startAdd() (tea.Model, tea.Cmd) {
 	m.inputStep = 0
 	m.inputDone = false
 	m.statusMsg = ""
-	return m, m.inputs[0].Focus()
+	return m, tea.Batch(tea.ClearScreen, m.inputs[0].Focus())
 }
 
 func makeInputs(placeholders ...string) []textinput.Model {
