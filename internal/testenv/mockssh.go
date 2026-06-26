@@ -225,17 +225,19 @@ func (m *MockSSHServer) handleExecCommand(ch gossh.Channel, cmd string) {
 		vmid := parts[2]
 		_, _ = fmt.Fprintf(ch,
 			"entering LXC container %s\r\n"+
+				"Type 'exit' or press Ctrl+D to disconnect.\r\n"+
 				"\r\n"+
 				"root@CT%s:~# ", vmid, vmid)
-		m.echoUntilEOF(ch)
+		m.lxcSession(ch, vmid)
 
 	case len(parts) == 3 && parts[0] == "qm" && parts[1] == "terminal":
 		vmid := parts[2]
 		_, _ = fmt.Fprintf(ch,
-			"starting serial terminal on VM %s (press Ctrl+O to exit)\r\n"+
+			"starting serial terminal on VM %s\r\n"+
+				"Press Ctrl+] to disconnect.\r\n"+
 				"\r\n"+
 				"login: ", vmid)
-		m.echoUntilEOF(ch)
+		m.vmSession(ch)
 
 	default:
 		_, _ = fmt.Fprintf(ch,
@@ -246,17 +248,61 @@ func (m *MockSSHServer) handleExecCommand(ch gossh.Channel, cmd string) {
 	_, _ = ch.SendRequest("exit-status", false, exitMsg)
 }
 
-// echoUntilEOF reads from the channel and echoes back until EOF.
-func (m *MockSSHServer) echoUntilEOF(ch gossh.Channel) {
-	buf := make([]byte, 1024)
+// lxcSession simulates a pct enter session. It collects input
+// line-by-line, echoes characters, and exits when the user types
+// "exit" or sends Ctrl+D (0x04).
+func (m *MockSSHServer) lxcSession(ch gossh.Channel, vmid string) {
+	var line []byte
+	buf := make([]byte, 1)
 	for {
 		n, err := ch.Read(buf)
-		if n > 0 {
-			_, _ = ch.Write(buf[:n])
-		}
-		if err != nil {
+		if err != nil || n == 0 {
 			return
 		}
+		b := buf[0]
+
+		switch b {
+		case 0x04: // Ctrl+D
+			_, _ = fmt.Fprintf(ch, "\r\nlogout\r\n")
+			return
+		case '\r', '\n':
+			_, _ = ch.Write([]byte("\r\n"))
+			cmd := strings.TrimSpace(string(line))
+			line = line[:0]
+			if cmd == "exit" {
+				return
+			}
+			if cmd != "" {
+				_, _ = fmt.Fprintf(ch,
+					"[mock] %s: command not found\r\n", cmd)
+			}
+			_, _ = fmt.Fprintf(ch, "root@CT%s:~# ", vmid)
+		case 0x7f, 0x08: // backspace / delete
+			if len(line) > 0 {
+				line = line[:len(line)-1]
+				_, _ = ch.Write([]byte("\b \b"))
+			}
+		default:
+			line = append(line, b)
+			_, _ = ch.Write(buf[:1])
+		}
+	}
+}
+
+// vmSession simulates a qm terminal session. It echoes input and
+// exits when the user sends Ctrl+] (0x1d).
+func (m *MockSSHServer) vmSession(ch gossh.Channel) {
+	buf := make([]byte, 1)
+	for {
+		n, err := ch.Read(buf)
+		if err != nil || n == 0 {
+			return
+		}
+		if buf[0] == 0x1d { // Ctrl+]
+			_, _ = fmt.Fprintf(ch, "\r\n[disconnected]\r\n")
+			return
+		}
+		_, _ = ch.Write(buf[:1])
 	}
 }
 
