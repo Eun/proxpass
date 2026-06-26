@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
@@ -38,6 +39,17 @@ const (
 	ruleTypeGroup  = "group"
 	fieldName      = "name"
 )
+
+// formKeyMap returns a custom huh keymap where Enter advances
+// to the next field (not just Tab).
+func formKeyMap() *huh.KeyMap {
+	km := huh.NewDefaultKeyMap()
+	km.Input.Next = key.NewBinding(
+		key.WithKeys("enter", "tab"),
+		key.WithHelp("enter", "next"),
+	)
+	return km
+}
 
 // ---------------------------------------------------------------------------
 // View state machine
@@ -262,9 +274,7 @@ func (m *Model) isInputState() bool {
 // ---------------------------------------------------------------------------
 
 func (m *Model) updateNav(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	key := msg.String()
-
-	switch key {
+	switch msg.String() {
 	case "ctrl+c", "q":
 		if m.state == viewMenu {
 			return m, tea.Quit
@@ -451,7 +461,8 @@ func (m *Model) startAdd() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.statusMsg = ""
-	return m, m.form.Init()
+	m.form = m.form.WithKeyMap(formKeyMap())
+	return m, tea.Batch(tea.ClearScreen, m.form.Init())
 }
 
 // ---------------------------------------------------------------------------
@@ -634,9 +645,9 @@ func (m *Model) deleteSelected() (tea.Model, tea.Cmd) {
 		if m.cursor >= len(m.adminKeys) {
 			return m, nil
 		}
-		key := m.adminKeys[m.cursor]
+		adminKey := m.adminKeys[m.cursor]
 		return m, func() tea.Msg {
-			if err := m.repo.RemoveAdminKey(m.ctx, key); err != nil {
+			if err := m.repo.RemoveAdminKey(m.ctx, adminKey); err != nil {
 				return errMsg{err}
 			}
 			return doneMsg{}
