@@ -51,7 +51,8 @@ func main() {
 	fmt.Printf("  API: http://127.0.0.1%s\n", cfg.API.ListenAddr)
 	fmt.Printf("  SSH: 127.0.0.1%s\n", cfg.SSH.ListenAddr)
 	fmt.Printf("  SSH key: %s\n", sshSrv.KeyPath)
-	fmt.Printf("  API Token: %s=%s\n", cfg.API.TokenID, cfg.API.TokenSecret)
+	fmt.Printf("  API Token ID:     %s\n", cfg.API.TokenID)
+	fmt.Printf("  API Token Secret: %s\n", cfg.API.TokenSecret)
 	fmt.Println()
 	fmt.Println("  Nodes and guests:")
 	for _, n := range cfg.Nodes {

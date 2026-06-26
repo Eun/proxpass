@@ -11,6 +11,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"sync"
 
 	"proxpass/internal/models"
@@ -179,23 +180,7 @@ func (m *MockSSHServer) handleSession(ch gossh.Channel, reqs <-chan *gossh.Reque
 				return
 			}
 			cmd := string(req.Payload[4 : 4+cmdLen])
-
-			_, _ = fmt.Fprintf(ch, "[mock] executing: %s\r\n", cmd)
-
-			// Echo stdin back to stdout until EOF
-			buf := make([]byte, 1024)
-			for {
-				n, err := ch.Read(buf)
-				if n > 0 {
-					_, _ = ch.Write(buf[:n])
-				}
-				if err != nil {
-					break
-				}
-			}
-			// Send exit-status 0
-			exitMsg := gossh.Marshal(struct{ Status uint32 }{0})
-			_, _ = ch.SendRequest("exit-status", false, exitMsg)
+			m.handleExecCommand(ch, cmd)
 			return
 
 		case "shell":
@@ -226,6 +211,51 @@ func (m *MockSSHServer) handleSession(ch gossh.Channel, reqs <-chan *gossh.Reque
 			if req.WantReply {
 				_ = req.Reply(false, nil)
 			}
+		}
+	}
+}
+
+// handleExecCommand responds to pct enter / qm terminal commands
+// with a realistic mock console session.
+func (m *MockSSHServer) handleExecCommand(ch gossh.Channel, cmd string) {
+	parts := strings.Fields(cmd)
+
+	switch {
+	case len(parts) == 3 && parts[0] == "pct" && parts[1] == "enter":
+		vmid := parts[2]
+		_, _ = fmt.Fprintf(ch,
+			"entering LXC container %s\r\n"+
+				"\r\n"+
+				"root@CT%s:~# ", vmid, vmid)
+		m.echoUntilEOF(ch)
+
+	case len(parts) == 3 && parts[0] == "qm" && parts[1] == "terminal":
+		vmid := parts[2]
+		_, _ = fmt.Fprintf(ch,
+			"starting serial terminal on VM %s (press Ctrl+O to exit)\r\n"+
+				"\r\n"+
+				"login: ", vmid)
+		m.echoUntilEOF(ch)
+
+	default:
+		_, _ = fmt.Fprintf(ch,
+			"[mock] unknown command: %s\r\n", cmd)
+	}
+
+	exitMsg := gossh.Marshal(struct{ Status uint32 }{0})
+	_, _ = ch.SendRequest("exit-status", false, exitMsg)
+}
+
+// echoUntilEOF reads from the channel and echoes back until EOF.
+func (m *MockSSHServer) echoUntilEOF(ch gossh.Channel) {
+	buf := make([]byte, 1024)
+	for {
+		n, err := ch.Read(buf)
+		if n > 0 {
+			_, _ = ch.Write(buf[:n])
+		}
+		if err != nil {
+			return
 		}
 	}
 }
