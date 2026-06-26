@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 
 	"proxpass/internal/db"
@@ -17,7 +18,8 @@ import (
 )
 
 // handleClientSession is invoked for every authenticated client channel.
-// The SSH username on the connection is interpreted as the target guest name.
+// The SSH username on the connection is used to resolve the target guest.
+// Resolution order: numeric VMID → type+VMID (e.g. ct100) → name.
 //
 //nolint:gocognit // SSH session handling requires sequential branching
 func handleClientSession(
@@ -31,10 +33,9 @@ func handleClientSession(
 	defer func() { _ = channel.Close() }()
 
 	ctx := context.Background()
-	guestName := conn.User()
+	identifier := conn.User()
 	clientName := conn.Permissions.Extensions["client_name"]
 
-	// Resolve guest by name.
 	guests, err := repo.ListGuests(ctx)
 	if err != nil {
 		logger.Printf("client %s: failed to list guests: %v", clientName, err)
@@ -42,16 +43,10 @@ func handleClientSession(
 		return
 	}
 
-	var guest *models.Guest
-	for _, g := range guests {
-		if g.Name == guestName {
-			guest = g
-			break
-		}
-	}
-	if guest == nil {
-		logger.Printf("client %s: guest %q not found", clientName, guestName)
-		_, _ = fmt.Fprintf(channel.Stderr(), "guest %q not found\r\n", guestName)
+	guest, err := resolveGuest(identifier, guests)
+	if err != nil {
+		logger.Printf("client %s: %v", clientName, err)
+		_, _ = fmt.Fprintf(channel.Stderr(), "%v\r\n", err)
 		return
 	}
 
@@ -70,7 +65,7 @@ func handleClientSession(
 		return
 	}
 	if !ok {
-		logger.Printf("client %s: access denied to guest %s", clientName, guestName)
+		logger.Printf("client %s: access denied to guest %s", clientName, guest.Name)
 		_, _ = fmt.Fprintf(channel.Stderr(), "access denied\r\n")
 		return
 	}
@@ -92,7 +87,7 @@ func handleClientSession(
 	}
 	if inst == nil {
 		logger.Printf("client %s: proxmox instance %d not found for guest %s",
-			clientName, guest.InstanceID, guestName)
+			clientName, guest.InstanceID, guest.Name)
 		_, _ = fmt.Fprintf(channel.Stderr(), "internal error\r\n")
 		return
 	}
@@ -284,4 +279,87 @@ func proxyToGuest(
 	_ = client.Close()
 	wg.Wait()
 	return err
+}
+
+// resolveGuest looks up a guest by the identifier the SSH client
+// provided as the username. Resolution order:
+//
+//  1. Numeric VMID — e.g. "100" matches ProxmoxID 100.
+//     If multiple guests share the same VMID (across instances),
+//     an error is returned asking the user to use type+id.
+//  2. Type+VMID — e.g. "ct100" or "vm200" (case-insensitive).
+//     Always unique within a type.
+//  3. Guest name — e.g. "webserver" (case-insensitive).
+//     If multiple guests share the same name, an error is returned.
+//
+//nolint:gocognit // sequential resolution tiers require nested checks
+func resolveGuest(
+	identifier string,
+	guests []*models.Guest,
+) (*models.Guest, error) {
+	lower := strings.ToLower(identifier)
+
+	// --- 1. Try numeric VMID ---
+	if vmid, err := strconv.Atoi(identifier); err == nil {
+		var matches []*models.Guest
+		for _, g := range guests {
+			if g.ProxmoxID == vmid {
+				matches = append(matches, g)
+			}
+		}
+		if len(matches) == 1 {
+			return matches[0], nil
+		}
+		if len(matches) > 1 {
+			return nil, fmt.Errorf(
+				"VMID %d matches %d guests; use type+id instead "+
+					"(e.g. %s%d)",
+				vmid, len(matches),
+				matches[0].Type, vmid)
+		}
+		// No match by VMID — fall through to other methods.
+	}
+
+	// --- 2. Try type+VMID (e.g. "ct100", "vm200") ---
+	for _, prefix := range []models.GuestType{
+		models.GuestTypeCT, models.GuestTypeVM,
+	} {
+		p := string(prefix)
+		if strings.HasPrefix(lower, p) {
+			if vmid, err := strconv.Atoi(
+				lower[len(p):],
+			); err == nil {
+				for _, g := range guests {
+					if g.Type == prefix &&
+						g.ProxmoxID == vmid {
+						return g, nil
+					}
+				}
+			}
+		}
+	}
+
+	// --- 3. Try guest name (case-insensitive) ---
+	var matches []*models.Guest
+	for _, g := range guests {
+		if strings.EqualFold(g.Name, identifier) {
+			matches = append(matches, g)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		var hints []string
+		for _, g := range matches {
+			hints = append(hints,
+				fmt.Sprintf("%s%d", g.Type, g.ProxmoxID))
+		}
+		return nil, fmt.Errorf(
+			"name %q matches %d guests; use a unique id: %s",
+			identifier, len(matches),
+			strings.Join(hints, ", "))
+	}
+
+	return nil, fmt.Errorf("guest %q not found", identifier)
 }
