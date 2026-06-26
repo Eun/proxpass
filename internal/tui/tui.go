@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 
 	"proxpass/internal/db"
@@ -33,8 +33,11 @@ var (
 // Constants
 // ---------------------------------------------------------------------------
 
-const ruleTypeClient = "client"
-const ruleTypeGroup = "group"
+const (
+	ruleTypeClient = "client"
+	ruleTypeGroup  = "group"
+	fieldName      = "name"
+)
 
 // ---------------------------------------------------------------------------
 // View state machine
@@ -116,10 +119,9 @@ type Model struct {
 	// Each entry is "client:<id>" or "group:<id>".
 	policyEntries []string
 
-	// Multi-step text input for add flows
-	inputs    []textinput.Model
-	inputStep int  // which input field is active
-	inputDone bool // all fields collected, ready to submit
+	// Form for add flows (powered by huh)
+	form       *huh.Form
+	formValues map[string]*string
 
 	// Set when the admin selects a guest to connect to.
 	// The admin handler checks this after the TUI exits.
@@ -157,6 +159,23 @@ func (m Model) Init() tea.Cmd {
 
 //nolint:gocritic // required by tea.Model interface
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// When a form is active, delegate everything to it.
+	if m.isInputState() && m.form != nil {
+		model, cmd := m.form.Update(msg)
+		if f, ok := model.(*huh.Form); ok {
+			m.form = f
+		}
+		if m.form.State == huh.StateCompleted {
+			return m.submitAdd()
+		}
+		if m.form.State == huh.StateAborted {
+			m.state = m.parentState()
+			m.statusMsg = ""
+			return m, tea.Batch(tea.ClearScreen, m.refreshCurrent())
+		}
+		return m, cmd
+	}
+
 	switch msg := msg.(type) {
 	// --- async data messages ---
 	case instancesMsg:
@@ -204,10 +223,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// --- keyboard ---
 	case tea.KeyMsg:
-		// While in an input form, delegate to the input handler.
-		if m.isInputState() {
-			return m.updateInput(msg)
-		}
 		return m.updateNav(msg)
 	}
 
@@ -339,90 +354,92 @@ func (m *Model) selectMenu() (tea.Model, tea.Cmd) {
 }
 
 // ---------------------------------------------------------------------------
-// Add flows – set up text inputs
+// Add flows – set up huh forms
 // ---------------------------------------------------------------------------
 
 func (m *Model) startAdd() (tea.Model, tea.Cmd) {
 	//nolint:exhaustive // only list views support add
 	switch m.state {
 	case viewInstances:
-		m.inputs = makeInputs(
-			"Name", "API URL", "API Token ID",
-			"API Token Secret",
-			"SSH Host", "SSH Port", "SSH User",
-			"SSH Key Path",
+		m.formValues = map[string]*string{
+			fieldName: new(string), "api_url": new(string),
+			"token_id": new(string), "token_secret": new(string),
+			"ssh_host": new(string), "ssh_port": new(string),
+			"ssh_user": new(string), "ssh_key_path": new(string),
+		}
+		m.form = huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().Title("Name").Key(fieldName).Value(m.formValues[fieldName]),
+				huh.NewInput().Title("API URL").Key("api_url").Value(m.formValues["api_url"]).Placeholder("https://pve:8006"),
+				huh.NewInput().Title("API Token ID").Key("token_id").Value(m.formValues["token_id"]).Placeholder("user@pam!token"),
+				huh.NewInput().Title("API Token Secret").Key("token_secret").Value(m.formValues["token_secret"]),
+				huh.NewInput().Title("SSH Host").Key("ssh_host").Value(m.formValues["ssh_host"]),
+				huh.NewInput().Title("SSH Port").Key("ssh_port").Value(m.formValues["ssh_port"]).Placeholder("22"),
+				huh.NewInput().Title("SSH User").Key("ssh_user").Value(m.formValues["ssh_user"]).Placeholder("root"),
+				huh.NewInput().Title("SSH Key Path").Key("ssh_key_path").Value(m.formValues["ssh_key_path"]),
+			),
 		)
 		m.state = viewAddInstance
 	case viewClients:
-		m.inputs = makeInputs("Client Name", "Public Key")
+		m.formValues = map[string]*string{
+			fieldName: new(string), "pub_key": new(string),
+		}
+		m.form = huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().Title("Client Name").Key(fieldName).Value(m.formValues[fieldName]),
+				huh.NewInput().Title("Public Key").Key("pub_key").Value(m.formValues["pub_key"]),
+			),
+		)
 		m.state = viewAddClient
 	case viewGroups:
-		m.inputs = makeInputs("Group Name")
+		m.formValues = map[string]*string{fieldName: new(string)}
+		m.form = huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().Title("Group Name").Key(fieldName).Value(m.formValues[fieldName]),
+			),
+		)
 		m.state = viewAddGroup
 	case viewAdminKeys:
-		m.inputs = makeInputs("Public Key")
+		m.formValues = map[string]*string{"pub_key": new(string)}
+		m.form = huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().Title("Public Key").Key("pub_key").Value(m.formValues["pub_key"]),
+			),
+		)
 		m.state = viewAddAdminKey
 	case viewAccessRules:
-		m.inputs = makeInputs("Type (client/group)", "Subject ID", "Guest ID")
+		m.formValues = map[string]*string{
+			"type": new(string), "subject_id": new(string), "guest_id": new(string),
+		}
+		m.form = huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().Title("Type").Key("type").Value(m.formValues["type"]).Placeholder("client or group"),
+				huh.NewInput().Title("Subject ID").Key("subject_id").Value(m.formValues["subject_id"]),
+				huh.NewInput().Title("Guest ID").Key("guest_id").Value(m.formValues["guest_id"]),
+			),
+		)
 		m.state = viewAddAccessRule
 	case viewDefaultPolicy:
-		m.inputs = makeInputs("Type (client/group)", "ID")
+		m.formValues = map[string]*string{
+			"type": new(string), "id": new(string),
+		}
+		m.form = huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().Title("Type").Key("type").Value(m.formValues["type"]).Placeholder("client or group"),
+				huh.NewInput().Title("ID").Key("id").Value(m.formValues["id"]),
+			),
+		)
 		m.state = viewAddPolicyEntry
 	default:
 		return m, nil
 	}
-	m.inputStep = 0
-	m.inputDone = false
 	m.statusMsg = ""
-	return m, tea.Batch(tea.ClearScreen, m.inputs[0].Focus())
-}
-
-func makeInputs(placeholders ...string) []textinput.Model {
-	inputs := make([]textinput.Model, len(placeholders))
-	for i, ph := range placeholders {
-		ti := textinput.New()
-		ti.Placeholder = ph
-		ti.CharLimit = 512
-		ti.Width = 60
-		inputs[i] = ti
-	}
-	return inputs
+	return m, m.form.Init()
 }
 
 // ---------------------------------------------------------------------------
-// Input update (text input forms)
+// Input state helpers
 // ---------------------------------------------------------------------------
-
-func (m *Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	key := msg.String()
-
-	switch key {
-	case "ctrl+c":
-		return m, tea.Quit
-
-	case "esc":
-		// Cancel the input and go back to the parent list.
-		m.state = m.parentState()
-		m.statusMsg = ""
-		cmd := m.refreshCurrent()
-		return m, cmd
-
-	case "enter":
-		// Advance to next field or submit.
-		if m.inputStep < len(m.inputs)-1 {
-			m.inputs[m.inputStep].Blur()
-			m.inputStep++
-			return m, m.inputs[m.inputStep].Focus()
-		}
-		// All fields filled — submit.
-		return m.submitAdd()
-	}
-
-	// Pass the key to the active text input.
-	var cmd tea.Cmd
-	m.inputs[m.inputStep], cmd = m.inputs[m.inputStep].Update(msg)
-	return m, cmd
-}
 
 func (m *Model) parentState() viewState {
 	//nolint:exhaustive // only input sub-states have a parent
@@ -451,14 +468,14 @@ func (m *Model) submitAdd() (tea.Model, tea.Cmd) {
 	//nolint:exhaustive // only list-view parents are valid submit targets
 	switch parent {
 	case viewInstances:
-		name := strings.TrimSpace(m.inputs[0].Value())
-		apiURL := strings.TrimSpace(m.inputs[1].Value())
-		tokenID := strings.TrimSpace(m.inputs[2].Value())
-		tokenSecret := strings.TrimSpace(m.inputs[3].Value())
-		sshHost := strings.TrimSpace(m.inputs[4].Value())
-		sshPortStr := strings.TrimSpace(m.inputs[5].Value())
-		sshUser := strings.TrimSpace(m.inputs[6].Value())
-		sshKeyPath := strings.TrimSpace(m.inputs[7].Value())
+		name := strings.TrimSpace(*m.formValues[fieldName])
+		apiURL := strings.TrimSpace(*m.formValues["api_url"])
+		tokenID := strings.TrimSpace(*m.formValues["token_id"])
+		tokenSecret := strings.TrimSpace(*m.formValues["token_secret"])
+		sshHost := strings.TrimSpace(*m.formValues["ssh_host"])
+		sshPortStr := strings.TrimSpace(*m.formValues["ssh_port"])
+		sshUser := strings.TrimSpace(*m.formValues["ssh_user"])
+		sshKeyPath := strings.TrimSpace(*m.formValues["ssh_key_path"])
 		sshPort, err := strconv.Atoi(sshPortStr)
 		if err != nil {
 			m.statusMsg = "Invalid SSH port number"
@@ -484,8 +501,8 @@ func (m *Model) submitAdd() (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case viewClients:
-		name := strings.TrimSpace(m.inputs[0].Value())
-		pubKey := strings.TrimSpace(m.inputs[1].Value())
+		name := strings.TrimSpace(*m.formValues[fieldName])
+		pubKey := strings.TrimSpace(*m.formValues["pub_key"])
 		if name == "" || pubKey == "" {
 			m.statusMsg = "Name and public key are required"
 			return m, nil
@@ -494,7 +511,7 @@ func (m *Model) submitAdd() (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case viewGroups:
-		name := strings.TrimSpace(m.inputs[0].Value())
+		name := strings.TrimSpace(*m.formValues[fieldName])
 		if name == "" {
 			m.statusMsg = "Group name is required"
 			return m, nil
@@ -503,7 +520,7 @@ func (m *Model) submitAdd() (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case viewAdminKeys:
-		pubKey := strings.TrimSpace(m.inputs[0].Value())
+		pubKey := strings.TrimSpace(*m.formValues["pub_key"])
 		if pubKey == "" {
 			m.statusMsg = "Public key is required"
 			return m, nil
@@ -512,9 +529,9 @@ func (m *Model) submitAdd() (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case viewAccessRules:
-		ruleType := strings.TrimSpace(strings.ToLower(m.inputs[0].Value()))
-		subjectStr := strings.TrimSpace(m.inputs[1].Value())
-		guestStr := strings.TrimSpace(m.inputs[2].Value())
+		ruleType := strings.TrimSpace(strings.ToLower(*m.formValues["type"]))
+		subjectStr := strings.TrimSpace(*m.formValues["subject_id"])
+		guestStr := strings.TrimSpace(*m.formValues["guest_id"])
 		if ruleType != ruleTypeClient && ruleType != ruleTypeGroup {
 			m.statusMsg = "Type must be 'client' or 'group'"
 			return m, nil
@@ -533,8 +550,8 @@ func (m *Model) submitAdd() (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case viewDefaultPolicy:
-		entryType := strings.TrimSpace(strings.ToLower(m.inputs[0].Value()))
-		idStr := strings.TrimSpace(m.inputs[1].Value())
+		entryType := strings.TrimSpace(strings.ToLower(*m.formValues["type"]))
+		idStr := strings.TrimSpace(*m.formValues["id"])
 		if entryType != ruleTypeClient && entryType != ruleTypeGroup {
 			m.statusMsg = "Type must be 'client' or 'group'"
 			return m, nil
@@ -891,7 +908,9 @@ func (m Model) View() string {
 		m.viewAdminKeys(&b)
 	case viewAddInstance, viewAddClient, viewAddGroup, viewAddAdminKey,
 		viewAddAccessRule, viewAddPolicyEntry:
-		m.viewInputForm(&b)
+		if m.form != nil {
+			b.WriteString(m.form.View())
+		}
 	default:
 	}
 
@@ -1042,42 +1061,6 @@ func (m *Model) viewAdminKeys(b *strings.Builder) {
 		b.WriteString(cursor + style.Render(display) + "\n")
 	}
 	b.WriteString("\n" + helpStyle.Render("a: add • d: delete • esc: back • q: menu") + "\n")
-}
-
-func (m *Model) viewInputForm(b *strings.Builder) {
-	var title string
-	//nolint:exhaustive // only input sub-states are rendered here
-	switch m.state {
-	case viewAddInstance:
-		title = "Add Proxmox Instance"
-	case viewAddClient:
-		title = "Add Client"
-	case viewAddGroup:
-		title = "Add Group"
-	case viewAddAdminKey:
-		title = "Add Admin Key"
-	case viewAddAccessRule:
-		title = "Add Access Rule"
-	case viewAddPolicyEntry:
-		title = "Add Policy Entry"
-	default:
-	}
-	b.WriteString(titleStyle.Render(title) + "\n\n")
-
-	for i := range m.inputs {
-		label := m.inputs[i].Placeholder
-		if i == m.inputStep {
-			b.WriteString(selectedStyle.Render(label+": ") + m.inputs[i].View() + "\n")
-		} else {
-			val := m.inputs[i].Value()
-			if val == "" {
-				val = "(empty)"
-			}
-			b.WriteString(normalStyle.Render(label+": "+val) + "\n")
-		}
-	}
-
-	b.WriteString("\n" + helpStyle.Render("enter: next/submit • esc: cancel") + "\n")
 }
 
 // ---------------------------------------------------------------------------
