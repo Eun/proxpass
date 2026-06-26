@@ -48,19 +48,23 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI com
 					&ucli.StringFlag{Name: "api-url", Required: true, Usage: "Proxmox API URL (e.g. https://pve:8006)"},
 					&ucli.StringFlag{Name: "token-id", Required: true, Usage: "API token ID (e.g. user@pam!token)"},
 					&ucli.StringFlag{Name: "token-secret", Required: true, Usage: "API token secret"},
-					&ucli.StringFlag{Name: "ssh-host", Required: true, Usage: "SSH hostname"},
-					&ucli.IntFlag{Name: "ssh-port", Value: 22, Usage: "SSH port"},
+					&ucli.StringFlag{Name: "ssh-host", Required: true, Usage: "SSH host (host or host:port, default port 22)"},
 					&ucli.StringFlag{Name: "ssh-user", Value: "root", Usage: "SSH username"},
 					&ucli.StringFlag{Name: "ssh-key-path", Required: true, Usage: "Path to SSH private key"},
 				},
 				Action: func(ctx context.Context, cmd *ucli.Command) error {
+					sshHost, sshPort, err := parseHostPort(
+						cmd.String("ssh-host"), 22)
+					if err != nil {
+						return fmt.Errorf("invalid --ssh-host: %w", err)
+					}
 					inst := &models.ProxmoxInstance{
-						Name:           cmd.String("name"),
+						Name:           cmd.String(flagName),
 						APIURL:         cmd.String("api-url"),
 						APITokenID:     cmd.String("token-id"),
 						APITokenSecret: cmd.String("token-secret"),
-						SSHHost:        cmd.String("ssh-host"),
-						SSHPort:        cmd.Int("ssh-port"),
+						SSHHost:        sshHost,
+						SSHPort:        sshPort,
 						SSHUser:        cmd.String("ssh-user"),
 						SSHKeyPath:     cmd.String("ssh-key-path"),
 					}
