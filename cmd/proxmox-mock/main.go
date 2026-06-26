@@ -83,7 +83,7 @@ func run(_ context.Context, cmd *cli.Command) error {
 
 	// Start mock SSH server.
 	sshSrv, err := testenv.NewMockSSHServerOnAddr(
-		cfg.SSH.ListenAddr)
+		cfg.SSH.ListenAddr, cfg.SSH.KeyPath)
 	if err != nil {
 		return fmt.Errorf("mock ssh: %w", err)
 	}

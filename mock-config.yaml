@@ -5,6 +5,7 @@ api:
 
 ssh:
   listen_addr: ":2223"
+  key_path: "/tmp/proxpass-mock-ssh-key"
 
 nodes:
   - name: pve1

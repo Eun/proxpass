@@ -332,9 +332,10 @@ func (p *MockProxier) ProxyToGuest(
 }
 
 // NewMockSSHServerOnAddr starts a mock SSH server on the given address
-// (e.g. ":2223"). For unit tests use NewMockSSHServer which binds to
-// a random port on 127.0.0.1.
-func NewMockSSHServerOnAddr(addr string) (*MockSSHServer, error) {
+// (e.g. ":2223"). If keyPath is non-empty the generated client private
+// key is written there; otherwise a temp file is created. For unit
+// tests use NewMockSSHServer which binds to a random port.
+func NewMockSSHServerOnAddr(addr, keyPath string) (*MockSSHServer, error) {
 	// Generate server host key
 	_, hostPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -355,12 +356,21 @@ func NewMockSSHServerOnAddr(addr string) (*MockSSHServer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal client key: %w", err)
 	}
-	keyFile, err := os.CreateTemp("", "proxpass-mock-key-*")
-	if err != nil {
-		return nil, fmt.Errorf("temp file: %w", err)
+	var keyFilePath string
+	if keyPath != "" {
+		if err := os.WriteFile(keyPath, pem.EncodeToMemory(pemBlock), 0600); err != nil {
+			return nil, fmt.Errorf("write key to %s: %w", keyPath, err)
+		}
+		keyFilePath = keyPath
+	} else {
+		keyFile, err := os.CreateTemp("", "proxpass-mock-key-*")
+		if err != nil {
+			return nil, fmt.Errorf("temp file: %w", err)
+		}
+		_ = pem.Encode(keyFile, pemBlock)
+		_ = keyFile.Close()
+		keyFilePath = keyFile.Name()
 	}
-	_ = pem.Encode(keyFile, pemBlock)
-	_ = keyFile.Close()
 
 	// Server config — accept the generated client public key
 	clientSSHPub, err := gossh.NewPublicKey(clientPub)
@@ -393,7 +403,7 @@ func NewMockSSHServerOnAddr(addr string) (*MockSSHServer, error) {
 		done:     make(chan struct{}),
 		Host:     "127.0.0.1",
 		Port:     tcpAddr.Port,
-		KeyPath:  keyFile.Name(),
+		KeyPath:  keyFilePath,
 		User:     defaultSSHUser,
 	}
 

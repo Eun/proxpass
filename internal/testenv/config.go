@@ -32,6 +32,7 @@ type APIConfig struct {
 // SSHConfig configures the mock Proxmox SSH server.
 type SSHConfig struct {
 	ListenAddr string `yaml:"listen_addr"` // e.g. ":22"
+	KeyPath    string `yaml:"key_path"`    // path to write the SSH private key (auto-generated if empty)
 }
 
 // NodeConfig defines a PVE node and its guests.
