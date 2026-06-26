@@ -38,6 +38,7 @@ const (
 	ruleTypeClient = "client"
 	ruleTypeGroup  = "group"
 	fieldName      = "name"
+	fieldPubKey    = "pub_key"
 )
 
 // formKeyMap returns a custom huh keymap where Enter advances
@@ -127,6 +128,10 @@ type Model struct {
 	accessRules   []*models.AccessRuleRow
 	defaultPolicy *models.DefaultAccessPolicy
 
+	// Multi-key client add flow
+	pendingKeys []string
+	pendingName string
+
 	// Flattened default policy entries for cursor-based navigation.
 	// Each entry is "client:<id>" or "group:<id>".
 	policyEntries []string
@@ -181,6 +186,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.state = m.parentState()
 				m.form = nil
 				m.statusMsg = ""
+				m.pendingName = ""
+				m.pendingKeys = nil
 				return m, tea.Batch(
 					tea.ClearScreen, m.refreshCurrent())
 			case "ctrl+c":
@@ -199,6 +206,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state = m.parentState()
 			m.form = nil
 			m.statusMsg = ""
+			m.pendingName = ""
+			m.pendingKeys = nil
 			return m, tea.Batch(
 				tea.ClearScreen, m.refreshCurrent())
 		}
@@ -275,14 +284,12 @@ func (m *Model) isInputState() bool {
 
 func (m *Model) updateNav(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "ctrl+c", "q":
+	case "ctrl+c":
+		return m, tea.Quit
+	case "q":
 		if m.state == viewMenu {
 			return m, tea.Quit
 		}
-		m.state = viewMenu
-		m.cursor = 0
-		m.statusMsg = ""
-		return m, tea.ClearScreen
 
 	case "esc", "backspace":
 		if m.state != viewMenu {
@@ -408,13 +415,15 @@ func (m *Model) startAdd() (tea.Model, tea.Cmd) {
 		)
 		m.state = viewAddInstance
 	case viewClients:
+		m.pendingKeys = nil
+		m.pendingName = ""
 		m.formValues = map[string]*string{
-			fieldName: new(string), "pub_key": new(string),
+			fieldName: new(string), fieldPubKey: new(string),
 		}
 		m.form = huh.NewForm(
 			huh.NewGroup(
 				huh.NewInput().Title("Client Name").Key(fieldName).Value(m.formValues[fieldName]),
-				huh.NewInput().Title("Public Key").Key("pub_key").Value(m.formValues["pub_key"]),
+				huh.NewInput().Title("Public Key").Key(fieldPubKey).Value(m.formValues[fieldPubKey]),
 			),
 		)
 		m.state = viewAddClient
@@ -427,10 +436,10 @@ func (m *Model) startAdd() (tea.Model, tea.Cmd) {
 		)
 		m.state = viewAddGroup
 	case viewAdminKeys:
-		m.formValues = map[string]*string{"pub_key": new(string)}
+		m.formValues = map[string]*string{fieldPubKey: new(string)}
 		m.form = huh.NewForm(
 			huh.NewGroup(
-				huh.NewInput().Title("Public Key").Key("pub_key").Value(m.formValues["pub_key"]),
+				huh.NewInput().Title("Public Key").Key(fieldPubKey).Value(m.formValues[fieldPubKey]),
 			),
 		)
 		m.state = viewAddAdminKey
@@ -525,7 +534,8 @@ func (m *Model) parentState() viewState {
 	}
 }
 
-func (m *Model) submitAdd() (tea.Model, tea.Cmd) { //nolint:funlen // form submission handles many distinct entity types
+//nolint:gocognit,funlen // form submission handles many distinct entity types with multi-step flows
+func (m *Model) submitAdd() (tea.Model, tea.Cmd) {
 	parent := m.parentState()
 	m.state = parent
 
@@ -565,13 +575,46 @@ func (m *Model) submitAdd() (tea.Model, tea.Cmd) { //nolint:funlen // form submi
 		return m, cmd
 
 	case viewClients:
-		name := strings.TrimSpace(*m.formValues[fieldName])
-		pubKey := strings.TrimSpace(*m.formValues["pub_key"])
-		if name == "" || pubKey == "" {
-			m.statusMsg = "Name and public key are required"
+		if m.pendingName == "" {
+			// First submission — capture the name.
+			m.pendingName = strings.TrimSpace(*m.formValues[fieldName])
+			if m.pendingName == "" {
+				m.statusMsg = "Client name is required"
+				return m, nil
+			}
+		}
+
+		pubKey := strings.TrimSpace(*m.formValues[fieldPubKey])
+		if pubKey != "" {
+			m.pendingKeys = append(m.pendingKeys, pubKey)
+		}
+
+		// If no keys collected yet, require at least one.
+		if len(m.pendingKeys) == 0 {
+			m.statusMsg = "At least one public key is required"
 			return m, nil
 		}
-		cmd := m.addClient(name, pubKey)
+
+		// If the key was non-empty, offer to add another.
+		if pubKey != "" {
+			m.formValues = map[string]*string{fieldPubKey: new(string)}
+			m.form = huh.NewForm(
+				huh.NewGroup(
+					huh.NewInput().
+						Title(fmt.Sprintf("Public Key #%d (empty to finish)", len(m.pendingKeys)+1)).
+						Key(fieldPubKey).
+						Value(m.formValues[fieldPubKey]),
+				),
+			)
+			m.state = viewAddClient
+			m.form = m.form.WithKeyMap(formKeyMap())
+			return m, tea.Batch(tea.ClearScreen, m.form.Init())
+		}
+
+		// Empty key submitted — finalize.
+		cmd := m.addClientMultiKey(m.pendingName, m.pendingKeys)
+		m.pendingName = ""
+		m.pendingKeys = nil
 		return m, cmd
 
 	case viewGroups:
@@ -584,7 +627,7 @@ func (m *Model) submitAdd() (tea.Model, tea.Cmd) { //nolint:funlen // form submi
 		return m, cmd
 
 	case viewAdminKeys:
-		pubKey := strings.TrimSpace(*m.formValues["pub_key"])
+		pubKey := strings.TrimSpace(*m.formValues[fieldPubKey])
 		if pubKey == "" {
 			m.statusMsg = "Public key is required"
 			return m, nil
@@ -870,9 +913,9 @@ func (m *Model) addInstance(inst *models.ProxmoxInstance) tea.Cmd {
 	}
 }
 
-func (m *Model) addClient(name, pubKey string) tea.Cmd {
+func (m *Model) addClientMultiKey(name string, pubKeys []string) tea.Cmd {
 	return func() tea.Msg {
-		c := &models.Client{Name: name, PublicKeys: []string{pubKey}}
+		c := &models.Client{Name: name, PublicKeys: pubKeys}
 		if err := m.repo.AddClient(m.ctx, c); err != nil {
 			return errMsg{err}
 		}
@@ -1009,7 +1052,7 @@ func (m *Model) viewMenu(b *strings.Builder) {
 		}
 		b.WriteString(cursor + style.Render(item) + "\n")
 	}
-	b.WriteString("\n" + helpStyle.Render("j/k or ↑/↓: navigate • enter: select • q: quit") + "\n")
+	b.WriteString("\n" + helpStyle.Render("↑/↓: navigate • enter: select • q: quit") + "\n")
 }
 
 func (m *Model) viewInstances(b *strings.Builder) {
@@ -1027,7 +1070,7 @@ func (m *Model) viewInstances(b *strings.Builder) {
 		line := fmt.Sprintf("[%d] %s", inst.ID, inst.Name)
 		b.WriteString(cursor + style.Render(line) + "\n")
 	}
-	b.WriteString("\n" + helpStyle.Render("a: add • d: delete • esc: back • q: menu") + "\n")
+	b.WriteString("\n" + helpStyle.Render("a: add • d: delete • esc: back") + "\n")
 }
 
 func (m *Model) viewGuests(b *strings.Builder) {
@@ -1046,7 +1089,7 @@ func (m *Model) viewGuests(b *strings.Builder) {
 		line := fmt.Sprintf("%-6d %-6s %-24s %-10s %d", g.ID, g.Type, g.Name, g.Status, g.ProxmoxID)
 		b.WriteString(cursor + style.Render(line) + "\n")
 	}
-	b.WriteString("\n" + helpStyle.Render("enter: connect • esc: back • q: menu") + "\n")
+	b.WriteString("\n" + helpStyle.Render("enter: connect • esc: back") + "\n")
 }
 
 // viewEntityList is a shared helper for rendering simple entity lists (clients, groups, etc.).
@@ -1072,7 +1115,7 @@ func (m *Model) viewClients(b *strings.Builder) {
 	for i, c := range m.clients {
 		items[i] = fmt.Sprintf("[%d] %s (%d key(s))", c.ID, c.Name, len(c.PublicKeys))
 	}
-	m.viewEntityList(b, "Clients", items, "a: add • d: delete • esc: back • q: menu")
+	m.viewEntityList(b, "Clients", items, "a: add • d: delete • esc: back")
 }
 
 func (m *Model) viewGroups(b *strings.Builder) {
@@ -1080,7 +1123,7 @@ func (m *Model) viewGroups(b *strings.Builder) {
 	for i, g := range m.groups {
 		items[i] = fmt.Sprintf("[%d] %s (%d member(s))", g.ID, g.Name, len(g.ClientIDs))
 	}
-	m.viewEntityList(b, "Groups", items, "a: add • d: delete • esc: back • q: menu")
+	m.viewEntityList(b, "Groups", items, "a: add • d: delete • esc: back")
 }
 
 func (m *Model) viewAccessRules(b *strings.Builder) {
@@ -1099,7 +1142,7 @@ func (m *Model) viewAccessRules(b *strings.Builder) {
 		line := fmt.Sprintf("%-6d %-10s %-12d %d", r.ID, r.Type, r.SubjectID, r.GuestID)
 		b.WriteString(cursor + style.Render(line) + "\n")
 	}
-	b.WriteString("\n" + helpStyle.Render("a: add • d: delete • esc: back • q: menu") + "\n")
+	b.WriteString("\n" + helpStyle.Render("a: add • d: delete • esc: back") + "\n")
 }
 
 func (m *Model) viewDefaultPolicy(b *strings.Builder) {
@@ -1116,7 +1159,7 @@ func (m *Model) viewDefaultPolicy(b *strings.Builder) {
 		}
 		b.WriteString(cursor + style.Render(entry) + "\n")
 	}
-	b.WriteString("\n" + helpStyle.Render("a: add • d: delete • esc: back • q: menu") + "\n")
+	b.WriteString("\n" + helpStyle.Render("a: add • d: delete • esc: back") + "\n")
 }
 
 func (m *Model) viewAdminKeys(b *strings.Builder) {
@@ -1137,7 +1180,7 @@ func (m *Model) viewAdminKeys(b *strings.Builder) {
 		}
 		b.WriteString(cursor + style.Render(display) + "\n")
 	}
-	b.WriteString("\n" + helpStyle.Render("a: add • d: delete • esc: back • q: menu") + "\n")
+	b.WriteString("\n" + helpStyle.Render("a: add • d: delete • esc: back") + "\n")
 }
 
 // ---------------------------------------------------------------------------
