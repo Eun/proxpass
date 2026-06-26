@@ -74,6 +74,7 @@ const (
 	viewAddAdminKey
 	viewAddAccessRule
 	viewAddPolicyEntry
+	viewConfirmDelete
 )
 
 // Menu items in the main menu.
@@ -144,6 +145,14 @@ type Model struct {
 	// The admin handler checks this after the TUI exits.
 	SelectedGuest *models.Guest
 
+	// Multi-select bindings (e.g., group members)
+	pendingTags *[]string
+
+	// Delete confirmation
+	pendingConfirm  *bool
+	pendingDeleteFn func() tea.Msg
+	confirmParent   viewState
+
 	// Status / error line
 	statusMsg string
 }
@@ -177,7 +186,7 @@ func (m Model) Init() tea.Cmd {
 //nolint:gocritic // required by tea.Model interface
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// When a form is active, delegate everything to it.
-	if m.isInputState() && m.form != nil {
+	if m.isInputState() && m.form != nil { //nolint:nestif // form delegation requires nested type/state checks
 		// Intercept Esc to cancel the form — huh only binds
 		// Quit to ctrl+c by default.
 		if keyMsg, ok := msg.(tea.KeyMsg); ok {
@@ -200,6 +209,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.form = f
 		}
 		if m.form.State == huh.StateCompleted {
+			if m.state == viewConfirmDelete {
+				return m.handleDeleteConfirm()
+			}
 			return m.submitAdd()
 		}
 		if m.form.State == huh.StateAborted {
@@ -271,7 +283,7 @@ func (m *Model) isInputState() bool {
 	//nolint:exhaustive // only input sub-states need explicit handling
 	switch m.state {
 	case viewAddInstance, viewAddClient, viewAddGroup, viewAddAdminKey,
-		viewAddAccessRule, viewAddPolicyEntry:
+		viewAddAccessRule, viewAddPolicyEntry, viewConfirmDelete:
 		return true
 	default:
 		return false
@@ -428,12 +440,36 @@ func (m *Model) startAdd() (tea.Model, tea.Cmd) {
 		)
 		m.state = viewAddClient
 	case viewGroups:
+		clients, _ := m.repo.ListClients(m.ctx)
+
 		m.formValues = map[string]*string{fieldName: new(string)}
-		m.form = huh.NewForm(
-			huh.NewGroup(
-				huh.NewInput().Title("Group Name").Key(fieldName).Value(m.formValues[fieldName]),
-			),
-		)
+
+		clientOpts := make([]huh.Option[string], 0, len(clients))
+		for _, c := range clients {
+			label := fmt.Sprintf("%s (ID %d)", c.Name, c.ID)
+			clientOpts = append(clientOpts, huh.NewOption(label, fmt.Sprintf("%d", c.ID)))
+		}
+
+		m.pendingTags = nil // reuse for selected client IDs
+
+		fields := []huh.Field{
+			huh.NewInput().Title("Group Name").Key(fieldName).Value(m.formValues[fieldName]),
+		}
+
+		if len(clientOpts) > 0 {
+			m.pendingTags = &[]string{} // pointer for multi-select binding
+			fields = append(fields,
+				huh.NewMultiSelect[string]().
+					Title("Members (space to toggle)").
+					Key("members").
+					Options(clientOpts...).
+					Value(m.pendingTags).
+					Filtering(true).
+					Height(10),
+			)
+		}
+
+		m.form = huh.NewForm(huh.NewGroup(fields...))
 		m.state = viewAddGroup
 	case viewAdminKeys:
 		m.formValues = map[string]*string{fieldPubKey: new(string)}
@@ -529,12 +565,14 @@ func (m *Model) parentState() viewState {
 		return viewAccessRules
 	case viewAddPolicyEntry:
 		return viewDefaultPolicy
+	case viewConfirmDelete:
+		return m.confirmParent
 	default:
 		return viewMenu
 	}
 }
 
-//nolint:gocognit,funlen // form submission handles many distinct entity types with multi-step flows
+//nolint:gocognit,gocyclo,funlen // form submission handles many distinct entity types with multi-step flows
 func (m *Model) submitAdd() (tea.Model, tea.Cmd) {
 	parent := m.parentState()
 	m.state = parent
@@ -623,7 +661,20 @@ func (m *Model) submitAdd() (tea.Model, tea.Cmd) {
 			m.statusMsg = "Group name is required"
 			return m, nil
 		}
-		cmd := m.addGroup(name)
+
+		var clientIDs []int64
+		if m.pendingTags != nil {
+			for _, idStr := range *m.pendingTags {
+				id, err := strconv.ParseInt(idStr, 10, 64)
+				if err != nil {
+					continue
+				}
+				clientIDs = append(clientIDs, id)
+			}
+		}
+
+		cmd := m.addGroup(name, clientIDs)
+		m.pendingTags = nil
 		return m, cmd
 
 	case viewAdminKeys:
@@ -701,49 +752,65 @@ func (m *Model) deleteSelected() (tea.Model, tea.Cmd) {
 		if m.cursor >= len(m.instances) {
 			return m, nil
 		}
-		id := m.instances[m.cursor].ID
-		return m, func() tea.Msg {
-			if err := m.repo.RemoveProxmoxInstance(m.ctx, id); err != nil {
-				return errMsg{err}
-			}
-			return doneMsg{}
-		}
+		inst := m.instances[m.cursor]
+		return m.confirmDelete(
+			fmt.Sprintf("Delete instance %q?", inst.Name),
+			func() tea.Msg {
+				if err := m.repo.RemoveProxmoxInstance(m.ctx, inst.ID); err != nil {
+					return errMsg{err}
+				}
+				return doneMsg{}
+			},
+		)
 
 	case viewClients:
 		if m.cursor >= len(m.clients) {
 			return m, nil
 		}
-		id := m.clients[m.cursor].ID
-		return m, func() tea.Msg {
-			if err := m.repo.RemoveClient(m.ctx, id); err != nil {
-				return errMsg{err}
-			}
-			return doneMsg{}
-		}
+		c := m.clients[m.cursor]
+		return m.confirmDelete(
+			fmt.Sprintf("Delete client %q?", c.Name),
+			func() tea.Msg {
+				if err := m.repo.RemoveClient(m.ctx, c.ID); err != nil {
+					return errMsg{err}
+				}
+				return doneMsg{}
+			},
+		)
 
 	case viewGroups:
 		if m.cursor >= len(m.groups) {
 			return m, nil
 		}
-		id := m.groups[m.cursor].ID
-		return m, func() tea.Msg {
-			if err := m.repo.RemoveGroup(m.ctx, id); err != nil {
-				return errMsg{err}
-			}
-			return doneMsg{}
-		}
+		g := m.groups[m.cursor]
+		return m.confirmDelete(
+			fmt.Sprintf("Delete group %q?", g.Name),
+			func() tea.Msg {
+				if err := m.repo.RemoveGroup(m.ctx, g.ID); err != nil {
+					return errMsg{err}
+				}
+				return doneMsg{}
+			},
+		)
 
 	case viewAdminKeys:
 		if m.cursor >= len(m.adminKeys) {
 			return m, nil
 		}
 		adminKey := m.adminKeys[m.cursor]
-		return m, func() tea.Msg {
-			if err := m.repo.RemoveAdminKey(m.ctx, adminKey); err != nil {
-				return errMsg{err}
-			}
-			return doneMsg{}
+		display := adminKey
+		if len(display) > 40 {
+			display = display[:37] + "..."
 		}
+		return m.confirmDelete(
+			fmt.Sprintf("Delete admin key %q?", display),
+			func() tea.Msg {
+				if err := m.repo.RemoveAdminKey(m.ctx, adminKey); err != nil {
+					return errMsg{err}
+				}
+				return doneMsg{}
+			},
+		)
 
 	case viewAccessRules:
 		if m.cursor >= len(m.accessRules) {
@@ -923,9 +990,9 @@ func (m *Model) addClientMultiKey(name string, pubKeys []string) tea.Cmd {
 	}
 }
 
-func (m *Model) addGroup(name string) tea.Cmd {
+func (m *Model) addGroup(name string, clientIDs []int64) tea.Cmd {
 	return func() tea.Msg {
-		g := &models.Group{Name: name}
+		g := &models.Group{Name: name, ClientIDs: clientIDs}
 		if err := m.repo.AddGroup(m.ctx, g); err != nil {
 			return errMsg{err}
 		}
@@ -1027,7 +1094,7 @@ func (m Model) View() string {
 	case viewAdminKeys:
 		m.viewAdminKeys(&b)
 	case viewAddInstance, viewAddClient, viewAddGroup, viewAddAdminKey,
-		viewAddAccessRule, viewAddPolicyEntry:
+		viewAddAccessRule, viewAddPolicyEntry, viewConfirmDelete:
 		if m.form != nil {
 			b.WriteString(m.form.View())
 		}
@@ -1245,6 +1312,42 @@ func buildGuestOptions(guests []*models.Guest) []huh.Option[string] {
 		opts = append(opts, huh.NewOption(label, fmt.Sprintf("%d", g.ID)))
 	}
 	return opts
+}
+
+func (m *Model) confirmDelete(title string, fn func() tea.Msg) (tea.Model, tea.Cmd) {
+	confirmed := false
+	m.pendingConfirm = &confirmed
+	m.pendingDeleteFn = fn
+	m.confirmParent = m.state
+	m.form = huh.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title(title).
+				Affirmative("Yes").
+				Negative("No").
+				Value(&confirmed),
+		),
+	)
+	m.state = viewConfirmDelete
+	m.form = m.form.WithKeyMap(formKeyMap())
+	return m, tea.Batch(tea.ClearScreen, m.form.Init())
+}
+
+func (m *Model) handleDeleteConfirm() (tea.Model, tea.Cmd) {
+	m.state = m.confirmParent
+	m.form = nil
+
+	if m.pendingConfirm != nil && *m.pendingConfirm && m.pendingDeleteFn != nil {
+		fn := m.pendingDeleteFn
+		m.pendingConfirm = nil
+		m.pendingDeleteFn = nil
+		return m, fn
+	}
+
+	// Not confirmed — just go back
+	m.pendingConfirm = nil
+	m.pendingDeleteFn = nil
+	return m, tea.ClearScreen
 }
 
 func removeInt64(slice []int64, val int64) []int64 {
