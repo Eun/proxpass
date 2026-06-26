@@ -19,7 +19,7 @@ func accessCmd(deps *Deps) *ucli.Command {
 				Name:  cmdLs,
 				Usage: "List access rules",
 				Flags: []ucli.Flag{
-					&ucli.BoolFlag{Name: flagJSON, Usage: usageJSON},
+					&ucli.StringFlag{Name: flagFormat, Value: formatPlain, Usage: usageFormat},
 				},
 				Action: func(ctx context.Context, cmd *ucli.Command) error {
 					return listAccessRules(ctx, deps, cmd)
@@ -68,7 +68,7 @@ func listAccessRules(
 	if err != nil {
 		return err
 	}
-	if cmd.Bool(flagJSON) {
+	if cmd.String(flagFormat) == formatJSON {
 		return json.NewEncoder(deps.Out).Encode(rules)
 	}
 	if len(rules) == 0 {

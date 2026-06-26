@@ -19,14 +19,14 @@ func adminKeyCmd(deps *Deps) *ucli.Command {
 				Name:  cmdLs,
 				Usage: "List admin keys",
 				Flags: []ucli.Flag{
-					&ucli.BoolFlag{Name: flagJSON, Usage: usageJSON},
+					&ucli.StringFlag{Name: flagFormat, Value: formatPlain, Usage: usageFormat},
 				},
 				Action: func(ctx context.Context, cmd *ucli.Command) error {
 					keys, err := deps.Repo.ListAdminKeys(ctx)
 					if err != nil {
 						return err
 					}
-					if cmd.Bool(flagJSON) {
+					if cmd.String(flagFormat) == formatJSON {
 						return json.NewEncoder(deps.Out).Encode(keys)
 					}
 					if len(keys) == 0 {

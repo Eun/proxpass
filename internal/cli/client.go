@@ -20,14 +20,14 @@ func clientCmd(deps *Deps) *ucli.Command {
 				Name:  cmdLs,
 				Usage: "List clients",
 				Flags: []ucli.Flag{
-					&ucli.BoolFlag{Name: flagJSON, Usage: usageJSON},
+					&ucli.StringFlag{Name: flagFormat, Value: formatPlain, Usage: usageFormat},
 				},
 				Action: func(ctx context.Context, cmd *ucli.Command) error {
 					clients, err := deps.Repo.ListClients(ctx)
 					if err != nil {
 						return err
 					}
-					if cmd.Bool("json") {
+					if cmd.String(flagFormat) == formatJSON {
 						return json.NewEncoder(deps.Out).Encode(clients)
 					}
 					if len(clients) == 0 {

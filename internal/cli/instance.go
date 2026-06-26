@@ -19,14 +19,14 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit // CLI command tr
 				Name:  cmdLs,
 				Usage: "List Proxmox instances",
 				Flags: []ucli.Flag{
-					&ucli.BoolFlag{Name: flagJSON, Usage: usageJSON},
+					&ucli.StringFlag{Name: flagFormat, Value: formatPlain, Usage: usageFormat},
 				},
 				Action: func(ctx context.Context, cmd *ucli.Command) error {
 					instances, err := deps.Repo.ListProxmoxInstances(ctx)
 					if err != nil {
 						return err
 					}
-					if cmd.Bool("json") {
+					if cmd.String(flagFormat) == formatJSON {
 						return json.NewEncoder(deps.Out).Encode(instances)
 					}
 					if len(instances) == 0 {

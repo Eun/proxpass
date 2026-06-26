@@ -19,14 +19,14 @@ func groupCmd(deps *Deps) *ucli.Command { //nolint:gocognit // CLI command tree
 				Name:  cmdLs,
 				Usage: "List groups",
 				Flags: []ucli.Flag{
-					&ucli.BoolFlag{Name: flagJSON, Usage: usageJSON},
+					&ucli.StringFlag{Name: flagFormat, Value: formatPlain, Usage: usageFormat},
 				},
 				Action: func(ctx context.Context, cmd *ucli.Command) error {
 					groups, err := deps.Repo.ListGroups(ctx)
 					if err != nil {
 						return err
 					}
-					if cmd.Bool("json") {
+					if cmd.String(flagFormat) == formatJSON {
 						return json.NewEncoder(deps.Out).Encode(groups)
 					}
 					if len(groups) == 0 {

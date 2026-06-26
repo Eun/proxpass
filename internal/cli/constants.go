@@ -1,7 +1,9 @@
 package cli
 
 const (
-	flagJSON        = "json"
+	flagFormat      = "format"
+	formatJSON      = "json"
+	formatPlain     = "plain"
 	flagName        = "name"
 	flagKey         = "key"
 	flagClient      = "client"
@@ -10,7 +12,7 @@ const (
 	cmdAdd          = "add"
 	cmdLs           = "ls"
 	cmdRm           = "rm"
-	usageJSON       = "Output as JSON"
+	usageFormat     = "Output format: plain or json (default: plain)"
 	usageClientName = "Client name"
 	usageGroupName  = "Group name"
 )
