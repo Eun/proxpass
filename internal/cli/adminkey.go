@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 
 	ucli "github.com/urfave/cli/v3"
@@ -25,7 +26,7 @@ func adminKeyCmd(deps *Deps) *ucli.Command {
 					if err != nil {
 						return err
 					}
-					if cmd.Bool("json") {
+					if cmd.Bool(flagJSON) {
 						return json.NewEncoder(deps.Out).Encode(keys)
 					}
 					if len(keys) == 0 {
@@ -33,52 +34,79 @@ func adminKeyCmd(deps *Deps) *ucli.Command {
 						return nil
 					}
 					for i, k := range keys {
-						// Show truncated key for readability
-						short := k
-						if len(k) > 60 {
-							short = k[:60] + "..."
-						}
-						fmt.Fprintf(deps.Out, "%d: %s\n", i+1, short)
+						fmt.Fprintf(deps.Out, "%d: %s\n",
+							i+1, truncateKey(k))
 					}
 					return nil
 				},
 			},
 			{
 				Name:  cmdAdd,
-				Usage: "Add an admin SSH public key",
+				Usage: "Add one or more admin SSH public keys",
 				Flags: []ucli.Flag{
-					&ucli.StringFlag{Name: flagKey, Required: true, Usage: "SSH public key (authorized_keys format)"},
+					&ucli.StringSliceFlag{
+						Name:     flagKey,
+						Required: true,
+						Usage:    "SSH public key — repeatable",
+					},
 				},
 				Action: func(ctx context.Context, cmd *ucli.Command) error {
-					key := strings.TrimSpace(cmd.String("key"))
-					if key == "" {
-						return fmt.Errorf("key cannot be empty")
-					}
-					if err := deps.Repo.AddAdminKey(ctx, key); err != nil {
-						return err
-					}
-					fmt.Fprintln(deps.Out, "Admin key added.")
-					return nil
+					return forEachKey(
+						cmd.StringSlice(flagKey), deps.Out,
+						"added",
+						func(k string) error {
+							return deps.Repo.AddAdminKey(ctx, k)
+						},
+					)
 				},
 			},
 			{
 				Name:  cmdRm,
-				Usage: "Remove an admin SSH public key",
+				Usage: "Remove one or more admin SSH public keys",
 				Flags: []ucli.Flag{
-					&ucli.StringFlag{Name: flagKey, Required: true, Usage: "SSH public key to remove"},
+					&ucli.StringSliceFlag{
+						Name:     flagKey,
+						Required: true,
+						Usage:    "SSH public key — repeatable",
+					},
 				},
 				Action: func(ctx context.Context, cmd *ucli.Command) error {
-					key := strings.TrimSpace(cmd.String("key"))
-					if key == "" {
-						return fmt.Errorf("key cannot be empty")
-					}
-					if err := deps.Repo.RemoveAdminKey(ctx, key); err != nil {
-						return err
-					}
-					fmt.Fprintln(deps.Out, "Admin key removed.")
-					return nil
+					return forEachKey(
+						cmd.StringSlice(flagKey), deps.Out,
+						"removed",
+						func(k string) error {
+							return deps.Repo.RemoveAdminKey(ctx, k)
+						},
+					)
 				},
 			},
 		},
 	}
+}
+
+// forEachKey trims, validates, and applies fn to each key,
+// printing a confirmation line for each.
+func forEachKey(
+	keys []string, out io.Writer, verb string,
+	fn func(string) error,
+) error {
+	for _, k := range keys {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		if err := fn(k); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Admin key %s: %s\n",
+			verb, truncateKey(k))
+	}
+	return nil
+}
+
+func truncateKey(k string) string {
+	if len(k) > 60 {
+		return k[:60] + "..."
+	}
+	return k
 }
