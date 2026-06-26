@@ -435,25 +435,61 @@ func (m *Model) startAdd() (tea.Model, tea.Cmd) {
 		)
 		m.state = viewAddAdminKey
 	case viewAccessRules:
+		// Load clients, groups, and guests for the select options.
+		clients, _ := m.repo.ListClients(m.ctx)
+		groups, _ := m.repo.ListGroups(m.ctx)
+		guests, _ := m.repo.ListGuests(m.ctx)
+
+		subjectOpts := buildSubjectOptions(clients, groups)
+		guestOpts := buildGuestOptions(guests)
+
+		if len(subjectOpts) == 0 || len(guestOpts) == 0 {
+			m.statusMsg = "Need at least one client/group and one guest"
+			return m, nil
+		}
+
 		m.formValues = map[string]*string{
-			"type": new(string), "subject_id": new(string), "guest_id": new(string),
+			"subject": new(string), "guest": new(string),
 		}
 		m.form = huh.NewForm(
 			huh.NewGroup(
-				huh.NewInput().Title("Type").Key("type").Value(m.formValues["type"]).Placeholder("client or group"),
-				huh.NewInput().Title("Subject ID").Key("subject_id").Value(m.formValues["subject_id"]),
-				huh.NewInput().Title("Guest ID").Key("guest_id").Value(m.formValues["guest_id"]),
+				huh.NewSelect[string]().
+					Title("Subject").
+					Key("subject").
+					Options(subjectOpts...).
+					Value(m.formValues["subject"]).
+					Filtering(true).
+					Height(10),
+				huh.NewSelect[string]().
+					Title("Guest").
+					Key("guest").
+					Options(guestOpts...).
+					Value(m.formValues["guest"]).
+					Filtering(true).
+					Height(10),
 			),
 		)
 		m.state = viewAddAccessRule
 	case viewDefaultPolicy:
-		m.formValues = map[string]*string{
-			"type": new(string), "id": new(string),
+		clients, _ := m.repo.ListClients(m.ctx)
+		groups, _ := m.repo.ListGroups(m.ctx)
+
+		subjectOpts := buildSubjectOptions(clients, groups)
+		if len(subjectOpts) == 0 {
+			m.statusMsg = "Need at least one client or group"
+			return m, nil
 		}
+
+		m.formValues = map[string]*string{"subject": new(string)}
 		m.form = huh.NewForm(
 			huh.NewGroup(
-				huh.NewInput().Title("Type").Key("type").Value(m.formValues["type"]).Placeholder("client or group"),
-				huh.NewInput().Title("ID").Key("id").Value(m.formValues["id"]),
+				huh.NewSelect[string]().
+					Title("Authorize").
+					Key("subject").
+					Options(subjectOpts...).
+					Value(m.formValues["subject"]).
+					Filtering(true).
+					Height(10),
 			),
 		)
 		m.state = viewAddPolicyEntry
@@ -489,7 +525,7 @@ func (m *Model) parentState() viewState {
 	}
 }
 
-func (m *Model) submitAdd() (tea.Model, tea.Cmd) {
+func (m *Model) submitAdd() (tea.Model, tea.Cmd) { //nolint:funlen // form submission handles many distinct entity types
 	parent := m.parentState()
 	m.state = parent
 
@@ -557,34 +593,47 @@ func (m *Model) submitAdd() (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case viewAccessRules:
-		ruleType := strings.TrimSpace(strings.ToLower(*m.formValues["type"]))
-		subjectStr := strings.TrimSpace(*m.formValues["subject_id"])
-		guestStr := strings.TrimSpace(*m.formValues["guest_id"])
-		if ruleType != ruleTypeClient && ruleType != ruleTypeGroup {
-			m.statusMsg = "Type must be 'client' or 'group'"
+		subjectVal := *m.formValues["subject"] // e.g. "client:1" or "group:2"
+		guestVal := *m.formValues["guest"]     // e.g. "3"
+
+		if subjectVal == "" || guestVal == "" {
+			m.statusMsg = "Subject and guest are required"
 			return m, nil
 		}
-		subjectID, err := strconv.ParseInt(subjectStr, 10, 64)
-		if err != nil {
-			m.statusMsg = "Invalid Subject ID"
+
+		// Parse subject: "client:1" or "group:2"
+		parts := strings.SplitN(subjectVal, ":", 2)
+		if len(parts) != 2 {
+			m.statusMsg = "Invalid subject selection"
 			return m, nil
 		}
-		guestID, err := strconv.ParseInt(guestStr, 10, 64)
+		ruleType := parts[0]
+		subjectID, err := strconv.ParseInt(parts[1], 10, 64)
 		if err != nil {
-			m.statusMsg = "Invalid Guest ID"
+			m.statusMsg = "Invalid subject ID"
+			return m, nil
+		}
+		guestID, err := strconv.ParseInt(guestVal, 10, 64)
+		if err != nil {
+			m.statusMsg = "Invalid guest ID"
 			return m, nil
 		}
 		cmd := m.addAccessRule(models.RuleType(ruleType), subjectID, guestID)
 		return m, cmd
 
 	case viewDefaultPolicy:
-		entryType := strings.TrimSpace(strings.ToLower(*m.formValues["type"]))
-		idStr := strings.TrimSpace(*m.formValues["id"])
-		if entryType != ruleTypeClient && entryType != ruleTypeGroup {
-			m.statusMsg = "Type must be 'client' or 'group'"
+		subjectVal := *m.formValues["subject"] // "client:1" or "group:2"
+		if subjectVal == "" {
+			m.statusMsg = "Selection is required"
 			return m, nil
 		}
-		id, err := strconv.ParseInt(idStr, 10, 64)
+		parts := strings.SplitN(subjectVal, ":", 2)
+		if len(parts) != 2 {
+			m.statusMsg = "Invalid selection"
+			return m, nil
+		}
+		entryType := parts[0]
+		id, err := strconv.ParseInt(parts[1], 10, 64)
 		if err != nil {
 			m.statusMsg = "Invalid ID"
 			return m, nil
@@ -1129,6 +1178,30 @@ func copyInt64Slice(src []int64) []int64 {
 	dst := make([]int64, len(src))
 	copy(dst, src)
 	return dst
+}
+
+// buildSubjectOptions creates huh select options from clients and groups.
+func buildSubjectOptions(clients []*models.Client, groups []*models.Group) []huh.Option[string] {
+	opts := make([]huh.Option[string], 0, len(clients)+len(groups))
+	for _, c := range clients {
+		label := fmt.Sprintf("Client: %s (ID %d)", c.Name, c.ID)
+		opts = append(opts, huh.NewOption(label, fmt.Sprintf("client:%d", c.ID)))
+	}
+	for _, g := range groups {
+		label := fmt.Sprintf("Group: %s (ID %d)", g.Name, g.ID)
+		opts = append(opts, huh.NewOption(label, fmt.Sprintf("group:%d", g.ID)))
+	}
+	return opts
+}
+
+// buildGuestOptions creates huh select options from guests.
+func buildGuestOptions(guests []*models.Guest) []huh.Option[string] {
+	opts := make([]huh.Option[string], 0, len(guests))
+	for _, g := range guests {
+		label := fmt.Sprintf("%s (%s %d)", g.Name, strings.ToUpper(string(g.Type)), g.ProxmoxID)
+		opts = append(opts, huh.NewOption(label, fmt.Sprintf("%d", g.ID)))
+	}
+	return opts
 }
 
 func removeInt64(slice []int64, val int64) []int64 {
