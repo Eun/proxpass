@@ -10,7 +10,7 @@ import (
 	ucli "github.com/urfave/cli/v3"
 )
 
-func groupCmd(deps *Deps) *ucli.Command { //nolint:gocognit // CLI command tree
+func groupCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI command tree
 	return &ucli.Command{
 		Name:  flagGroup,
 		Usage: "Manage client groups",
@@ -115,6 +115,58 @@ func groupCmd(deps *Deps) *ucli.Command { //nolint:gocognit // CLI command tree
 						}
 					}
 					return fmt.Errorf("group %q not found", name)
+				},
+			},
+			{
+				Name:      cmdInspect,
+				Usage:     "Show details for one or more groups",
+				ArgsUsage: argsNames,
+				Flags: []ucli.Flag{
+					&ucli.StringFlag{Name: flagFormat, Value: formatPlain, Usage: usageFormat},
+				},
+				Action: func(ctx context.Context, cmd *ucli.Command) error {
+					if cmd.NArg() == 0 {
+						return fmt.Errorf("usage: group inspect <name> [<name> ...]")
+					}
+					groups, err := deps.Repo.ListGroups(ctx)
+					if err != nil {
+						return err
+					}
+					clients, _ := deps.Repo.ListClients(ctx)
+					clientMap := make(map[int64]string, len(clients))
+					for _, c := range clients {
+						clientMap[c.ID] = c.Name
+					}
+					byName := make(map[string]*models.Group, len(groups))
+					for _, g := range groups {
+						byName[g.Name] = g
+					}
+					var found []*models.Group
+					for _, name := range cmd.Args().Slice() {
+						g, ok := byName[name]
+						if !ok {
+							return fmt.Errorf("group %q not found", name)
+						}
+						found = append(found, g)
+					}
+					if cmd.String(flagFormat) == formatJSON {
+						return json.NewEncoder(deps.Out).Encode(found)
+					}
+					for i, g := range found {
+						if i > 0 {
+							fmt.Fprintln(deps.Out)
+						}
+						fmt.Fprintf(deps.Out, "Name:     %s\n", g.Name)
+						fmt.Fprintf(deps.Out, "Members:  %d\n", len(g.ClientIDs))
+						for _, cid := range g.ClientIDs {
+							name := clientMap[cid]
+							if name == "" {
+								name = fmt.Sprintf("(id:%d)", cid)
+							}
+							fmt.Fprintf(deps.Out, "  - %s\n", name)
+						}
+					}
+					return nil
 				},
 			},
 		},

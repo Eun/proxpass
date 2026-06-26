@@ -12,7 +12,7 @@ import (
 	ucli "github.com/urfave/cli/v3"
 )
 
-func guestCmd(deps *Deps) *ucli.Command {
+func guestCmd(deps *Deps) *ucli.Command { //nolint:gocognit // CLI command tree
 	return &ucli.Command{
 		Name:  flagGuest,
 		Usage: "Manage and connect to guests",
@@ -91,6 +91,54 @@ func guestCmd(deps *Deps) *ucli.Command {
 					deps.ConnectRequest = &ConnectRequest{
 						Guest:    guest,
 						Instance: inst,
+					}
+					return nil
+				},
+			},
+			{
+				Name:      cmdInspect,
+				Usage:     "Show details for one or more guests",
+				ArgsUsage: "<identifier> [<identifier> ...]",
+				Flags: []ucli.Flag{
+					&ucli.StringFlag{Name: flagFormat, Value: formatPlain, Usage: usageFormat},
+				},
+				Action: func(ctx context.Context, cmd *ucli.Command) error {
+					if cmd.NArg() == 0 {
+						return fmt.Errorf("usage: guest inspect <identifier> [<identifier> ...]")
+					}
+					allGuests, err := deps.Repo.ListGuests(ctx)
+					if err != nil {
+						return err
+					}
+					instances, _ := deps.Repo.ListProxmoxInstances(ctx)
+					instMap := make(map[int64]string, len(instances))
+					for _, inst := range instances {
+						instMap[inst.ID] = inst.Name
+					}
+					var found []*models.Guest
+					for _, ident := range cmd.Args().Slice() {
+						g, resolveErr := resolveGuest(ident, allGuests)
+						if resolveErr != nil {
+							return resolveErr
+						}
+						found = append(found, g)
+					}
+					if cmd.String(flagFormat) == formatJSON {
+						return json.NewEncoder(deps.Out).Encode(found)
+					}
+					for i, g := range found {
+						if i > 0 {
+							fmt.Fprintln(deps.Out)
+						}
+						instName := instMap[g.InstanceID]
+						if instName == "" {
+							instName = fmt.Sprintf("(id:%d)", g.InstanceID)
+						}
+						fmt.Fprintf(deps.Out, "Name:       %s\n", g.Name)
+						fmt.Fprintf(deps.Out, "Type:       %s\n", g.Type)
+						fmt.Fprintf(deps.Out, "VMID:       %d\n", g.ProxmoxID)
+						fmt.Fprintf(deps.Out, "Status:     %s\n", g.Status)
+						fmt.Fprintf(deps.Out, "Instance:   %s\n", instName)
 					}
 					return nil
 				},

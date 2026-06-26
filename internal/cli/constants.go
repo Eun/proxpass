@@ -12,6 +12,8 @@ const (
 	cmdAdd          = "add"
 	cmdLs           = "ls"
 	cmdRm           = "rm"
+	cmdInspect      = "inspect"
+	argsNames       = "<name> [<name> ...]"
 	usageFormat     = "Output format: plain or json (default: plain)"
 	usageClientName = "Client name"
 	usageGroupName  = "Group name"

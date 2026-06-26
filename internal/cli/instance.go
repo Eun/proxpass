@@ -10,7 +10,7 @@ import (
 	ucli "github.com/urfave/cli/v3"
 )
 
-func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit // CLI command tree
+func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI command tree
 	return &ucli.Command{
 		Name:  "instance",
 		Usage: "Manage Proxmox instances",
@@ -119,6 +119,52 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit // CLI command tr
 						}
 					}
 					return fmt.Errorf("instance %q not found", name)
+				},
+			},
+			{
+				Name:      cmdInspect,
+				Usage:     "Show details for one or more instances",
+				ArgsUsage: argsNames,
+				Flags: []ucli.Flag{
+					&ucli.StringFlag{Name: flagFormat, Value: formatPlain, Usage: usageFormat},
+				},
+				Action: func(ctx context.Context, cmd *ucli.Command) error {
+					if cmd.NArg() == 0 {
+						return fmt.Errorf("usage: instance inspect <name> [<name> ...]")
+					}
+					instances, err := deps.Repo.ListProxmoxInstances(ctx)
+					if err != nil {
+						return err
+					}
+					byName := make(map[string]*models.ProxmoxInstance, len(instances))
+					for _, inst := range instances {
+						byName[inst.Name] = inst
+					}
+					var found []*models.ProxmoxInstance
+					for _, name := range cmd.Args().Slice() {
+						inst, ok := byName[name]
+						if !ok {
+							return fmt.Errorf("instance %q not found", name)
+						}
+						found = append(found, inst)
+					}
+					if cmd.String(flagFormat) == formatJSON {
+						return json.NewEncoder(deps.Out).Encode(found)
+					}
+					for i, inst := range found {
+						if i > 0 {
+							fmt.Fprintln(deps.Out)
+						}
+						fmt.Fprintf(deps.Out, "Name:             %s\n", inst.Name)
+						fmt.Fprintf(deps.Out, "API URL:          %s\n", inst.APIURL)
+						fmt.Fprintf(deps.Out, "API Token ID:     %s\n", inst.APITokenID)
+						fmt.Fprintf(deps.Out, "API Token Secret: %s\n", inst.APITokenSecret)
+						fmt.Fprintf(deps.Out, "SSH Host:         %s\n", inst.SSHHost)
+						fmt.Fprintf(deps.Out, "SSH Port:         %d\n", inst.SSHPort)
+						fmt.Fprintf(deps.Out, "SSH User:         %s\n", inst.SSHUser)
+						fmt.Fprintf(deps.Out, "SSH Key Path:     %s\n", inst.SSHKeyPath)
+					}
+					return nil
 				},
 			},
 		},
