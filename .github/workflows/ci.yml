@@ -1,7 +1,7 @@
 # this workflow runs CI checks on all pushes and pull requests.
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
 
 name: "ci"
