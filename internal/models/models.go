@@ -24,6 +24,7 @@ type ProxmoxInstance struct {
 	SSHPort        int    `json:"ssh_port"`
 	SSHUser        string `json:"ssh_user"`
 	SSHKeyPath     string `json:"ssh_key_path"`
+	SSHKey         string `json:"ssh_key"` // PEM-encoded private key (stored in DB; preferred over SSHKeyPath when non-empty)
 }
 
 type Guest struct {

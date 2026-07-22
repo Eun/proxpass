@@ -146,9 +146,16 @@ func proxyToGuest(
 	_ *log.Logger,
 ) error {
 	// Load the private key for the Proxmox host.
-	keyBytes, err := os.ReadFile(inst.SSHKeyPath)
-	if err != nil {
-		return fmt.Errorf("reading proxmox key %s: %w", inst.SSHKeyPath, err)
+	// SSHKey (inline PEM stored in DB) takes precedence over SSHKeyPath (file path).
+	var keyBytes []byte
+	if inst.SSHKey != "" {
+		keyBytes = []byte(inst.SSHKey)
+	} else {
+		var err error
+		keyBytes, err = os.ReadFile(inst.SSHKeyPath)
+		if err != nil {
+			return fmt.Errorf("reading proxmox key %s: %w", inst.SSHKeyPath, err)
+		}
 	}
 	signer, err := gossh.ParsePrivateKey(keyBytes)
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	_ "modernc.org/sqlite" // register sqlite3 driver
 
@@ -31,8 +32,11 @@ func NewSQLiteRepository(dbPath string) (Repository, error) {
 			ssh_host TEXT NOT NULL,
 			ssh_port INTEGER NOT NULL,
 			ssh_user TEXT NOT NULL,
-			ssh_key_path TEXT NOT NULL
+			ssh_key_path TEXT NOT NULL,
+			ssh_key TEXT NOT NULL DEFAULT ''
 		)`,
+		// Migration: add ssh_key column to existing databases that pre-date this feature.
+		`ALTER TABLE proxmox_instances ADD COLUMN ssh_key TEXT NOT NULL DEFAULT '' `,
 		`CREATE TABLE IF NOT EXISTS guests (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			type TEXT NOT NULL,
@@ -71,11 +75,23 @@ func NewSQLiteRepository(dbPath string) (Repository, error) {
 
 	for _, s := range schema {
 		if _, err := db.ExecContext(context.Background(), s); err != nil {
-			return nil, fmt.Errorf("failed to execute schema: %w", err)
+			// ALTER TABLE … ADD COLUMN fails with "duplicate column name" when the
+			// column already exists (fresh DB created with the new schema). Ignore
+			// that specific error; treat everything else as fatal.
+			if !isDuplicateColumnError(err) {
+				return nil, fmt.Errorf("failed to execute schema: %w", err)
+			}
 		}
 	}
 
 	return &sqliteRepo{db: db}, nil
+}
+
+// isDuplicateColumnError returns true when SQLite rejects an ALTER TABLE … ADD COLUMN
+// because the column already exists. This happens when a fresh database is created
+// with the new CREATE TABLE schema and the migration ALTER TABLE is applied again.
+func isDuplicateColumnError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "duplicate column name")
 }
 
 func (r *sqliteRepo) Close() error {
@@ -87,10 +103,10 @@ func (r *sqliteRepo) Close() error {
 func (r *sqliteRepo) AddProxmoxInstance(ctx context.Context, inst *models.ProxmoxInstance) error {
 	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO proxmox_instances
-		(name, api_url, api_token_id, api_token_secret, ssh_host, ssh_port, ssh_user, ssh_key_path)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		(name, api_url, api_token_id, api_token_secret, ssh_host, ssh_port, ssh_user, ssh_key_path, ssh_key)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		inst.Name, inst.APIURL, inst.APITokenID, inst.APITokenSecret,
-		inst.SSHHost, inst.SSHPort, inst.SSHUser, inst.SSHKeyPath,
+		inst.SSHHost, inst.SSHPort, inst.SSHUser, inst.SSHKeyPath, inst.SSHKey,
 	)
 	if err != nil {
 		return err
@@ -102,7 +118,7 @@ func (r *sqliteRepo) AddProxmoxInstance(ctx context.Context, inst *models.Proxmo
 func (r *sqliteRepo) ListProxmoxInstances(ctx context.Context) ([]*models.ProxmoxInstance, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, name, api_url, api_token_id, api_token_secret,
-		ssh_host, ssh_port, ssh_user, ssh_key_path
+		ssh_host, ssh_port, ssh_user, ssh_key_path, ssh_key
 		FROM proxmox_instances`)
 	if err != nil {
 		return nil, err
@@ -115,7 +131,7 @@ func (r *sqliteRepo) ListProxmoxInstances(ctx context.Context) ([]*models.Proxmo
 			&inst.ID, &inst.Name, &inst.APIURL,
 			&inst.APITokenID, &inst.APITokenSecret,
 			&inst.SSHHost, &inst.SSHPort, &inst.SSHUser,
-			&inst.SSHKeyPath,
+			&inst.SSHKeyPath, &inst.SSHKey,
 		); err != nil {
 			return nil, err
 		}
@@ -129,11 +145,11 @@ func (r *sqliteRepo) UpdateProxmoxInstance(ctx context.Context, inst *models.Pro
 		`UPDATE proxmox_instances SET
 		name = ?, api_url = ?, api_token_id = ?,
 		api_token_secret = ?, ssh_host = ?, ssh_port = ?,
-		ssh_user = ?, ssh_key_path = ?
+		ssh_user = ?, ssh_key_path = ?, ssh_key = ?
 		WHERE id = ?`,
 		inst.Name, inst.APIURL, inst.APITokenID,
 		inst.APITokenSecret, inst.SSHHost, inst.SSHPort,
-		inst.SSHUser, inst.SSHKeyPath, inst.ID,
+		inst.SSHUser, inst.SSHKeyPath, inst.SSHKey, inst.ID,
 	)
 	return err
 }
