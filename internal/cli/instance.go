@@ -2,15 +2,19 @@ package cli
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 
 	"proxpass/internal/models"
 
 	ucli "github.com/urfave/cli/v3"
+	gossh "golang.org/x/crypto/ssh"
 )
 
-func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI command tree
+func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo // CLI command tree
 	return &ucli.Command{
 		Name:  "instance",
 		Usage: "Manage Proxmox instances",
@@ -50,14 +54,50 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI com
 					&ucli.StringFlag{Name: "token-secret", Required: true, Usage: "API token secret"},
 					&ucli.StringFlag{Name: "ssh-host", Required: true, Usage: "SSH host (host or host:port, default port 22)"},
 					&ucli.StringFlag{Name: "ssh-user", Value: "root", Usage: "SSH username"},
-					&ucli.StringFlag{Name: "ssh-key-path", Required: true, Usage: "Path to SSH private key"},
+					&ucli.StringFlag{
+						Name:  "ssh-key-path",
+						Usage: "Path to SSH private key on the proxpass server (mutually exclusive with --generate-ssh-key)",
+					},
+					&ucli.BoolFlag{
+						Name:  "generate-ssh-key",
+						Usage: "Generate a new ED25519 key pair; prints the public key to add to Proxmox authorized_keys",
+					},
 				},
 				Action: func(ctx context.Context, cmd *ucli.Command) error {
+					generateKey := cmd.Bool("generate-ssh-key")
+					keyPath := cmd.String("ssh-key-path")
+					if generateKey && keyPath != "" {
+						return fmt.Errorf("--generate-ssh-key and --ssh-key-path are mutually exclusive")
+					}
+					if !generateKey && keyPath == "" {
+						return fmt.Errorf("one of --ssh-key-path or --generate-ssh-key is required")
+					}
+
 					sshHost, sshPort, err := parseHostPort(
 						cmd.String("ssh-host"), 22)
 					if err != nil {
 						return fmt.Errorf("invalid --ssh-host: %w", err)
 					}
+
+					var sshKeyPEM string
+					var pubKeyAuthorized string
+					if generateKey {
+						pub, priv, err := ed25519.GenerateKey(rand.Reader)
+						if err != nil {
+							return fmt.Errorf("generating SSH key: %w", err)
+						}
+						privPEM, err := gossh.MarshalPrivateKey(priv, "")
+						if err != nil {
+							return fmt.Errorf("marshaling SSH private key: %w", err)
+						}
+						sshKeyPEM = string(pem.EncodeToMemory(privPEM))
+						pubSSH, err := gossh.NewPublicKey(pub)
+						if err != nil {
+							return fmt.Errorf("marshaling SSH public key: %w", err)
+						}
+						pubKeyAuthorized = string(gossh.MarshalAuthorizedKey(pubSSH))
+					}
+
 					inst := &models.ProxmoxInstance{
 						Name:           cmd.String(flagName),
 						APIURL:         cmd.String("api-url"),
@@ -66,12 +106,16 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI com
 						SSHHost:        sshHost,
 						SSHPort:        sshPort,
 						SSHUser:        cmd.String("ssh-user"),
-						SSHKeyPath:     cmd.String("ssh-key-path"),
+						SSHKeyPath:     keyPath,
+						SSHKey:         sshKeyPEM,
 					}
 					if err := deps.Repo.AddProxmoxInstance(ctx, inst); err != nil {
 						return err
 					}
 					fmt.Fprintf(deps.Out, "Instance %q added.\n", inst.Name)
+					if pubKeyAuthorized != "" {
+						fmt.Fprintf(deps.Out, "Public key (add to Proxmox authorized_keys on %s):\n%s", inst.SSHHost, pubKeyAuthorized)
+					}
 
 					// Run discovery on the new instance.
 					if deps.Discoverer != nil {
@@ -166,7 +210,11 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI com
 						fmt.Fprintf(deps.Out, "SSH Host:         %s\n", inst.SSHHost)
 						fmt.Fprintf(deps.Out, "SSH Port:         %d\n", inst.SSHPort)
 						fmt.Fprintf(deps.Out, "SSH User:         %s\n", inst.SSHUser)
-						fmt.Fprintf(deps.Out, "SSH Key Path:     %s\n", inst.SSHKeyPath)
+						if inst.SSHKey != "" {
+							fmt.Fprintf(deps.Out, "SSH Key:          (generated, stored in DB)\n")
+						} else {
+							fmt.Fprintf(deps.Out, "SSH Key Path:     %s\n", inst.SSHKeyPath)
+						}
 					}
 					return nil
 				},
