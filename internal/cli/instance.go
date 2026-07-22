@@ -56,7 +56,11 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 					&ucli.StringFlag{Name: "ssh-user", Value: "root", Usage: "SSH username"},
 					&ucli.StringFlag{
 						Name:  "ssh-key-path",
-						Usage: "Path to SSH private key on the proxpass server (mutually exclusive with --generate-ssh-key)",
+						Usage: "Path to SSH private key on the proxpass server (mutually exclusive with --ssh-key, --generate-ssh-key)",
+					},
+					&ucli.StringFlag{
+						Name:  "ssh-key",
+						Usage: "PEM-encoded private key content (mutually exclusive with --ssh-key-path, --generate-ssh-key)",
 					},
 					&ucli.BoolFlag{
 						Name:  "generate-ssh-key",
@@ -66,11 +70,24 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 				Action: func(ctx context.Context, cmd *ucli.Command) error {
 					generateKey := cmd.Bool("generate-ssh-key")
 					keyPath := cmd.String("ssh-key-path")
-					if generateKey && keyPath != "" {
-						return fmt.Errorf("--generate-ssh-key and --ssh-key-path are mutually exclusive")
+					keyInline := cmd.String("ssh-key")
+
+					// Exactly one key source must be supplied.
+					set := 0
+					if keyPath != "" {
+						set++
 					}
-					if !generateKey && keyPath == "" {
-						return fmt.Errorf("one of --ssh-key-path or --generate-ssh-key is required")
+					if keyInline != "" {
+						set++
+					}
+					if generateKey {
+						set++
+					}
+					if set == 0 {
+						return fmt.Errorf("one of --ssh-key-path, --ssh-key, or --generate-ssh-key is required")
+					}
+					if set > 1 {
+						return fmt.Errorf("--ssh-key-path, --ssh-key, and --generate-ssh-key are mutually exclusive")
 					}
 
 					sshHost, sshPort, err := parseHostPort(
@@ -81,7 +98,14 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 
 					var sshKeyPEM string
 					var pubKeyAuthorized string
-					if generateKey {
+					switch {
+					case keyInline != "":
+						// Validate that the supplied value is a parseable private key.
+						if _, err := gossh.ParsePrivateKey([]byte(keyInline)); err != nil {
+							return fmt.Errorf("--ssh-key: not a valid PEM private key: %w", err)
+						}
+						sshKeyPEM = keyInline
+					case generateKey:
 						pub, priv, err := ed25519.GenerateKey(rand.Reader)
 						if err != nil {
 							return fmt.Errorf("generating SSH key: %w", err)
