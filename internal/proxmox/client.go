@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"proxpass/internal/models"
@@ -21,9 +22,22 @@ type APIClient struct {
 }
 
 // NewAPIClient creates an API client for the given Proxmox instance.
-func NewAPIClient(inst *models.ProxmoxInstance) *APIClient {
+// Returns an error if inst.APIURL is missing a scheme (e.g. "pve:8006"
+// instead of "https://pve:8006"), which would cause url.Parse to treat
+// the hostname as a scheme and silently drop the port.
+func NewAPIClient(inst *models.ProxmoxInstance) (*APIClient, error) {
+	parsed, err := url.Parse(strings.TrimRight(inst.APIURL, "/"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid api-url %q: %w", inst.APIURL, err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, fmt.Errorf("invalid api-url %q: must start with http:// or https://", inst.APIURL)
+	}
+	if parsed.Host == "" {
+		return nil, fmt.Errorf("invalid api-url %q: missing host", inst.APIURL)
+	}
 	return &APIClient{
-		baseURL:     strings.TrimRight(inst.APIURL, "/"),
+		baseURL:     parsed.String(),
 		tokenID:     inst.APITokenID,
 		tokenSecret: inst.APITokenSecret,
 		httpClient: &http.Client{
@@ -33,7 +47,7 @@ func NewAPIClient(inst *models.ProxmoxInstance) *APIClient {
 				},
 			},
 		},
-	}
+	}, nil
 }
 
 // DiscoverGuests queries the Proxmox API for all nodes, then fetches LXC
@@ -87,28 +101,28 @@ type guestEntry struct {
 
 // doGet performs an authenticated GET and returns the response body.
 func (c *APIClient) doGet(ctx context.Context, path string) ([]byte, error) {
-	url := c.baseURL + path
+	reqURL := c.baseURL + path
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, http.NoBody)
 	if err != nil {
-		return nil, fmt.Errorf("new request %s: %w", url, err)
+		return nil, fmt.Errorf("new request %s: %w", reqURL, err)
 	}
 	req.Header.Set("Authorization",
 		fmt.Sprintf("PVEAPIToken=%s=%s", c.tokenID, c.tokenSecret))
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("GET %s: %w", url, err)
+		return nil, fmt.Errorf("GET %s: %w", reqURL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read body %s: %w", url, err)
+		return nil, fmt.Errorf("read body %s: %w", reqURL, err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s: status %d: %s", url, resp.StatusCode, string(body))
+		return nil, fmt.Errorf("GET %s: status %d: %s", reqURL, resp.StatusCode, string(body))
 	}
 
 	return body, nil
@@ -162,8 +176,21 @@ func (c *APIClient) getNodeGuests(ctx context.Context, node, kind string, guestT
 var _ GuestDiscoverer = (*APIClient)(nil)
 
 // DefaultDiscovererFactory creates an APIClient-based discoverer.
+// If the instance URL is invalid it returns a discoverer that immediately
+// returns an error, so the error surfaces at discovery time rather than panicking.
 func DefaultDiscovererFactory(inst *models.ProxmoxInstance) GuestDiscoverer {
-	return NewAPIClient(inst)
+	client, err := NewAPIClient(inst)
+	if err != nil {
+		return &errDiscoverer{err: err}
+	}
+	return client
+}
+
+// errDiscoverer is a GuestDiscoverer that always returns a fixed error.
+type errDiscoverer struct{ err error }
+
+func (e *errDiscoverer) DiscoverGuests(_ context.Context) ([]*models.Guest, error) {
+	return nil, e.err
 }
 
 // normalizeStatus maps a raw status string to one of the known Status

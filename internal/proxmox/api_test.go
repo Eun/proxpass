@@ -27,7 +27,10 @@ func TestAPIClientDiscoverGuests(t *testing.T) {
 		APITokenSecret: "secret123",
 	}
 
-	client := proxmox.NewAPIClient(inst)
+	client, err := proxmox.NewAPIClient(inst)
+	if err != nil {
+		t.Fatalf("NewAPIClient: %v", err)
+	}
 	guests, err := client.DiscoverGuests(context.Background())
 	if err != nil {
 		t.Fatalf("DiscoverGuests: %v", err)
@@ -70,9 +73,45 @@ func TestAPIClientBadAuth(t *testing.T) {
 		APITokenSecret: "wrong",
 	}
 
-	client := proxmox.NewAPIClient(inst)
-	_, err := client.DiscoverGuests(context.Background())
+	client, err := proxmox.NewAPIClient(inst)
+	if err != nil {
+		t.Fatalf("NewAPIClient: %v", err)
+	}
+	_, err = client.DiscoverGuests(context.Background())
 	if err == nil {
 		t.Fatal("expected auth error, got nil")
+	}
+}
+
+func TestNewAPIClientURLValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		apiURL  string
+		wantErr bool
+	}{
+		{"valid https with port", "https://pve:8006", false},
+		{"valid http with port", "http://pve:8006", false},
+		{"valid https trailing slash", "https://pve:8006/", false},
+		{"missing scheme — port silently lost", "pve:8006", true},
+		{"missing scheme no port", "pve", true},
+		{"empty string", "", true},
+		{"scheme-relative", "//pve:8006", true},
+		{"ftp scheme", "ftp://pve:8006", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inst := &models.ProxmoxInstance{
+				APIURL:         tt.apiURL,
+				APITokenID:     "user@pam!tok",
+				APITokenSecret: "secret",
+			}
+			_, err := proxmox.NewAPIClient(inst)
+			if tt.wantErr && err == nil {
+				t.Errorf("expected error for api-url %q, got nil", tt.apiURL)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error for api-url %q: %v", tt.apiURL, err)
+			}
+		})
 	}
 }
