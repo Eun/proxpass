@@ -3,6 +3,7 @@ package ssh
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"strings"
 
@@ -87,11 +88,22 @@ func DefaultAdminHandler( //nolint:gocognit // SSH session handler
 			}
 		}()
 
+		// When a PTY is active the SSH channel is in raw mode:
+		// the client's terminal expects \r\n line endings, not bare \n.
+		var out, errOut io.Writer
+		if ptyReq != nil {
+			out = newCRLFWriter(channel)
+			errOut = newCRLFWriter(channel.Stderr())
+		} else {
+			out = channel
+			errOut = channel.Stderr()
+		}
+
 		deps := &cli.Deps{
 			Repo:       repo,
 			Discoverer: discoverer,
-			Out:        channel,
-			ErrOut:     channel.Stderr(),
+			Out:        out,
+			ErrOut:     errOut,
 		}
 
 		var argv []string
