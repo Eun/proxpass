@@ -36,8 +36,10 @@ func NewAPIClient(inst *models.ProxmoxInstance) (*APIClient, error) {
 	if parsed.Host == "" {
 		return nil, fmt.Errorf("invalid api-url %q: missing host", inst.APIURL)
 	}
+	// Use the trimmed original string (not parsed.String()) to preserve
+	// the URL exactly as provided without any normalization side-effects.
 	return &APIClient{
-		baseURL:     parsed.String(),
+		baseURL:     strings.TrimRight(inst.APIURL, "/"),
 		tokenID:     inst.APITokenID,
 		tokenSecret: inst.APITokenSecret,
 		httpClient: &http.Client{
