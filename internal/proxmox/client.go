@@ -43,6 +43,11 @@ func NewAPIClient(inst *models.ProxmoxInstance) (*APIClient, error) {
 		tokenID:     inst.APITokenID,
 		tokenSecret: inst.APITokenSecret,
 		httpClient: &http.Client{
+			// Do not follow redirects: a redirect from https://host:8006 to
+			// https://host (port stripped) would silently break all API calls.
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{
 					InsecureSkipVerify: true, //nolint:gosec // Proxmox often uses self-signed certs
