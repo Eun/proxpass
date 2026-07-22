@@ -14,8 +14,8 @@ func TestCRLFWriter(t *testing.T) {
 		wanted string
 	}{
 		{
-			name:    "bare newline converted",
-			input:   "hello\nworld\n",
+			name:   "bare newline converted",
+			input:  "hello\nworld\n",
 			wanted: crlfHelloWorld,
 		},
 		{
