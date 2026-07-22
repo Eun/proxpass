@@ -5,41 +5,43 @@ import (
 	"testing"
 )
 
+const crlfHelloWorld = "hello\r\nworld\r\n"
+
 func TestCRLFWriter(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		wanted   string
+		name   string
+		input  string
+		wanted string
 	}{
 		{
 			name:    "bare newline converted",
 			input:   "hello\nworld\n",
-			wanted:  "hello\r\nworld\r\n",
+			wanted: crlfHelloWorld,
 		},
 		{
-			name:    "already crlf untouched",
-			input:   "hello\r\nworld\r\n",
-			wanted:  "hello\r\nworld\r\n",
+			name:   "already crlf untouched",
+			input:  crlfHelloWorld,
+			wanted: crlfHelloWorld,
 		},
 		{
-			name:    "no newline",
-			input:   "hello world",
-			wanted:  "hello world",
+			name:   "no newline",
+			input:  "hello world",
+			wanted: "hello world",
 		},
 		{
-			name:    "leading newline",
-			input:   "\nfoo",
-			wanted:  "\r\nfoo",
+			name:   "leading newline",
+			input:  "\nfoo",
+			wanted: "\r\nfoo",
 		},
 		{
-			name:    "multiple consecutive newlines",
-			input:   "a\n\nb",
-			wanted:  "a\r\n\r\nb",
+			name:   "multiple consecutive newlines",
+			input:  "a\n\nb",
+			wanted: "a\r\n\r\nb",
 		},
 		{
-			name:    "mixed",
-			input:   "a\r\nb\nc",
-			wanted:  "a\r\nb\r\nc",
+			name:   "mixed",
+			input:  "a\r\nb\nc",
+			wanted: "a\r\nb\r\nc",
 		},
 	}
 
