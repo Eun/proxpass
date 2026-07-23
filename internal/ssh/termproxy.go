@@ -52,29 +52,31 @@ func proxyViaTermProxy(
 	// When inst.Username/Password are set, we use a session ticket for both
 	// the termproxy POST and the vncwebsocket — this produces a VNC ticket
 	// assembled with the user identity, matching what termproxy expects.
-	// When not set, API token auth is used (works with newer Proxmox +
-	// --vncticket-endpoint).
+	// Session auth (username+password) is required: the termproxy binary validates
+	// the auth line by POSTing to /access/ticket with the authid as username.
+	// API token IDs (user@realm!token) are rejected by Proxmox as invalid usernames.
+	// Only real user identities (user@realm, e.g. root@pam) are accepted.
+	if inst.Username == "" {
+		return fmt.Errorf("termproxy requires --username and --password: " +
+			"the termproxy binary authenticates via Proxmox user credentials, " +
+			"not API tokens (API token IDs are rejected as invalid usernames). " +
+			"Re-add this instance with --username root@pam --password <password>")
+	}
+
 	apiClient, err := proxmox.NewAPIClient(inst)
 	if err != nil {
 		return fmt.Errorf("build api client: %w", err)
 	}
 
-	var ticket *proxmox.TermProxyTicket
-	var session *proxmox.SessionTicket
-
-	if inst.Username != "" {
-		logger.Printf("termproxy: using session auth (username=%q)", inst.Username)
-		session, err = apiClient.GetSessionTicket(ctx, inst.Username, inst.Password)
-		if err != nil {
-			return fmt.Errorf("get session ticket: %w", err)
-		}
-		logger.Printf("termproxy: session ticket obtained (username=%q ticket-prefix=%q)",
-			session.Username, truncateTicket(session.Ticket))
-		ticket, err = apiClient.CreateTermProxyTicketWithSession(ctx, inst.Node, guest, session)
-	} else {
-		logger.Printf("termproxy: using API token auth (tokenID=%q)", inst.APITokenID)
-		ticket, err = apiClient.CreateTermProxyTicket(ctx, inst.Node, guest)
+	logger.Printf("termproxy: using session auth (username=%q)", inst.Username)
+	session, err := apiClient.GetSessionTicket(ctx, inst.Username, inst.Password)
+	if err != nil {
+		return fmt.Errorf("get session ticket: %w", err)
 	}
+	logger.Printf("termproxy: session ticket obtained (username=%q ticket-prefix=%q)",
+		session.Username, truncateTicket(session.Ticket))
+
+	ticket, err := apiClient.CreateTermProxyTicketWithSession(ctx, inst.Node, guest, session)
 	if err != nil {
 		return fmt.Errorf("create termproxy ticket: %w", err)
 	}
@@ -102,22 +104,11 @@ func proxyViaTermProxy(
 
 	// --- Step 4: Dial WebSocket ---
 	// Subprotocol: "binary" (required by Proxmox vncwebsocket).
-	// Auth: use the same credentials as the termproxy POST so that the
-	// vncwebsocket verify_vnc_ticket check sees the same identity.
-	var wsHeader http.Header
-	if session != nil {
-		logger.Printf("termproxy: ws auth=cookie PVEAuthCookie prefix=%q", truncateTicket(session.Ticket))
-		wsHeader = http.Header{
-			// Cookie value must be the raw ticket — pveproxy parses it as-is.
-			"Cookie": []string{"PVEAuthCookie=" + session.Ticket},
-		}
-	} else {
-		logger.Printf("termproxy: ws auth=PVEAPIToken tokenID=%q", inst.APITokenID)
-		wsHeader = http.Header{
-			"Authorization": []string{
-				fmt.Sprintf("PVEAPIToken=%s=%s", inst.APITokenID, inst.APITokenSecret),
-			},
-		}
+	// Cookie must be the raw session ticket — pveproxy parses it as-is to identify
+	// the user, then verifies the vncticket was issued for that same user.
+	logger.Printf("termproxy: ws auth=cookie PVEAuthCookie prefix=%q", truncateTicket(session.Ticket))
+	wsHeader := http.Header{
+		"Cookie": []string{"PVEAuthCookie=" + session.Ticket},
 	}
 	dialOpts := &websocket.DialOptions{
 		Subprotocols: []string{"binary"},
@@ -150,17 +141,9 @@ func proxyViaTermProxy(
 	defer func() { _ = conn.CloseNow() }()
 
 	// --- Step 5: Send auth line: "<authid>:<vncticket>\n" ---
-	// termproxy reads this first, validates (via /access/ticket or /access/vncticket
-	// depending on Proxmox version), then sends "OK".
-	// authid must match the identity used when assembling the VNC ticket:
-	// - session auth: inst.Username (e.g. root@pam)
-	// - token auth:   inst.APITokenID (e.g. root@pam!proxpass)
-	var authid string
-	if session != nil {
-		authid = session.Username
-	} else {
-		authid = inst.APITokenID
-	}
+	// termproxy validates this by POSTing to /access/ticket with authid as username.
+	// Must be a real user identity (e.g. root@pam) — API token IDs are rejected.
+	authid := session.Username
 	authLine := fmt.Sprintf("%s:%s\n", authid, ticket.Ticket)
 	logger.Printf("termproxy: sending auth line authid=%q ticket-prefix=%q",
 		authid, truncateTicket(ticket.Ticket))
