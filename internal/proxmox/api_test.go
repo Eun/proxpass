@@ -13,15 +13,18 @@ func TestAPIClientDiscoverGuests(t *testing.T) {
 	api := testenv.NewMockAPIServer(testTokenID, "secret123")
 	defer api.Close()
 
+	// node1 has 2 CTs and 1 VM; node2 has 1 VM.
+	// When SSHHost="node1", DiscoverGuests must only return node1's guests.
 	api.AddLXC("node1", 100, "ct1", "running")
 	api.AddLXC("node1", 101, "ct2", "stopped")
 	api.AddQEMU("node1", 200, "vm1", "running")
-	api.AddQEMU("node2", 300, "vm2", "stopped")
+	api.AddQEMU("node2", 300, "vm2", "running") // different node — must not appear
 
 	inst := &models.ProxmoxInstance{
 		APIURL:         api.URL(),
 		APITokenID:     testTokenID,
 		APITokenSecret: "secret123",
+		SSHHost:        "node1", // scope discovery to node1 only
 	}
 
 	client, err := proxmox.NewAPIClient(inst)
@@ -33,8 +36,10 @@ func TestAPIClientDiscoverGuests(t *testing.T) {
 		t.Fatalf("DiscoverGuests: %v", err)
 	}
 
-	if len(guests) != 4 {
-		t.Fatalf("expected 4 guests, got %d", len(guests))
+	// Only node1 guests: 2 CTs + 1 VM = 3 total.
+	// (node2's vm2 must not appear regardless of status)
+	if len(guests) != 3 {
+		t.Fatalf("expected 3 guests from node1, got %d", len(guests))
 	}
 
 	ctCount, vmCount := 0, 0
@@ -47,10 +52,10 @@ func TestAPIClientDiscoverGuests(t *testing.T) {
 		}
 	}
 	if ctCount != 2 {
-		t.Errorf("expected 2 CTs, got %d", ctCount)
+		t.Errorf("expected 2 CTs from node1, got %d", ctCount)
 	}
-	if vmCount != 2 {
-		t.Errorf("expected 2 VMs, got %d", vmCount)
+	if vmCount != 1 {
+		t.Errorf("expected 1 VM from node1, got %d", vmCount)
 	}
 }
 
@@ -64,6 +69,7 @@ func TestAPIClientBadAuth(t *testing.T) {
 		APIURL:         api.URL(),
 		APITokenID:     "wrong",
 		APITokenSecret: "wrong",
+		SSHHost:        "node1",
 	}
 
 	client, err := proxmox.NewAPIClient(inst)
