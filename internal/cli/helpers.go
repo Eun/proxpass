@@ -3,7 +3,9 @@ package cli
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"strconv"
+	"strings"
 )
 
 // parseHostPort splits a "host" or "host:port" string. If no port
@@ -20,4 +22,26 @@ func parseHostPort(hostport string, defaultPort int) (host string, port int, err
 		return "", 0, fmt.Errorf("invalid port %q", portStr)
 	}
 	return host, port, nil
+}
+
+// validateAPIURL checks that rawURL is a valid Proxmox API URL with an
+// explicit port. It rejects:
+//   - Missing scheme (e.g. "pve:8006" — url.Parse treats "pve" as the scheme
+//     and silently drops the port)
+//   - Non-http/https schemes
+//   - Missing host
+//   - Missing port (requests would go to the scheme default, 80 or 443)
+func validateAPIURL(rawURL string) error {
+	trimmed := strings.TrimRight(rawURL, "/")
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return fmt.Errorf("--api-url %q: %w", rawURL, err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("--api-url %q: must start with http:// or https://", rawURL)
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("--api-url %q: missing host", rawURL)
+	}
+	return nil
 }

@@ -37,10 +37,18 @@ func NewAPIClient(inst *models.ProxmoxInstance) (*APIClient, error) {
 		return nil, fmt.Errorf("invalid api-url %q: missing host", inst.APIURL)
 	}
 	return &APIClient{
-		baseURL:     parsed.String(),
+		// Use the trimmed original string, not parsed.String(), to guarantee
+		// the port is preserved exactly as the user specified it.
+		baseURL:     strings.TrimRight(inst.APIURL, "/"),
 		tokenID:     inst.APITokenID,
 		tokenSecret: inst.APITokenSecret,
 		httpClient: &http.Client{
+			// Never follow redirects. Proxmox can redirect to a URL that
+			// drops the port (e.g. https://host:8006 → https://host),
+			// which would silently connect to port 443 instead.
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{
 					InsecureSkipVerify: true, //nolint:gosec // Proxmox often uses self-signed certs

@@ -90,6 +90,15 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 						return fmt.Errorf("--ssh-key-path, --ssh-key, and --generate-ssh-key are mutually exclusive")
 					}
 
+					// Validate api-url before storing: scheme must be http/https
+					// and a port must be explicitly specified.
+					// (Without a scheme, url.Parse treats the host as the scheme
+					// and silently drops the port; without a port, requests go
+					// to the scheme default: 80 or 443.)
+					if err := validateAPIURL(cmd.String("api-url")); err != nil {
+						return err
+					}
+
 					sshHost, sshPort, err := parseHostPort(
 						cmd.String("ssh-host"), 22)
 					if err != nil {
