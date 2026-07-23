@@ -170,6 +170,15 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 						return fmt.Errorf("resolving node name: %w", err)
 					}
 
+					// For termproxy, verify the Proxmox version supports API token auth.
+					// This check runs once at instance-add time so the user gets a clear
+					// error immediately rather than at connection time.
+					if connType == models.ConnectionTypeTermProxy {
+						if err := checkTermProxyVersion(ctx, cmd.String("api-url"), cmd.String("token-id"), cmd.String("token-secret")); err != nil {
+							return err
+						}
+					}
+
 					inst := &models.ProxmoxInstance{
 						Name:           cmd.String(flagName),
 						APIURL:         cmd.String("api-url"),
@@ -299,6 +308,21 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 			},
 		},
 	}
+}
+
+// checkTermProxyVersion creates a temporary APIClient and verifies that the
+// Proxmox VE version supports termproxy with API token auth.
+func checkTermProxyVersion(ctx context.Context, apiURL, tokenID, tokenSecret string) error {
+	inst := &models.ProxmoxInstance{
+		APIURL:         apiURL,
+		APITokenID:     tokenID,
+		APITokenSecret: tokenSecret,
+	}
+	client, err := proxmox.NewAPIClient(inst)
+	if err != nil {
+		return err
+	}
+	return client.CheckTermProxySupport(ctx)
 }
 
 // resolveInstanceNode creates a temporary APIClient and resolves the

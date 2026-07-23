@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"proxpass/internal/models"
@@ -281,6 +282,66 @@ func normalizeStatus(raw string) models.Status {
 	default:
 		return models.StatusStopped
 	}
+}
+
+// minTermProxyMajorVersion is the minimum Proxmox VE major version that
+// supports API-token-based termproxy (proxmox-termproxy >= 1.1.0,
+// pve-manager >= 9.0.13, released with PVE 9 / Debian trixie).
+const minTermProxyMajorVersion = 9
+
+// versionResponse is the JSON envelope from GET /api2/json/version.
+type versionResponse struct {
+	Data struct {
+		Version string `json:"version"` // e.g. "9.0.13"
+		Release string `json:"release"` // e.g. "9" (major PVE version)
+	} `json:"data"`
+}
+
+// CheckTermProxySupport calls GET /api2/json/version and returns an error if
+// the Proxmox VE major version is less than minTermProxyMajorVersion.
+// termproxy in --connection-type termproxy mode requires:
+//   - proxmox-termproxy >= 1.1.0 (adds --vncticket-endpoint flag)
+//   - pve-manager >= 9.0.13 (enables API token auth for termproxy/vncwebsocket)
+//
+// Both shipped with Proxmox VE 9 (Debian trixie). PVE 8 (bookworm) rejects
+// API token IDs as invalid usernames in the termproxy auth handshake.
+func (c *APIClient) CheckTermProxySupport(ctx context.Context) error {
+	body, err := c.doGet(ctx, "/api2/json/version")
+	if err != nil {
+		return fmt.Errorf("get Proxmox version: %w", err)
+	}
+
+	var resp versionResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return fmt.Errorf("decode version response: %w", err)
+	}
+
+	release := resp.Data.Release
+	if release == "" {
+		return fmt.Errorf("proxmox version response missing 'release' field")
+	}
+	major, err := strconv.Atoi(release)
+	if err != nil {
+		return fmt.Errorf("parse proxmox major version %q: %w", release, err)
+	}
+
+	if major < minTermProxyMajorVersion {
+		return fmt.Errorf(
+			"proxmox VE %s (major version %d) does not support termproxy connection type: "+
+				"requires proxmox VE %d+ (proxmox-termproxy >= 1.1.0, pve-manager >= 9.0.13); "+
+				"use --connection-type ssh instead, or upgrade your proxmox host",
+			respData(resp), major, minTermProxyMajorVersion,
+		)
+	}
+	return nil
+}
+
+// respData returns a display string for the version response.
+func respData(resp versionResponse) string {
+	if resp.Data.Version != "" {
+		return resp.Data.Version
+	}
+	return resp.Data.Release
 }
 
 // InsecureHTTPClient returns an *http.Client that skips TLS certificate
