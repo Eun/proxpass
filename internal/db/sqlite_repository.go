@@ -134,8 +134,52 @@ func (r *sqliteRepo) UpdateProxmoxInstance(ctx context.Context, inst *models.Pro
 }
 
 func (r *sqliteRepo) RemoveProxmoxInstance(ctx context.Context, id int64) error {
-	_, err := r.db.ExecContext(ctx, "DELETE FROM proxmox_instances WHERE id = ?", id)
-	return err
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Collect guest IDs belonging to this instance so we can remove their
+	// access rules before deleting the guests themselves.
+	rows, err := tx.QueryContext(ctx, "SELECT id FROM guests WHERE instance_id = ?", id)
+	if err != nil {
+		return err
+	}
+	var guestIDs []int64
+	for rows.Next() {
+		var gid int64
+		if err := rows.Scan(&gid); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		guestIDs = append(guestIDs, gid)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	// Delete access rules that reference any of these guests.
+	for _, gid := range guestIDs {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM access_rules WHERE guest_id = ?", gid); err != nil {
+			return err
+		}
+	}
+
+	// Delete the guests themselves.
+	if _, err := tx.ExecContext(ctx, "DELETE FROM guests WHERE instance_id = ?", id); err != nil {
+		return err
+	}
+
+	// Finally remove the instance.
+	if _, err := tx.ExecContext(ctx, "DELETE FROM proxmox_instances WHERE id = ?", id); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 // --- Guests ---

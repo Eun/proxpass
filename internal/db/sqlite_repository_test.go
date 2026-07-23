@@ -372,5 +372,96 @@ func TestAdminKeys(t *testing.T) {
 	}
 }
 
+// TestRemoveProxmoxInstanceCleansUpGuests verifies that deleting a Proxmox
+// instance also removes all of its guests and any access rules that reference
+// those guests.
+func TestRemoveProxmoxInstanceCleansUpGuests(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+
+	// Add two instances.
+	inst1 := &models.ProxmoxInstance{
+		Name: "inst-a", APIURL: "https://inst-a.local:8006",
+		APITokenID: "user@pam!t1", APITokenSecret: "s1",
+	}
+	inst2 := &models.ProxmoxInstance{
+		Name: "inst-b", APIURL: "https://inst-b.local:8006",
+		APITokenID: "user@pam!t2", APITokenSecret: "s2",
+	}
+	if err := repo.AddProxmoxInstance(ctx, inst1); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.AddProxmoxInstance(ctx, inst2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add a guest on each instance.
+	g1 := &models.Guest{Type: models.GuestTypeVM, Name: "vm1", Status: models.StatusRunning, ProxmoxID: 100, InstanceID: inst1.ID}
+	g2 := &models.Guest{Type: models.GuestTypeVM, Name: "vm2", Status: models.StatusRunning, ProxmoxID: 200, InstanceID: inst2.ID}
+	if err := repo.UpsertGuest(ctx, g1); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpsertGuest(ctx, g2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add a client and grant access to both guests.
+	c := &models.Client{Name: "alice", PublicKeys: []string{"key"}, GroupIDs: []int64{}}
+	if err := repo.AddClient(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.GrantClientAccess(ctx, c.ID, []int64{g1.ID, g2.ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sanity: both guests visible and accessible.
+	guests, err := repo.ListGuests(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(guests) != 2 {
+		t.Fatalf("expected 2 guests before remove, got %d", len(guests))
+	}
+	ok, _ := repo.HasAccess(ctx, c.ID, g1.ID)
+	if !ok {
+		t.Fatal("expected access to g1 before remove")
+	}
+
+	// Remove inst1 — g1 and its access rule must disappear.
+	if err := repo.RemoveProxmoxInstance(ctx, inst1.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Only g2 should remain.
+	guests, err = repo.ListGuests(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(guests) != 1 {
+		t.Fatalf("expected 1 guest after remove, got %d", len(guests))
+	}
+	if guests[0].ID != g2.ID {
+		t.Fatalf("expected surviving guest to be g2 (id %d), got %d", g2.ID, guests[0].ID)
+	}
+
+	// Access rule for g1 must be gone.
+	ok, err = repo.HasAccess(ctx, c.ID, g1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("expected no access to g1 after instance removed")
+	}
+
+	// Access rule for g2 must still hold.
+	ok, err = repo.HasAccess(ctx, c.ID, g2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected access to g2 to be unaffected")
+	}
+}
+
 // Compile-time interface check.
 var _ Repository = (*sqliteRepo)(nil)
