@@ -2,11 +2,10 @@ package ssh
 
 import (
 	"context"
-	"errors"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
-	"net/http"
 	"net/url"
 	"sync"
 
@@ -20,25 +19,15 @@ import (
 // proxyViaTermProxy establishes a Proxmox termproxy WebSocket session and
 // bridges it bidirectionally to the SSH client channel.
 //
-// Protocol (Proxmox VE 9+ with proxmox-termproxy >= 1.1.0):
-//  1. POST .../termproxy with PVEAPIToken → VNC ticket + port
-//  2. Dial wss://.../vncwebsocket?port=N&vncticket=T
-//     Sec-WebSocket-Protocol: binary
-//     Authorization: PVEAPIToken=...
-//  3. First message from server starts with "OK" (bytes 79,75); remainder is terminal data
-//  4. After "OK": send "<authid>:<vncticket>\n"
-//  5. Terminal input:  send "0:<len>:<data>"
-//     Terminal resize: send "1:<cols>:<rows>:"
-//     Keepalive ping:  send "2"
-//  6. Server sends raw terminal bytes (binary frames)
+// Protocol:
+//  1. POST /api2/json/nodes/{node}/{lxc|qemu}/{vmid}/termproxy  → ticket + port
+//  2. Dial wss://{apiHost}:{port}/api2/json/nodes/{node}/.../vncwebsocket
+//     ?port=<port>&vncticket=<url-encoded-ticket>
+//  3. Read first binary frame — must be exactly "OK"
+//  4. If PTY: send initial resize JSON text frame
+//  5. Bidirectional copy until either side closes
 //
-// Requires Proxmox VE 9 (trixie) with proxmox-termproxy >= 1.1.0 and
-// pve-manager >= 9.0.13. On PVE 8 (bookworm), termproxy validates the auth
-// line by POSTing username to /access/ticket, which rejects API token IDs
-// ("user@realm!token does not look like a valid user name"). PVE 8 has no
-// supported workaround for API-token-only setups.
-//
-//nolint:gocognit,gocyclo,funlen // termproxy bridging requires sequential setup and teardown
+//nolint:gocognit // termproxy bridging requires sequential setup of goroutines and teardown
 func proxyViaTermProxy(
 	clientChan gossh.Channel,
 	clientReqs <-chan *gossh.Request,
@@ -50,22 +39,20 @@ func proxyViaTermProxy(
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// --- Step 1: Obtain auth credentials for termproxy ---
-	// See function doc comment for PVE version requirements.
+	// --- Step 1: Create termproxy ticket via REST API ---
 	apiClient, err := proxmox.NewAPIClient(inst)
 	if err != nil {
 		return fmt.Errorf("build api client: %w", err)
 	}
 
-	logger.Printf("termproxy: using API token auth (tokenID=%q)", inst.APITokenID)
 	ticket, err := apiClient.CreateTermProxyTicket(ctx, inst.Node, guest)
 	if err != nil {
 		return fmt.Errorf("create termproxy ticket: %w", err)
 	}
-	logger.Printf("termproxy: ticket obtained (port=%d user=%q ticket-prefix=%q)",
-		ticket.Port, ticket.User, truncateTicket(ticket.Ticket))
 
-	// --- Step 3: Build WebSocket URL ---
+	// --- Step 2: Build WebSocket URL ---
+	// The WebSocket connects to the same host as the API but on the port
+	// returned by the termproxy endpoint.
 	apiURL, err := url.Parse(inst.APIURL)
 	if err != nil {
 		return fmt.Errorf("parse api url: %w", err)
@@ -82,97 +69,53 @@ func proxyViaTermProxy(
 	}
 
 	wsURL := buildVNCWebSocketURL(apiURL, inst.Node, kind, guest.ProxmoxID, ticket)
-	logger.Printf("termproxy: dialing vncwebsocket url=%s", wsURL)
 
-	// --- Step 4: Dial WebSocket ---
-	// Subprotocol: "binary" (required by Proxmox vncwebsocket).
-	// PVE 9 accepts API token auth for vncwebsocket (pve-manager >= 9.0.13).
-	logger.Printf("termproxy: ws auth=PVEAPIToken tokenID=%q", inst.APITokenID)
-	wsHeader := http.Header{
-		"Authorization": []string{fmt.Sprintf("PVEAPIToken=%s=%s", inst.APITokenID, inst.APITokenSecret)},
-	}
+	// --- Step 3: Dial WebSocket ---
+	// Connect directly to the termproxy binary (ws://host:port/).
+	// The termproxy binary validates the VNC ticket passed as the
+	// Sec-WebSocket-Protocol subprotocol header.
 	dialOpts := &websocket.DialOptions{
-		Subprotocols: []string{"binary"},
-		HTTPHeader:   wsHeader,
-		HTTPClient:   proxmox.InsecureHTTPClient(),
+		Subprotocols: []string{ticket.Ticket},
+		// No TLS: the termproxy binary does not do TLS itself.
+		HTTPClient: proxmox.InsecureHTTPClient(),
 	}
 
 	conn, wsResp, err := websocket.Dial(ctx, wsURL, dialOpts)
-	if wsResp != nil {
-		logger.Printf("termproxy: ws dial http response status=%q proto=%q",
-			wsResp.Status, wsResp.Proto)
-		for k, vs := range wsResp.Header {
-			for _, v := range vs {
-				logger.Printf("termproxy: ws dial response header %q: %q", k, v)
-			}
-		}
-		if wsResp.Body != nil {
-			body, _ := io.ReadAll(wsResp.Body)
-			_ = wsResp.Body.Close()
-			if len(body) > 0 {
-				logger.Printf("termproxy: ws dial response body: %q", body)
-			}
-		}
+	if wsResp != nil && wsResp.Body != nil {
+		_ = wsResp.Body.Close()
 	}
 	if err != nil {
-		logger.Printf("termproxy: ws dial error: %v", err)
 		return fmt.Errorf("dial termproxy websocket %s: %w", wsURL, err)
 	}
-	logger.Printf("termproxy: ws dial succeeded")
 	defer func() { _ = conn.CloseNow() }()
 
-	// --- Step 5: Send auth line: "<authid>:<vncticket>\n" ---
-	// On PVE 9 with --vncticket-endpoint, termproxy validates via the vncticket
-	// endpoint using the ticket itself — the authid just needs to match the ticket.
-	authid := inst.APITokenID
-	authLine := fmt.Sprintf("%s:%s\n", authid, ticket.Ticket)
-	logger.Printf("termproxy: sending auth line authid=%q ticket-prefix=%q",
-		authid, truncateTicket(ticket.Ticket))
-	if err := conn.Write(ctx, websocket.MessageBinary, []byte(authLine)); err != nil {
-		return fmt.Errorf("send auth line: %w", err)
-	}
-	logger.Printf("termproxy: auth line sent, waiting for OK")
-
-	// --- Step 6: Read "OK" response ---
-	// termproxy sends "OK" after validating the auth line. Any bytes after
-	// "OK" in the same frame are the start of the terminal stream.
-	msgType, firstMsg, err := conn.Read(ctx)
+	// --- Step 4: Read handshake frame "OK" ---
+	// Proxmox closes the connection (EOF) without sending "OK" when the
+	// vncticket validation fails. Log enough context to diagnose.
+	_, handshake, err := conn.Read(ctx)
 	if err != nil {
-		var closeErr websocket.CloseError
-		if errors.As(err, &closeErr) {
-			logger.Printf("termproxy: server closed (code=%d reason=%q url=%s)",
-				closeErr.Code, closeErr.Reason, wsURL)
-			return fmt.Errorf("termproxy server closed: code=%d reason=%q",
-				closeErr.Code, closeErr.Reason)
-		}
-		logger.Printf("termproxy: handshake failed (url=%s): %v", wsURL, err)
+		logger.Printf("termproxy: handshake EOF for url=%s node=%s vmid=%d",
+			wsURL, inst.Node, guest.ProxmoxID)
 		return fmt.Errorf("read termproxy handshake: %w", err)
 	}
-	logger.Printf("termproxy: got first frame type=%d len=%d content=%q", msgType, len(firstMsg), firstMsg)
-	if len(firstMsg) < 2 || firstMsg[0] != 'O' || firstMsg[1] != 'K' {
-		return fmt.Errorf("unexpected termproxy handshake: %q", firstMsg)
+	if string(handshake) != "OK" {
+		return fmt.Errorf("unexpected termproxy handshake: %q", handshake)
 	}
 
-	// Forward any terminal data that arrived in the same frame as "OK".
-	if len(firstMsg) > 2 {
-		if _, err := clientChan.Write(firstMsg[2:]); err != nil {
-			return fmt.Errorf("write initial terminal data: %w", err)
-		}
-	}
-
-	// --- Step 7: Send initial resize if PTY requested ---
+	// --- Step 5: Send initial resize frame if PTY was requested ---
 	if ptyReq != nil {
-		resizeMsg := fmt.Sprintf("1:%d:%d:", ptyReq.Width, ptyReq.Height)
-		if err := conn.Write(ctx, websocket.MessageBinary, []byte(resizeMsg)); err != nil {
+		if err := sendResizeFrame(ctx, conn, ptyReq.Width, ptyReq.Height); err != nil {
 			return fmt.Errorf("send initial resize: %w", err)
 		}
 	}
 
-	// --- Step 8: Bidirectional bridge ---
+	// --- Step 6: Bidirectional copy ---
+	// done signals the request-forwarding goroutine to stop once the
+	// WebSocket reader exits (either side closed).
 	done := make(chan struct{})
 	var wg sync.WaitGroup
 
-	// Forward SSH window-change and keepalive.
+	// Forward window-change SSH requests as WebSocket resize frames.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -188,8 +131,7 @@ func proxyViaTermProxy(
 				case "window-change":
 					w, h, parseErr := parseWindowChange(req.Payload)
 					if parseErr == nil {
-						msg := fmt.Sprintf("1:%d:%d:", w, h)
-						_ = conn.Write(ctx, websocket.MessageBinary, []byte(msg))
+						_ = sendResizeFrame(ctx, conn, w, h)
 					}
 					if req.WantReply {
 						_ = req.Reply(parseErr == nil, nil)
@@ -203,14 +145,14 @@ func proxyViaTermProxy(
 		}
 	}()
 
-	// SSH client → WebSocket: frame as "0:<len>:<data>"
+	// SSH client → WebSocket. Not in WaitGroup; closes conn when client
+	// closes so the WebSocket reader goroutine exits naturally.
 	go func() {
-		buf := make([]byte, 4096)
+		buf := make([]byte, 32*1024)
 		for {
 			n, readErr := clientChan.Read(buf)
 			if n > 0 {
-				msg := fmt.Sprintf("0:%d:%s", n, buf[:n])
-				if writeErr := conn.Write(ctx, websocket.MessageBinary, []byte(msg)); writeErr != nil {
+				if writeErr := conn.Write(ctx, websocket.MessageBinary, buf[:n]); writeErr != nil {
 					return
 				}
 			}
@@ -224,7 +166,8 @@ func proxyViaTermProxy(
 		}
 	}()
 
-	// WebSocket → SSH client: raw bytes (server sends binary terminal data).
+	// WebSocket → SSH client. Controls overall lifetime: when this exits,
+	// we signal done and tear down.
 	wsReaderDone := make(chan struct{})
 	go func() {
 		defer close(wsReaderDone)
@@ -245,37 +188,44 @@ func proxyViaTermProxy(
 	return nil
 }
 
-// buildVNCWebSocketURL constructs the WebSocket URL for the Proxmox
-// vncwebsocket endpoint. The WebSocket connects to the same host:port as
-// the API URL (e.g. rome:8006); the Proxmox API proxies the connection
-// through to the termproxy binary listening on localhost.
-// truncateTicket returns the first 20 bytes of a ticket value followed by "...",
-// so debug logs are informative without leaking the full credential.
-func truncateTicket(s string) string {
-	const n = 20
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
-}
-
+// buildTermProxyWebSocketURL constructs the WebSocket URL to connect directly
+// to the termproxy binary, which listens on the port returned by the termproxy
+// POST endpoint.
+//
+// The termproxy binary is a standalone WebSocket server; it does NOT go through
+// the Proxmox API (port 8006). Connect to host:ticketPort directly.
+// The ticket is sent as the WebSocket subprotocol so the termproxy binary can
+// validate it.
 func buildVNCWebSocketURL(apiURL *url.URL, node, kind string, vmid int, ticket *proxmox.TermProxyTicket) string {
-	wsScheme := "ws"
-	if apiURL.Scheme == "https" {
-		wsScheme = "wss"
-	}
-
-	path := fmt.Sprintf("/api2/json/nodes/%s/%s/%d/vncwebsocket", node, kind, vmid)
-
-	q := url.Values{}
-	q.Set("port", fmt.Sprintf("%d", ticket.Port))
-	q.Set("vncticket", ticket.Ticket)
+	// The termproxy binary listens on a plain (non-TLS) TCP port on the Proxmox host.
+	// Always use "ws" (not "wss") since the termproxy binary itself does not do TLS;
+	// TLS termination happens at the Proxmox API layer.
+	_ = node
+	_ = kind
+	_ = vmid
 
 	u := &url.URL{
-		Scheme:   wsScheme,
-		Host:     apiURL.Host,
-		Path:     path,
-		RawQuery: q.Encode(),
+		Scheme: "ws",
+		Host:   fmt.Sprintf("%s:%d", apiURL.Hostname(), ticket.Port),
+		Path:   "/",
 	}
 	return u.String()
+}
+
+// sendResizeFrame sends a Proxmox termproxy resize frame as a JSON text message.
+// Format: {"resize":{"width":N,"height":M}}.
+func sendResizeFrame(ctx context.Context, conn *websocket.Conn, width, height uint32) error {
+	type resizeInner struct {
+		Width  uint32 `json:"width"`
+		Height uint32 `json:"height"`
+	}
+	type resizePayload struct {
+		Resize resizeInner `json:"resize"`
+	}
+	payload := resizePayload{Resize: resizeInner{Width: width, Height: height}}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return conn.Write(ctx, websocket.MessageText, data)
 }

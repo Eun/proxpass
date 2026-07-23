@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 
 	"proxpass/internal/models"
@@ -282,84 +281,6 @@ func normalizeStatus(raw string) models.Status {
 	default:
 		return models.StatusStopped
 	}
-}
-
-// minTermProxyVersion is the minimum pve-manager version that supports
-// termproxy with API token auth end-to-end.
-//
-// History:
-//   - pve-manager 9.0.13 (2025-11-14): REST endpoint allows API tokens for
-//     POST .../termproxy and GET .../vncwebsocket.
-//   - pve-container 6.1.3 + pve-manager 9.1.9 (both 2026-04-21): pass
-//     --vncticket-endpoint to the termproxy binary, which makes it validate
-//     via the vncticket endpoint instead of /access/ticket (which rejects
-//     API token IDs as invalid usernames).
-//
-// Therefore the minimum working version is pve-manager 9.1.9.
-var minTermProxyVersion = [3]int{9, 1, 9}
-
-// versionResponse is the JSON envelope from GET /api2/json/version.
-type versionResponse struct {
-	Data struct {
-		Version string `json:"version"` // full pve-manager version, e.g. "9.1.9"
-		Release string `json:"release"` // major.minor, e.g. "9.1"
-	} `json:"data"`
-}
-
-// CheckTermProxySupport calls GET /api2/json/version and returns an error if
-// the pve-manager version is older than minTermProxyVersion.
-func (c *APIClient) CheckTermProxySupport(ctx context.Context) error {
-	body, err := c.doGet(ctx, "/api2/json/version")
-	if err != nil {
-		return fmt.Errorf("get proxmox version: %w", err)
-	}
-
-	var resp versionResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return fmt.Errorf("decode version response: %w", err)
-	}
-
-	version := resp.Data.Version
-	if version == "" {
-		return fmt.Errorf("proxmox version response missing 'version' field")
-	}
-
-	got, err := parsePVEVersion(version)
-	if err != nil {
-		return fmt.Errorf("parse proxmox version %q: %w", version, err)
-	}
-
-	required := minTermProxyVersion
-	if got[0] < required[0] ||
-		(got[0] == required[0] && got[1] < required[1]) ||
-		(got[0] == required[0] && got[1] == required[1] && got[2] < required[2]) {
-		return fmt.Errorf(
-			"proxmox VE %s does not support termproxy connection type: "+
-				"requires pve-manager >= %d.%d.%d "+
-				"(pve-container 6.1.3 + pve-manager 9.1.9, released 2026-04-21); "+
-				"use --connection-type ssh instead, or upgrade your proxmox host",
-			version, required[0], required[1], required[2],
-		)
-	}
-	return nil
-}
-
-// parsePVEVersion parses a pve-manager version string (e.g. "9.1.9") into
-// a [3]int of {major, minor, patch}. Trailing components (e.g. "~beta1") are
-// ignored; missing components default to 0.
-func parsePVEVersion(v string) ([3]int, error) {
-	// Strip any tilde suffix (pre-release notation used in Debian versioning).
-	v = strings.SplitN(v, "~", 2)[0]
-	parts := strings.SplitN(v, ".", 3)
-	var out [3]int
-	for i := range min(len(parts), 3) {
-		n, err := strconv.Atoi(parts[i])
-		if err != nil {
-			return out, fmt.Errorf("component %d %q: %w", i, parts[i], err)
-		}
-		out[i] = n
-	}
-	return out, nil
 }
 
 // InsecureHTTPClient returns an *http.Client that skips TLS certificate
