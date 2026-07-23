@@ -14,7 +14,7 @@ import (
 
 func guestCmd(deps *Deps) *ucli.Command { //nolint:gocognit // CLI command tree
 	return &ucli.Command{
-		Name:  flagGuest,
+		Name:  "guest",
 		Usage: "Manage and connect to guests",
 		Commands: []*ucli.Command{
 			{
@@ -56,36 +56,31 @@ func guestCmd(deps *Deps) *ucli.Command { //nolint:gocognit // CLI command tree
 			{
 				Name:      "connect",
 				Usage:     "Connect to a guest console",
-				ArgsUsage: "<identifier>",
+				ArgsUsage: "[<instance>:]<identifier>",
 				Action: func(ctx context.Context, cmd *ucli.Command) error {
 					if cmd.NArg() < 1 {
-						return fmt.Errorf("usage: guest connect <identifier> (VMID, type+VMID, or name)")
+						return fmt.Errorf(
+							"usage: guest connect [<instance>:]<identifier>\n\n" +
+								"identifier can be a VMID (e.g. 100), type+VMID (e.g. ct100), or name (e.g. webserver).\n" +
+								"if multiple guests match, prefix with the instance name (e.g. rome:ct101)",
+						)
 					}
-					identifier := cmd.Args().First()
+					target := cmd.Args().First()
+					instName, identifier := parseGuestTarget(target)
 
 					guests, err := deps.Repo.ListGuests(ctx)
 					if err != nil {
 						return err
 					}
-					guest, err := resolveGuest(identifier, guests)
-					if err != nil {
-						return err
-					}
 
-					// Find the instance
 					instances, err := deps.Repo.ListProxmoxInstances(ctx)
 					if err != nil {
 						return err
 					}
-					var inst *models.ProxmoxInstance
-					for _, i := range instances {
-						if i.ID == guest.InstanceID {
-							inst = i
-							break
-						}
-					}
-					if inst == nil {
-						return fmt.Errorf("proxmox instance for guest %q not found", guest.Name)
+
+					guest, inst, err := resolveGuestAndInstance(identifier, instName, guests, instances)
+					if err != nil {
+						return err
 					}
 
 					deps.ConnectRequest = &ConnectRequest{
@@ -117,7 +112,8 @@ func guestCmd(deps *Deps) *ucli.Command { //nolint:gocognit // CLI command tree
 					}
 					var found []*models.Guest
 					for _, ident := range cmd.Args().Slice() {
-						g, resolveErr := resolveGuest(ident, allGuests)
+						instName, id := parseGuestTarget(ident)
+						g, _, resolveErr := resolveGuestAndInstance(id, instName, allGuests, instances)
 						if resolveErr != nil {
 							return resolveErr
 						}
@@ -147,9 +143,80 @@ func guestCmd(deps *Deps) *ucli.Command { //nolint:gocognit // CLI command tree
 	}
 }
 
-// resolveGuest looks up a guest by identifier.
-// Resolution order: numeric VMID → type+VMID (ct100, vm200) → name.
-func resolveGuest(identifier string, guests []*models.Guest) (*models.Guest, error) { //nolint:gocognit // resolution logic
+// parseGuestTarget splits an optional "instance:identifier" string.
+// If no colon is present, instanceName is empty.
+func parseGuestTarget(s string) (instanceName, identifier string) {
+	if idx := strings.IndexByte(s, ':'); idx >= 0 {
+		return s[:idx], s[idx+1:]
+	}
+	return "", s
+}
+
+// resolveGuestAndInstance looks up a guest and its Proxmox instance by
+// identifier and optional instance name filter.
+//
+// If instName is non-empty, only guests on that instance are considered.
+// If multiple guests match, an error is returned hinting to use instance:identifier.
+func resolveGuestAndInstance(
+	identifier string,
+	instName string,
+	guests []*models.Guest,
+	instances []*models.ProxmoxInstance,
+) (*models.Guest, *models.ProxmoxInstance, error) {
+	// Build instance lookup map by ID.
+	instByID := make(map[int64]*models.ProxmoxInstance, len(instances))
+	var instFilterID int64 = -1 // -1 means no filter
+	switch {
+	case instName != "":
+		found := false
+		for _, inst := range instances {
+			instByID[inst.ID] = inst
+			if strings.EqualFold(inst.Name, instName) {
+				instFilterID = inst.ID
+				found = true
+			}
+		}
+		if !found {
+			return nil, nil, fmt.Errorf("instance %q not found", instName)
+		}
+	default:
+		for _, inst := range instances {
+			instByID[inst.ID] = inst
+		}
+	}
+
+	// Filter guests by instance if a filter was given.
+	var pool []*models.Guest
+	if instFilterID >= 0 {
+		for _, g := range guests {
+			if g.InstanceID == instFilterID {
+				pool = append(pool, g)
+			}
+		}
+	} else {
+		pool = guests
+	}
+
+	guest, err := resolveGuest(identifier, pool, instName == "" /* hintInstance*/)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	inst := instByID[guest.InstanceID]
+	if inst == nil {
+		return nil, nil, fmt.Errorf("proxmox instance for guest %q not found", guest.Name)
+	}
+	return guest, inst, nil
+}
+
+// resolveGuest looks up a guest by identifier within the given pool.
+// Resolution order: numeric VMID → type+VMID (ct100, vm200) ‒ name.
+//
+// hintInstance controls whether error messages suggest using the
+// instance:identifier format to disambiguate.
+//
+//nolint:gocognit,nestif // resolution logic
+func resolveGuest(identifier string, guests []*models.Guest, hintInstance bool) (*models.Guest, error) {
 	lower := strings.ToLower(identifier)
 
 	// 1. Numeric VMID
@@ -164,6 +231,11 @@ func resolveGuest(identifier string, guests []*models.Guest) (*models.Guest, err
 			return matches[0], nil
 		}
 		if len(matches) > 1 {
+			if hintInstance {
+				return nil, fmt.Errorf(
+					"VMID %d matches %d guests; use instance:identifier (see 'guest ls')",
+					vmid, len(matches))
+			}
 			return nil, fmt.Errorf(
 				"VMID %d matches %d guests; use type+id (e.g. %s%d)",
 				vmid, len(matches), matches[0].Type, vmid)
@@ -195,6 +267,11 @@ func resolveGuest(identifier string, guests []*models.Guest) (*models.Guest, err
 		return matches[0], nil
 	}
 	if len(matches) > 1 {
+		if hintInstance {
+			return nil, fmt.Errorf(
+				"name %q matches %d guests; use instance:identifier (see 'guest ls')",
+				identifier, len(matches))
+		}
 		var hints []string
 		for _, g := range matches {
 			hints = append(hints, fmt.Sprintf("%s%d", g.Type, g.ProxmoxID))
