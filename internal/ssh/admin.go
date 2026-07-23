@@ -138,8 +138,8 @@ func DefaultAdminHandler( //nolint:gocognit // SSH session handler
 			// Split the exec command into argv
 			argv = append([]string{"proxpass"}, splitArgs(execCmd)...)
 		} else {
-			// Interactive shell -- show usage
-			argv = []string{"proxpass", "--help"}
+			// Interactive shell with no command -- list available guests
+			argv = []string{"proxpass", "guest", "ls"}
 		}
 
 		root := cli.Build(deps)

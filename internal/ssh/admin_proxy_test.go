@@ -121,18 +121,24 @@ func TestAdminProxyUnknownGuestReturnsError(t *testing.T) {
 	}
 }
 
-// TestAdminCLIShellShowsHelp verifies that a plain shell session
-// (no exec command) still shows the CLI help.
-func TestAdminCLIShellShowsHelp(t *testing.T) {
+// TestAdminCLIShellShowsGuestList verifies that a plain shell session
+// (no exec command) lists available guests instead of the generic --help.
+func TestAdminCLIShellShowsGuestList(t *testing.T) {
 	addr, adminSigner, mp, cancel := setupAdminTest(t)
 	defer cancel()
 
-	// No exec command -> plain shell -> should show CLI help.
+	// No exec command -> plain shell -> should list guests (same as 'guest ls').
 	// Use sshShellOutput which opens a shell session (not exec).
 	output := sshShellOutput(t, addr, "admin", adminSigner)
 
 	if strings.Contains(output, "[mock proxy]") {
-		t.Errorf("expected CLI help, got mock proxy banner; output: %q", output)
+		t.Errorf("expected guest list, got mock proxy banner; output: %q", output)
+	}
+	// Seeded guests: webserver, database, devbox, staging
+	for _, name := range []string{"webserver", "database", "devbox", "staging"} {
+		if !strings.Contains(output, name) {
+			t.Errorf("expected guest %q in output, got: %q", name, output)
+		}
 	}
 
 	sessions := mp.RecordedSessions()
