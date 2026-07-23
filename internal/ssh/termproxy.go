@@ -20,18 +20,23 @@ import (
 // proxyViaTermProxy establishes a Proxmox termproxy WebSocket session and
 // bridges it bidirectionally to the SSH client channel.
 //
-// Protocol (from Proxmox xtermjs/main.js):
-//  1. GET session ticket: POST /access/ticket → PVEAuthCookie value
-//  2. POST .../termproxy with PVEAuthCookie → VNC ticket + port
-//  3. Dial wss://.../vncwebsocket?port=N&vncticket=T
+// Protocol (Proxmox VE 9+ with proxmox-termproxy >= 1.1.0):
+//  1. POST .../termproxy with PVEAPIToken → VNC ticket + port
+//  2. Dial wss://.../vncwebsocket?port=N&vncticket=T
 //     Sec-WebSocket-Protocol: binary
-//     Cookie: PVEAuthCookie=<session ticket>
-//  4. First message from server starts with "OK" (bytes 79,75); remainder is terminal data
-//  5. After "OK": send "<username>:<vncticket>\n"
-//  6. Terminal input:  send "0:<len>:<data>"
+//     Authorization: PVEAPIToken=...
+//  3. First message from server starts with "OK" (bytes 79,75); remainder is terminal data
+//  4. After "OK": send "<authid>:<vncticket>\n"
+//  5. Terminal input:  send "0:<len>:<data>"
 //     Terminal resize: send "1:<cols>:<rows>:"
 //     Keepalive ping:  send "2"
-//  7. Server sends raw terminal bytes (binary frames)
+//  6. Server sends raw terminal bytes (binary frames)
+//
+// Requires Proxmox VE 9 (trixie) with proxmox-termproxy >= 1.1.0 and
+// pve-manager >= 9.0.13. On PVE 8 (bookworm), termproxy validates the auth
+// line by POSTing username to /access/ticket, which rejects API token IDs
+// ("user@realm!token does not look like a valid user name"). PVE 8 has no
+// supported workaround for API-token-only setups.
 //
 //nolint:gocognit,gocyclo,funlen // termproxy bridging requires sequential setup and teardown
 func proxyViaTermProxy(
@@ -46,41 +51,18 @@ func proxyViaTermProxy(
 	defer cancel()
 
 	// --- Step 1: Obtain auth credentials for termproxy ---
-	// Older Proxmox versions (termproxy without --vncticket-endpoint) verify
-	// the auth line via POST /access/ticket which requires a real user identity
-	// (e.g. root@pam), not an API token identity (root@pam!token).
-	// When inst.Username/Password are set, we use a session ticket for both
-	// the termproxy POST and the vncwebsocket — this produces a VNC ticket
-	// assembled with the user identity, matching what termproxy expects.
-	// Session auth (username+password) is required: the termproxy binary validates
-	// the auth line by POSTing to /access/ticket with the authid as username.
-	// API token IDs (user@realm!token) are rejected by Proxmox as invalid usernames.
-	// Only real user identities (user@realm, e.g. root@pam) are accepted.
-	if inst.Username == "" {
-		return fmt.Errorf("termproxy requires --username and --password: " +
-			"the termproxy binary authenticates via Proxmox user credentials, " +
-			"not API tokens (API token IDs are rejected as invalid usernames). " +
-			"Re-add this instance with --username root@pam --password <password>")
-	}
-
+	// See function doc comment for PVE version requirements.
 	apiClient, err := proxmox.NewAPIClient(inst)
 	if err != nil {
 		return fmt.Errorf("build api client: %w", err)
 	}
 
-	logger.Printf("termproxy: using session auth (username=%q)", inst.Username)
-	session, err := apiClient.GetSessionTicket(ctx, inst.Username, inst.Password)
-	if err != nil {
-		return fmt.Errorf("get session ticket: %w", err)
-	}
-	logger.Printf("termproxy: session ticket obtained (username=%q ticket-prefix=%q)",
-		session.Username, truncateTicket(session.Ticket))
-
-	ticket, err := apiClient.CreateTermProxyTicketWithSession(ctx, inst.Node, guest, session)
+	logger.Printf("termproxy: using API token auth (tokenID=%q)", inst.APITokenID)
+	ticket, err := apiClient.CreateTermProxyTicket(ctx, inst.Node, guest)
 	if err != nil {
 		return fmt.Errorf("create termproxy ticket: %w", err)
 	}
-	logger.Printf("termproxy: termproxy ticket obtained (port=%d user=%q ticket-prefix=%q)",
+	logger.Printf("termproxy: ticket obtained (port=%d user=%q ticket-prefix=%q)",
 		ticket.Port, ticket.User, truncateTicket(ticket.Ticket))
 
 	// --- Step 3: Build WebSocket URL ---
@@ -104,11 +86,10 @@ func proxyViaTermProxy(
 
 	// --- Step 4: Dial WebSocket ---
 	// Subprotocol: "binary" (required by Proxmox vncwebsocket).
-	// Cookie must be the raw session ticket — pveproxy parses it as-is to identify
-	// the user, then verifies the vncticket was issued for that same user.
-	logger.Printf("termproxy: ws auth=cookie PVEAuthCookie prefix=%q", truncateTicket(session.Ticket))
+	// PVE 9 accepts API token auth for vncwebsocket (pve-manager >= 9.0.13).
+	logger.Printf("termproxy: ws auth=PVEAPIToken tokenID=%q", inst.APITokenID)
 	wsHeader := http.Header{
-		"Cookie": []string{"PVEAuthCookie=" + session.Ticket},
+		"Authorization": []string{fmt.Sprintf("PVEAPIToken=%s=%s", inst.APITokenID, inst.APITokenSecret)},
 	}
 	dialOpts := &websocket.DialOptions{
 		Subprotocols: []string{"binary"},
@@ -141,9 +122,9 @@ func proxyViaTermProxy(
 	defer func() { _ = conn.CloseNow() }()
 
 	// --- Step 5: Send auth line: "<authid>:<vncticket>\n" ---
-	// termproxy validates this by POSTing to /access/ticket with authid as username.
-	// Must be a real user identity (e.g. root@pam) — API token IDs are rejected.
-	authid := session.Username
+	// On PVE 9 with --vncticket-endpoint, termproxy validates via the vncticket
+	// endpoint using the ticket itself — the authid just needs to match the ticket.
+	authid := inst.APITokenID
 	authLine := fmt.Sprintf("%s:%s\n", authid, ticket.Ticket)
 	logger.Printf("termproxy: sending auth line authid=%q ticket-prefix=%q",
 		authid, truncateTicket(ticket.Ticket))

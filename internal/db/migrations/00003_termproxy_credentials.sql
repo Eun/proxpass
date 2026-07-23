@@ -1,10 +1,10 @@
 -- +goose Up
 
--- Add username and password columns for termproxy session ticket auth.
--- These are optional: when set, a Proxmox user session ticket is obtained via
--- POST /access/ticket and used for termproxy/vncwebsocket authentication.
--- Required for older Proxmox versions whose termproxy binary verifies via
--- /access/ticket (not /access/vncticket). When empty, API token auth is used.
+-- NOTE: username/password columns were added here but are no longer used.
+-- termproxy now requires Proxmox VE 9 (pve-manager >= 9.0.13,
+-- proxmox-termproxy >= 1.1.0) which supports API token auth directly.
+-- The columns remain in the schema for backwards compatibility with existing
+-- databases but are ignored by the application.
 ALTER TABLE proxmox_instances ADD COLUMN username TEXT NOT NULL DEFAULT '';
 ALTER TABLE proxmox_instances ADD COLUMN password TEXT NOT NULL DEFAULT '';
 

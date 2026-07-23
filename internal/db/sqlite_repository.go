@@ -62,11 +62,10 @@ func (r *sqliteRepo) AddProxmoxInstance(ctx context.Context, inst *models.Proxmo
 	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO proxmox_instances
 		(name, api_url, api_token_id, api_token_secret, connection_type, node,
-		 username, password, ssh_host, ssh_port, ssh_user, ssh_key_path, ssh_key)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 ssh_host, ssh_port, ssh_user, ssh_key_path, ssh_key)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		inst.Name, inst.APIURL, inst.APITokenID, inst.APITokenSecret,
 		string(inst.ConnectionType), inst.Node,
-		inst.Username, inst.Password,
 		inst.SSHHost, inst.SSHPort, inst.SSHUser, inst.SSHKeyPath, inst.SSHKey,
 	)
 	if err != nil {
@@ -85,7 +84,7 @@ func (r *sqliteRepo) AddProxmoxInstance(ctx context.Context, inst *models.Proxmo
 func (r *sqliteRepo) ListProxmoxInstances(ctx context.Context) ([]*models.ProxmoxInstance, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, name, api_url, api_token_id, api_token_secret,
-		connection_type, node, username, password,
+		connection_type, node,
 		ssh_host, ssh_port, ssh_user, ssh_key_path, ssh_key
 		FROM proxmox_instances`)
 	if err != nil {
@@ -100,7 +99,6 @@ func (r *sqliteRepo) ListProxmoxInstances(ctx context.Context) ([]*models.Proxmo
 			&inst.ID, &inst.Name, &inst.APIURL,
 			&inst.APITokenID, &inst.APITokenSecret,
 			&connType, &inst.Node,
-			&inst.Username, &inst.Password,
 			&inst.SSHHost, &inst.SSHPort, &inst.SSHUser,
 			&inst.SSHKeyPath, &inst.SSHKey,
 		); err != nil {
@@ -118,13 +116,11 @@ func (r *sqliteRepo) UpdateProxmoxInstance(ctx context.Context, inst *models.Pro
 		`UPDATE proxmox_instances SET
 		name = ?, api_url = ?, api_token_id = ?,
 		api_token_secret = ?, connection_type = ?, node = ?,
-		username = ?, password = ?,
 		ssh_host = ?, ssh_port = ?,
 		ssh_user = ?, ssh_key_path = ?, ssh_key = ?
 		WHERE id = ?`,
 		inst.Name, inst.APIURL, inst.APITokenID,
 		inst.APITokenSecret, string(inst.ConnectionType), inst.Node,
-		inst.Username, inst.Password,
 		inst.SSHHost, inst.SSHPort,
 		inst.SSHUser, inst.SSHKeyPath, inst.SSHKey, inst.ID,
 	)

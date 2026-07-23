@@ -64,14 +64,6 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 						Usage: `Connection type: "termproxy" (default) or "ssh"`,
 					},
 					&ucli.StringFlag{
-						Name:  "username",
-						Usage: "Proxmox username (e.g. root@pam) for termproxy session auth. Required for --connection-type termproxy.",
-					},
-					&ucli.StringFlag{
-						Name:  "password",
-						Usage: "Proxmox password for --username. Required for --connection-type termproxy.",
-					},
-					&ucli.StringFlag{
 						Name:  "ssh-host",
 						Usage: "SSH host (host or host:port); required for --connection-type ssh",
 					},
@@ -98,18 +90,6 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 					generateKey := cmd.Bool("generate-ssh-key")
 					keyPath := cmd.String("ssh-key-path")
 					keyInline := cmd.String("ssh-key")
-
-					// termproxy requires username+password: the termproxy binary validates
-					// the auth line by POSTing username to /access/ticket. API token IDs
-					// (user@realm!token) are rejected as invalid usernames by Proxmox.
-					if connType == models.ConnectionTypeTermProxy {
-						if cmd.String("username") == "" {
-							return fmt.Errorf("--username is required for --connection-type termproxy (e.g. root@pam)")
-						}
-						if cmd.String("password") == "" {
-							return fmt.Errorf("--password is required for --connection-type termproxy")
-						}
-					}
 
 					//nolint:nestif // SSH key validation is inherently nested
 					if connType == models.ConnectionTypeSSH {
@@ -197,8 +177,6 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 						APITokenSecret: cmd.String("token-secret"),
 						ConnectionType: connType,
 						Node:           nodeName,
-						Username:       cmd.String("username"),
-						Password:       cmd.String("password"),
 						SSHHost:        sshHost,
 						SSHPort:        sshPort,
 						SSHUser:        cmd.String("ssh-user"),
