@@ -266,9 +266,10 @@ func TestAdminWithRootUsernameShowsCLI(t *testing.T) {
 	}
 }
 
-// TestAdminWithUnknownUsernameShowsCLI verifies that an admin using an
-// unresolvable username gets the CLI (falls through gracefully), not a panic.
-func TestAdminWithUnknownUsernameShowsCLI(t *testing.T) {
+// TestAdminWithUnknownUsernameShowsError verifies that an admin using an
+// unresolvable username gets a clear error message — not the admin CLI help and
+// not a proxy session.
+func TestAdminWithUnknownUsernameShowsError(t *testing.T) {
 	addr, adminSigner, mp, cancel := setupAdminTest(t)
 	defer cancel()
 
@@ -277,6 +278,12 @@ func TestAdminWithUnknownUsernameShowsCLI(t *testing.T) {
 
 	if strings.Contains(output, "[mock proxy]") {
 		t.Errorf("did not expect proxy banner for unknown guest; output: %q", output)
+	}
+	if strings.Contains(output, "USAGE:") || strings.Contains(output, "--help") {
+		t.Errorf("expected error message, not CLI help; output: %q", output)
+	}
+	if !strings.Contains(output, "not found") && !strings.Contains(output, "Error") {
+		t.Errorf("expected error text in output, got: %q", output)
 	}
 
 	sessions := mp.RecordedSessions()
