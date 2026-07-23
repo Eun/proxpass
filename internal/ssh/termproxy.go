@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net/http"
 	"net/url"
 	"sync"
 
@@ -72,16 +71,12 @@ func proxyViaTermProxy(
 	wsURL := buildVNCWebSocketURL(apiURL, inst.Node, kind, guest.ProxmoxID, ticket)
 
 	// --- Step 3: Dial WebSocket ---
-	// Auth: standard PVEAPIToken Authorization header.
-	// The vncticket query param is pre-encoded in RawQuery (see buildVNCWebSocketURL)
-	// to avoid double-encoding by the HTTP client.
+	// Connect directly to the termproxy binary (ws://host:port/).
+	// The termproxy binary validates the VNC ticket passed as the
+	// Sec-WebSocket-Protocol subprotocol header.
 	dialOpts := &websocket.DialOptions{
-		HTTPHeader: http.Header{
-			"Authorization": []string{
-				fmt.Sprintf("PVEAPIToken=%s=%s", inst.APITokenID, inst.APITokenSecret),
-			},
-		},
-		// Proxmox uses self-signed certificates; skip TLS verification.
+		Subprotocols: []string{ticket.Ticket},
+		// No TLS: the termproxy binary does not do TLS itself.
 		HTTPClient: proxmox.InsecureHTTPClient(),
 	}
 
@@ -95,8 +90,12 @@ func proxyViaTermProxy(
 	defer func() { _ = conn.CloseNow() }()
 
 	// --- Step 4: Read handshake frame "OK" ---
+	// Proxmox closes the connection (EOF) without sending "OK" when the
+	// vncticket validation fails. Log enough context to diagnose.
 	_, handshake, err := conn.Read(ctx)
 	if err != nil {
+		logger.Printf("termproxy: handshake EOF for url=%s node=%s vmid=%d",
+			wsURL, inst.Node, guest.ProxmoxID)
 		return fmt.Errorf("read termproxy handshake: %w", err)
 	}
 	if string(handshake) != "OK" {
@@ -189,30 +188,26 @@ func proxyViaTermProxy(
 	return nil
 }
 
-// buildVNCWebSocketURL constructs the WebSocket URL for the Proxmox vncwebsocket endpoint.
+// buildTermProxyWebSocketURL constructs the WebSocket URL to connect directly
+// to the termproxy binary, which listens on the port returned by the termproxy
+// POST endpoint.
 //
-// The WebSocket connects to the SAME host and port as the API URL — NOT to
-// ticket.Port. The ticket port is a session identifier that goes into the
-// ?port= query parameter only; it is not a TCP port to dial.
+// The termproxy binary is a standalone WebSocket server; it does NOT go through
+// the Proxmox API (port 8006). Connect to host:ticketPort directly.
+// The ticket is sent as the WebSocket subprotocol so the termproxy binary can
+// validate it.
 func buildVNCWebSocketURL(apiURL *url.URL, node, kind string, vmid int, ticket *proxmox.TermProxyTicket) string {
-	// Derive WebSocket scheme from the API scheme.
-	wsScheme := "ws"
-	if apiURL.Scheme == "https" {
-		wsScheme = "wss"
-	}
-
-	// Keep the same host:port as the API URL.
-	path := fmt.Sprintf("/api2/json/nodes/%s/%s/%d/vncwebsocket", node, kind, vmid)
-
-	q := url.Values{}
-	q.Set("port", fmt.Sprintf("%d", ticket.Port))
-	q.Set("vncticket", ticket.Ticket)
+	// The termproxy binary listens on a plain (non-TLS) TCP port on the Proxmox host.
+	// Always use "ws" (not "wss") since the termproxy binary itself does not do TLS;
+	// TLS termination happens at the Proxmox API layer.
+	_ = node
+	_ = kind
+	_ = vmid
 
 	u := &url.URL{
-		Scheme:   wsScheme,
-		Host:     apiURL.Host, // preserves host:port from --api-url (e.g. rome:8006)
-		Path:     path,
-		RawQuery: q.Encode(),
+		Scheme: "ws",
+		Host:   fmt.Sprintf("%s:%d", apiURL.Hostname(), ticket.Port),
+		Path:   "/",
 	}
 	return u.String()
 }
