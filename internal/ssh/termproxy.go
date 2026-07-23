@@ -120,8 +120,13 @@ func proxyViaTermProxy(
 		return fmt.Errorf("unexpected termproxy handshake: %q", firstMsg)
 	}
 
-	// --- Step 6: Send auth line: "<username>:<vncticket>\n" ---
-	authLine := fmt.Sprintf("%s:%s\n", ticket.User, ticket.Ticket)
+	// --- Step 6: Send auth line: "<authid>:<vncticket>\n" ---
+	// The termproxy binary POSTs authid+vncticket to /access/vncticket which
+	// calls verify_vnc_ticket(ticket, authid, path, port). The VNC ticket was
+	// assembled during the termproxy POST under the API token identity
+	// (e.g. root@pam!proxpass), so authid must be the full token ID, not the
+	// bare username returned in the 'user' field of the termproxy response.
+	authLine := fmt.Sprintf("%s:%s\n", inst.APITokenID, ticket.Ticket)
 	if err := conn.Write(ctx, websocket.MessageBinary, []byte(authLine)); err != nil {
 		return fmt.Errorf("send auth line: %w", err)
 	}
