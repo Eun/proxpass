@@ -83,21 +83,35 @@ func (c *APIClient) DiscoverGuests(ctx context.Context) ([]*models.Guest, error)
 	return append(cts, vms...), nil
 }
 
-// resolveNodeName fetches /api2/json/nodes and returns the node name whose
-// name matches c.sshHost. Matching is case-insensitive and supports:
+// ResolveNodeName fetches /api2/json/nodes and returns the node name that
+// matches sshHost. Matching is case-insensitive and supports:
 //
 //  1. Exact match:    sshHost == nodename         (e.g. "rome" == "rome")
 //  2. FQDN prefix:   sshHost == "nodename...."   (e.g. "rome.erika.salzmann.berlin" has prefix "rome.")
 //
+// When sshHost is empty and the cluster has exactly one node, that node is
+// returned automatically. With multiple nodes and no sshHost, an error
+// is returned listing the available nodes for disambiguation.
+//
 // This is reliable because Proxmox node names are always short hostnames,
 // and FQDNs are always <nodename>.<domain>.
-func (c *APIClient) resolveNodeName(ctx context.Context) (string, error) {
+func (c *APIClient) ResolveNodeName(ctx context.Context, sshHost string) (string, error) {
 	nodes, err := c.getNodes(ctx)
 	if err != nil {
 		return "", err
 	}
 
-	ssh := strings.ToLower(c.sshHost)
+	// Auto-detect when no sshHost is provided.
+	if sshHost == "" {
+		if len(nodes) == 1 {
+			return nodes[0], nil
+		}
+		return "", fmt.Errorf(
+			"cluster has %d nodes (%s); specify --ssh-host to disambiguate",
+			len(nodes), strings.Join(nodes, ", "))
+	}
+
+	ssh := strings.ToLower(sshHost)
 	for _, node := range nodes {
 		n := strings.ToLower(node)
 		if ssh == n || strings.HasPrefix(ssh, n+".") {
@@ -105,7 +119,13 @@ func (c *APIClient) resolveNodeName(ctx context.Context) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no Proxmox node matches ssh-host %q (known nodes: %s)",
-		c.sshHost, strings.Join(nodes, ", "))
+		sshHost, strings.Join(nodes, ", "))
+}
+
+// resolveNodeName is the internal wrapper used by DiscoverGuests.
+// It resolves c.sshHost against the cluster node list.
+func (c *APIClient) resolveNodeName(ctx context.Context) (string, error) {
+	return c.ResolveNodeName(ctx, c.sshHost)
 }
 
 // --- Proxmox API response structures ---
@@ -235,5 +255,21 @@ func normalizeStatus(raw string) models.Status {
 		return models.StatusStopped
 	default:
 		return models.StatusStopped
+	}
+}
+
+// InsecureHTTPClient returns an *http.Client that skips TLS certificate
+// verification. Used by the termproxy WebSocket dialer to connect to
+// Proxmox hosts that use self-signed certificates.
+func InsecureHTTPClient() *http.Client {
+	return &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true, //nolint:gosec // Proxmox self-signed certs
+			},
+		},
 	}
 }

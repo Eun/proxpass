@@ -24,8 +24,9 @@ type GuestProxier interface {
 // the Proxmox host via SSH and runs pct enter / qm terminal.
 type DefaultProxier struct{}
 
-// ProxyToGuest implements GuestProxier by delegating to the
-// package-level proxyToGuest function.
+// ProxyToGuest implements GuestProxier by dispatching to either the
+// termproxy WebSocket path or the legacy SSH path depending on
+// inst.ConnectionType.
 func (DefaultProxier) ProxyToGuest(
 	clientChan gossh.Channel,
 	clientReqs <-chan *gossh.Request,
@@ -34,5 +35,8 @@ func (DefaultProxier) ProxyToGuest(
 	pty *PtyRequest,
 	logger *log.Logger,
 ) error {
+	if inst.ConnectionType == models.ConnectionTypeTermProxy {
+		return proxyViaTermProxy(clientChan, clientReqs, guest, inst, pty, logger)
+	}
 	return proxyToGuest(clientChan, clientReqs, guest, inst, pty, logger)
 }
