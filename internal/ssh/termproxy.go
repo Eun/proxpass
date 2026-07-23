@@ -72,15 +72,13 @@ func proxyViaTermProxy(
 	wsURL := buildVNCWebSocketURL(apiURL, inst.Node, kind, guest.ProxmoxID, ticket)
 
 	// --- Step 3: Dial WebSocket ---
-	// The vncwebsocket endpoint requires:
-	//   Cookie: PVEAuthCookie=PVEAPIToken=<tokenID>=<secret>
-	// The vncticket query param authenticates the specific session;
-	// the cookie authenticates the caller identity (must match the ticket issuer).
-	apiToken := fmt.Sprintf("PVEAPIToken=%s=%s", inst.APITokenID, inst.APITokenSecret)
+	// Auth: standard PVEAPIToken Authorization header.
+	// The vncticket query param is pre-encoded in RawQuery (see buildVNCWebSocketURL)
+	// to avoid double-encoding by the HTTP client.
 	dialOpts := &websocket.DialOptions{
 		HTTPHeader: http.Header{
-			"Cookie": []string{
-				fmt.Sprintf("PVEAuthCookie=%s", url.QueryEscape(apiToken)),
+			"Authorization": []string{
+				fmt.Sprintf("PVEAPIToken=%s=%s", inst.APITokenID, inst.APITokenSecret),
 			},
 		},
 		// Proxmox uses self-signed certificates; skip TLS verification.
@@ -97,12 +95,12 @@ func proxyViaTermProxy(
 	defer func() { _ = conn.CloseNow() }()
 
 	// --- Step 4: Read handshake frame "OK" ---
-	msgType, handshake, err := conn.Read(ctx)
+	_, handshake, err := conn.Read(ctx)
 	if err != nil {
 		return fmt.Errorf("read termproxy handshake: %w", err)
 	}
-	if msgType != websocket.MessageBinary || string(handshake) != "OK" {
-		return fmt.Errorf("unexpected termproxy handshake: type=%v payload=%q", msgType, handshake)
+	if string(handshake) != "OK" {
+		return fmt.Errorf("unexpected termproxy handshake: %q", handshake)
 	}
 
 	// --- Step 5: Send initial resize frame if PTY was requested ---
