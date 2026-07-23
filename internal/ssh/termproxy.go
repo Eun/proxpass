@@ -83,7 +83,7 @@ func proxyViaTermProxy(
 	}
 
 	conn, wsResp, err := websocket.Dial(ctx, wsURL, dialOpts)
-	if wsResp != nil {
+	if wsResp != nil && wsResp.Body != nil {
 		_ = wsResp.Body.Close()
 	}
 	if err != nil {
