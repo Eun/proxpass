@@ -88,34 +88,8 @@ func DefaultAdminHandler( //nolint:gocognit // SSH session handler
 		// If the SSH username looks like a guest identifier (e.g. "ct100",
 		// "vm200", "webserver"), proxy the admin directly to that guest.
 		// Admins bypass HasAccess checks — they can reach any guest.
-		if identifier != "" && identifier != "root" {
-			ctx := context.Background()
-			guests, err := repo.ListGuests(ctx)
-			if err == nil {
-				if g, resolveErr := resolveGuest(identifier, guests); resolveErr == nil {
-					if inst := findInstanceByID(ctx, repo, g.InstanceID, logger); inst != nil {
-						// Drain remaining requests so the goroutines spawned
-						// inside ProxyToGuest don't race with an unclosed channel.
-						proxyReqs := make(chan *gossh.Request, 4)
-						go func() {
-							for req := range remaining {
-								select {
-								case proxyReqs <- req:
-								default:
-									if req.WantReply {
-										_ = req.Reply(false, nil)
-									}
-								}
-							}
-							close(proxyReqs)
-						}()
-						if proxyErr := proxier.ProxyToGuest(channel, proxyReqs, g, inst, ptyReq, logger); proxyErr != nil {
-							logger.Printf("admin: proxy to guest %q error: %v", g.Name, proxyErr)
-						}
-						return
-					}
-				}
-			}
+		if tryAdminProxy(context.Background(), identifier, channel, remaining, repo, proxier, ptyReq, logger) {
+			return
 		}
 
 		// Discard remaining requests in background
@@ -181,6 +155,62 @@ func DefaultAdminHandler( //nolint:gocognit // SSH session handler
 			}
 		}
 	}
+}
+
+// tryAdminProxy attempts to resolve the SSH username as a guest identifier and,
+// if successful, proxies the admin channel directly to that guest.
+// It returns true if the proxy was attempted (caller should return), false if
+// the caller should fall through to the CLI handler.
+//
+// Admins bypass HasAccess checks and can reach any guest unconditionally.
+func tryAdminProxy(
+	ctx context.Context,
+	identifier string,
+	channel gossh.Channel,
+	remaining <-chan *gossh.Request,
+	repo db.Repository,
+	proxier GuestProxier,
+	ptyReq *PtyRequest,
+	logger *log.Logger,
+) bool {
+	if identifier == "" || identifier == "root" {
+		return false
+	}
+
+	guests, err := repo.ListGuests(ctx)
+	if err != nil {
+		return false
+	}
+
+	g, err := resolveGuest(identifier, guests)
+	if err != nil {
+		return false
+	}
+
+	inst := findInstanceByID(ctx, repo, g.InstanceID, logger)
+	if inst == nil {
+		return false
+	}
+
+	// Forward remaining SSH requests to the proxy via a buffered bridge channel.
+	proxyReqs := make(chan *gossh.Request, 4)
+	go func() {
+		for req := range remaining {
+			select {
+			case proxyReqs <- req:
+			default:
+				if req.WantReply {
+					_ = req.Reply(false, nil)
+				}
+			}
+		}
+		close(proxyReqs)
+	}()
+
+	if proxyErr := proxier.ProxyToGuest(channel, proxyReqs, g, inst, ptyReq, logger); proxyErr != nil {
+		logger.Printf("admin: proxy to guest %q error: %v", g.Name, proxyErr)
+	}
+	return true
 }
 
 // splitArgs does a simple shell-like split of a command string.

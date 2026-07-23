@@ -22,12 +22,15 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
-// waitForSSH retries gossh.Dial until the server responds with an SSH banner
+// waitForSSH retries a TCP dial until the server accepts connections
 // or the deadline passes. It does not authenticate — just checks reachability.
 func waitForSSH(addr string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	dialer := &net.Dialer{Timeout: 500 * time.Millisecond}
 	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		conn, err := dialer.DialContext(ctx, "tcp", addr)
+		cancel()
 		if err == nil {
 			conn.Close()
 			return nil
@@ -41,7 +44,6 @@ func waitForSSH(addr string, timeout time.Duration) error {
 // admin keypair, and returns the server address, admin signer, mock proxier,
 // and a cancel func.
 func setupAdminTest(t *testing.T) (
-	env *testenv.TestEnv,
 	addr string,
 	adminSigner gossh.Signer,
 	mp *testenv.MockProxier,
@@ -49,7 +51,7 @@ func setupAdminTest(t *testing.T) (
 ) {
 	t.Helper()
 
-	env = testenv.New(t)
+	env := testenv.New(t)
 
 	// Generate a fresh admin keypair and register it.
 	adminPub, adminPriv, err := ed25519.GenerateKey(rand.Reader)
@@ -100,7 +102,8 @@ func setupAdminTest(t *testing.T) (
 	)
 
 	// Bind on a random port before starting so we know the address.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	lc := &net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -118,7 +121,7 @@ func setupAdminTest(t *testing.T) (
 		t.Fatalf("proxpass server not ready: %v", err)
 	}
 
-	return env, addr, adminSigner, mp, cancel
+	return addr, adminSigner, mp, cancel
 }
 
 // sshShellOutput dials the proxpass server, opens a shell session with the
@@ -144,7 +147,7 @@ func sshShellOutput(t *testing.T, addr, username string, signer gossh.Signer) st
 		t.Fatalf("new session: %v", err)
 	}
 
-	// Pipe stdout and stderr into a buffer that we read concurrently.
+	// Pipe stdout and stderr so we can read them concurrently.
 	stdoutPipe, err := sess.StdoutPipe()
 	if err != nil {
 		t.Fatalf("stdout pipe: %v", err)
@@ -163,25 +166,45 @@ func sshShellOutput(t *testing.T, addr, username string, signer gossh.Signer) st
 		t.Fatalf("shell: %v", err)
 	}
 
-	// Give the server a moment to write any banner before closing stdin.
-	// This avoids a race where stdin EOF is seen before ProxyToGuest writes.
-	time.Sleep(50 * time.Millisecond)
+	// Read stdout and stderr into a shared buffer concurrently.
+	// We pipe through a buffered reader so we can detect when the first byte
+	// arrives (indicating the server has written its initial response) before
+	// closing stdin.
+	var buf bytes.Buffer
+	firstByte := make(chan struct{}, 1)
+	var wg sync.WaitGroup
+
+	copyWithSignal := func(r io.Reader) {
+		defer wg.Done()
+		b := make([]byte, 4096)
+		for {
+			n, err := r.Read(b)
+			if n > 0 {
+				buf.Write(b[:n])
+				select {
+				case firstByte <- struct{}{}:
+				default:
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}
+
+	wg.Add(2)
+	go copyWithSignal(stdoutPipe)
+	go copyWithSignal(stderrPipe)
+
+	// Wait for the first byte of output (the server's initial response)
+	// before closing stdin, or fall back after 5s for servers that write nothing.
+	select {
+	case <-firstByte:
+	case <-time.After(5 * time.Second):
+	}
 
 	// Close stdin so the server-side handler (CLI or proxy) sees EOF and exits.
 	stdinPipe.Close()
-
-	// Drain stdout and stderr concurrently, then wait for the session.
-	var buf bytes.Buffer
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(&buf, stdoutPipe)
-	}()
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(&buf, stderrPipe)
-	}()
 
 	done := make(chan struct{})
 	go func() {
@@ -205,7 +228,7 @@ func sshShellOutput(t *testing.T, addr, username string, signer gossh.Signer) st
 // TestAdminWithGuestUsernameProxiesDirectly verifies that an admin key with a
 // username like "ct100" connects straight to the guest without showing the CLI.
 func TestAdminWithGuestUsernameProxiesDirectly(t *testing.T) {
-	_, addr, adminSigner, mp, cancel := setupAdminTest(t)
+	addr, adminSigner, mp, cancel := setupAdminTest(t)
 	defer cancel()
 
 	// The seeded DB has CT "webserver" at ProxmoxID 100.
@@ -228,7 +251,7 @@ func TestAdminWithGuestUsernameProxiesDirectly(t *testing.T) {
 // TestAdminWithRootUsernameShowsCLI verifies that an admin using "root" as the
 // SSH username still gets the admin CLI, not a guest proxy.
 func TestAdminWithRootUsernameShowsCLI(t *testing.T) {
-	_, addr, adminSigner, mp, cancel := setupAdminTest(t)
+	addr, adminSigner, mp, cancel := setupAdminTest(t)
 	defer cancel()
 
 	output := sshShellOutput(t, addr, "root", adminSigner)
@@ -246,7 +269,7 @@ func TestAdminWithRootUsernameShowsCLI(t *testing.T) {
 // TestAdminWithUnknownUsernameShowsCLI verifies that an admin using an
 // unresolvable username gets the CLI (falls through gracefully), not a panic.
 func TestAdminWithUnknownUsernameShowsCLI(t *testing.T) {
-	_, addr, adminSigner, mp, cancel := setupAdminTest(t)
+	addr, adminSigner, mp, cancel := setupAdminTest(t)
 	defer cancel()
 
 	// "zzz9999" matches no guest in the seeded database.
