@@ -187,16 +187,18 @@ func proxyViaTermProxy(
 }
 
 // buildVNCWebSocketURL constructs the WebSocket URL for the Proxmox vncwebsocket endpoint.
+//
+// The WebSocket connects to the SAME host and port as the API URL — NOT to
+// ticket.Port. The ticket port is a session identifier that goes into the
+// ?port= query parameter only; it is not a TCP port to dial.
 func buildVNCWebSocketURL(apiURL *url.URL, node, kind string, vmid int, ticket *proxmox.TermProxyTicket) string {
-	// Use the websocket scheme derived from the API scheme.
+	// Derive WebSocket scheme from the API scheme.
 	wsScheme := "ws"
 	if apiURL.Scheme == "https" {
 		wsScheme = "wss"
 	}
 
-	// The WebSocket port is the one returned in the ticket.
-	host := fmt.Sprintf("%s:%d", apiURL.Hostname(), ticket.Port)
-
+	// Keep the same host:port as the API URL.
 	path := fmt.Sprintf("/api2/json/nodes/%s/%s/%d/vncwebsocket", node, kind, vmid)
 
 	q := url.Values{}
@@ -205,7 +207,7 @@ func buildVNCWebSocketURL(apiURL *url.URL, node, kind string, vmid int, ticket *
 
 	u := &url.URL{
 		Scheme:   wsScheme,
-		Host:     host,
+		Host:     apiURL.Host, // preserves host:port from --api-url (e.g. rome:8006)
 		Path:     path,
 		RawQuery: q.Encode(),
 	}
