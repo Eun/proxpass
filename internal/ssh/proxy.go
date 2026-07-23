@@ -17,6 +17,20 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
+// SSH channel request type constants.
+const (
+	reqTypePTY       = "pty-req"
+	reqTypeShell     = "shell"
+	reqTypeExec      = "exec"
+	reqTypeWinChange = "window-change"
+)
+
+// Terminal type constants.
+const (
+	termXterm         = "xterm"
+	termXterm256Color = "xterm-256color"
+)
+
 // handleClientSession is invoked for every authenticated client channel.
 // The SSH username on the connection is used to resolve the target guest.
 // Resolution order: numeric VMID → type+VMID (e.g. ct100) → name.
@@ -98,7 +112,7 @@ func handleClientSession(
 	// to handle the initial pty-req and shell/exec first.
 	for req := range reqs {
 		switch req.Type {
-		case "pty-req":
+		case reqTypePTY:
 			p, err := parsePtyReq(req.Payload)
 			if err != nil {
 				logger.Printf("client %s: bad pty-req: %v", clientName, err)
@@ -112,7 +126,7 @@ func handleClientSession(
 				_ = req.Reply(true, nil)
 			}
 
-		case "shell", "exec":
+		case reqTypeShell, reqTypeExec:
 			if req.WantReply {
 				_ = req.Reply(true, nil)
 			}
@@ -181,12 +195,24 @@ func proxyToGuest(
 	}
 	defer func() { _ = session.Close() }()
 
-	// Request a PTY on the remote side if the client asked for one.
-	if ptyReq != nil {
-		modes := gossh.TerminalModes{}
-		if err := session.RequestPty(ptyReq.Term, int(ptyReq.Height), int(ptyReq.Width), modes); err != nil {
-			return fmt.Errorf("requesting remote pty: %w", err)
-		}
+	// Both pct enter (CT) and qm terminal (VM) use socat internally and
+	// require a PTY on the Proxmox SSH session unconditionally. Without one,
+	// socat's tcgetattr(0, ...) call fails with ENOTTY, causing the console
+	// to hang or immediately exit.
+	//
+	// Use the client's PTY parameters when available; fall back to a sane
+	// default (xterm-256color 80×24) for non-interactive callers (e.g. ssh -T).
+	effectivePty := ptyReq
+	if effectivePty == nil {
+		effectivePty = &PtyRequest{Term: termXterm256Color, Width: 80, Height: 24}
+	}
+	if err := session.RequestPty(
+		effectivePty.Term,
+		int(effectivePty.Height),
+		int(effectivePty.Width),
+		parseModes(effectivePty.Modes),
+	); err != nil {
+		return fmt.Errorf("requesting remote pty: %w", err)
 	}
 
 	// Build the command for the guest type.
@@ -235,7 +261,7 @@ func proxyToGuest(
 					return
 				}
 				switch req.Type {
-				case "window-change":
+				case reqTypeWinChange:
 					w, h, parseErr := parseWindowChange(req.Payload)
 					if parseErr == nil {
 						_ = session.WindowChange(int(h), int(w))
