@@ -320,7 +320,9 @@ func (c *APIClient) CheckTermProxySupport(ctx context.Context) error {
 	if release == "" {
 		return fmt.Errorf("proxmox version response missing 'release' field")
 	}
-	major, err := strconv.Atoi(release)
+	// 'release' may be "9" or "9.1" — take only the part before the first dot.
+	majorStr := strings.SplitN(release, ".", 2)[0]
+	major, err := strconv.Atoi(majorStr)
 	if err != nil {
 		return fmt.Errorf("parse proxmox major version %q: %w", release, err)
 	}
