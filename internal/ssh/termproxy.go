@@ -45,18 +45,37 @@ func proxyViaTermProxy(
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// --- Step 1: Create termproxy ticket via API token ---
-	// Both the termproxy POST and the vncwebsocket WebSocket use API token
-	// auth. verify_vnc_ticket checks the VNC ticket (assembled during the
-	// termproxy POST with identity user@realm!token) against the WebSocket
-	// request identity (also user@realm!token via Authorization header).
-	// They match, so the ticket verification succeeds.
+	// --- Step 1: Obtain auth credentials for termproxy ---
+	// Older Proxmox versions (termproxy without --vncticket-endpoint) verify
+	// the auth line via POST /access/ticket which requires a real user identity
+	// (e.g. root@pam), not an API token identity (root@pam!token).
+	// When inst.Username/Password are set, we use a session ticket for both
+	// the termproxy POST and the vncwebsocket — this produces a VNC ticket
+	// assembled with the user identity, matching what termproxy expects.
+	// When not set, API token auth is used (works with newer Proxmox +
+	// --vncticket-endpoint).
 	apiClient, err := proxmox.NewAPIClient(inst)
 	if err != nil {
 		return fmt.Errorf("build api client: %w", err)
 	}
 
-	ticket, err := apiClient.CreateTermProxyTicket(ctx, inst.Node, guest)
+	var ticket *proxmox.TermProxyTicket
+	var session *proxmox.SessionTicket
+
+	if inst.Username != "" {
+		// Session ticket auth: get a user session ticket, use it for both
+		// the termproxy POST and the vncwebsocket Cookie.
+		session, err = apiClient.GetSessionTicket(ctx, inst.Username, inst.Password)
+		if err != nil {
+			return fmt.Errorf("get session ticket: %w", err)
+		}
+		ticket, err = apiClient.CreateTermProxyTicketWithSession(ctx, inst.Node, guest, session)
+	} else {
+		// API token auth: both termproxy POST and vncwebsocket use the token.
+		// The VNC ticket is assembled with the token identity; the authid in
+		// the termproxy auth line must match (inst.APITokenID).
+		ticket, err = apiClient.CreateTermProxyTicket(ctx, inst.Node, guest)
+	}
 	if err != nil {
 		return fmt.Errorf("create termproxy ticket: %w", err)
 	}
@@ -80,16 +99,25 @@ func proxyViaTermProxy(
 	wsURL := buildVNCWebSocketURL(apiURL, inst.Node, kind, guest.ProxmoxID, ticket)
 
 	// --- Step 4: Dial WebSocket ---
-	// Auth: same API token used for the termproxy POST, so identity matches.
 	// Subprotocol: "binary" (required by Proxmox vncwebsocket).
-	dialOpts := &websocket.DialOptions{
-		Subprotocols: []string{"binary"},
-		HTTPHeader: http.Header{
+	// Auth: use the same credentials as the termproxy POST so that the
+	// vncwebsocket verify_vnc_ticket check sees the same identity.
+	var wsHeader http.Header
+	if session != nil {
+		wsHeader = http.Header{
+			"Cookie": []string{"PVEAuthCookie=" + url.QueryEscape(session.Ticket)},
+		}
+	} else {
+		wsHeader = http.Header{
 			"Authorization": []string{
 				fmt.Sprintf("PVEAPIToken=%s=%s", inst.APITokenID, inst.APITokenSecret),
 			},
-		},
-		HTTPClient: proxmox.InsecureHTTPClient(),
+		}
+	}
+	dialOpts := &websocket.DialOptions{
+		Subprotocols: []string{"binary"},
+		HTTPHeader:   wsHeader,
+		HTTPClient:   proxmox.InsecureHTTPClient(),
 	}
 
 	conn, wsResp, err := websocket.Dial(ctx, wsURL, dialOpts)
@@ -102,10 +130,18 @@ func proxyViaTermProxy(
 	defer func() { _ = conn.CloseNow() }()
 
 	// --- Step 5: Send auth line: "<authid>:<vncticket>\n" ---
-	// termproxy reads this first, validates via /access/vncticket, then sends "OK".
-	// authid must be the full API token ID (e.g. root@pam!proxpass) because that
-	// is the identity under which the VNC ticket was assembled.
-	authLine := fmt.Sprintf("%s:%s\n", inst.APITokenID, ticket.Ticket)
+	// termproxy reads this first, validates (via /access/ticket or /access/vncticket
+	// depending on Proxmox version), then sends "OK".
+	// authid must match the identity used when assembling the VNC ticket:
+	// - session auth: inst.Username (e.g. root@pam)
+	// - token auth:   inst.APITokenID (e.g. root@pam!proxpass)
+	var authid string
+	if session != nil {
+		authid = session.Username
+	} else {
+		authid = inst.APITokenID
+	}
+	authLine := fmt.Sprintf("%s:%s\n", authid, ticket.Ticket)
 	if err := conn.Write(ctx, websocket.MessageBinary, []byte(authLine)); err != nil {
 		return fmt.Errorf("send auth line: %w", err)
 	}

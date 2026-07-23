@@ -36,11 +36,18 @@ type ProxmoxInstance struct {
 	APITokenSecret string         `json:"api_token_secret"`
 	ConnectionType ConnectionType `json:"connection_type"` // "termproxy" (default) or "ssh"
 	Node           string         `json:"node"`            // resolved Proxmox short node name
-	SSHHost        string         `json:"ssh_host"`
-	SSHPort        int            `json:"ssh_port"`
-	SSHUser        string         `json:"ssh_user"`
-	SSHKeyPath     string         `json:"ssh_key_path"`
-	SSHKey         string         `json:"ssh_key"` // PEM-encoded private key (stored in DB; preferred over SSHKeyPath when non-empty)
+	// Username and Password are used to obtain a Proxmox user session ticket
+	// for termproxy authentication. When set, the termproxy POST and vncwebsocket
+	// are authenticated with a PVEAuthCookie session ticket (required for older
+	// Proxmox versions whose termproxy binary verifies via /access/ticket).
+	// When empty, API token auth is used (works with newer Proxmox + --vncticket-endpoint).
+	Username   string `json:"username"`
+	Password   string `json:"-"` // never serialized; stored in DB only
+	SSHHost    string `json:"ssh_host"`
+	SSHPort    int    `json:"ssh_port"`
+	SSHUser    string `json:"ssh_user"`
+	SSHKeyPath string `json:"ssh_key_path"`
+	SSHKey     string `json:"ssh_key"` // PEM-encoded private key (stored in DB; preferred over SSHKeyPath when non-empty)
 }
 
 type Guest struct {

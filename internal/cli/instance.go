@@ -64,6 +64,14 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 						Usage: `Connection type: "termproxy" (default) or "ssh"`,
 					},
 					&ucli.StringFlag{
+						Name:  "username",
+						Usage: "Proxmox username (e.g. root@pam) for termproxy session auth. Required for older Proxmox versions; optional for newer ones.",
+					},
+					&ucli.StringFlag{
+						Name:  "password",
+						Usage: "Proxmox password for --username (termproxy only)",
+					},
+					&ucli.StringFlag{
 						Name:  "ssh-host",
 						Usage: "SSH host (host or host:port); required for --connection-type ssh",
 					},
@@ -177,6 +185,8 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 						APITokenSecret: cmd.String("token-secret"),
 						ConnectionType: connType,
 						Node:           nodeName,
+						Username:       cmd.String("username"),
+						Password:       cmd.String("password"),
 						SSHHost:        sshHost,
 						SSHPort:        sshPort,
 						SSHUser:        cmd.String("ssh-user"),

@@ -32,18 +32,17 @@ type sessionTicketResponse struct {
 	} `json:"data"`
 }
 
-// GetSessionTicket exchanges the API token for a short-lived user session
-// ticket via POST /api2/json/access/ticket. The returned ticket is used as
-// PVEAuthCookie on the vncwebsocket WebSocket request so that Proxmox's
-// verify_vnc_ticket check sees the same user identity that assembled the
-// VNC ticket.
-func (c *APIClient) GetSessionTicket(ctx context.Context) (*SessionTicket, error) {
-	// The /access/ticket endpoint accepts API token credentials in the
-	// Authorization header (PVEAPIToken=...) and returns a session ticket
-	// for the underlying user.
+// GetSessionTicket obtains a Proxmox user session ticket via
+// POST /api2/json/access/ticket using the provided username and password.
+// The returned PVEAuthCookie ticket authenticates the vncwebsocket WebSocket
+// and termproxy auth line with the user identity (e.g. root@pam) rather
+// than the API token identity (e.g. root@pam!proxpass).
+// This is required for older Proxmox versions whose termproxy binary
+// verifies via /access/ticket (not /access/vncticket).
+func (c *APIClient) GetSessionTicket(ctx context.Context, username, password string) (*SessionTicket, error) {
 	body := url.Values{}
-	body.Set("username", c.tokenID)
-	body.Set("password", c.tokenSecret)
+	body.Set("username", username)
+	body.Set("password", password)
 
 	reqURL := c.baseURL + "/api2/json/access/ticket"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL,
