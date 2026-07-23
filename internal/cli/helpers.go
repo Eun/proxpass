@@ -35,13 +35,13 @@ func validateAPIURL(rawURL string) error {
 	trimmed := strings.TrimRight(rawURL, "/")
 	parsed, err := url.Parse(trimmed)
 	if err != nil {
-		return fmt.Errorf("--api-url %q: %w", rawURL, err)
+		return fmt.Errorf("--url %q: %w", rawURL, err)
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return fmt.Errorf("--api-url %q: must start with http:// or https://", rawURL)
+		return fmt.Errorf("--url %q: must start with http:// or https://", rawURL)
 	}
 	if parsed.Host == "" {
-		return fmt.Errorf("--api-url %q: missing host", rawURL)
+		return fmt.Errorf("--url %q: missing host", rawURL)
 	}
 	return nil
 }
