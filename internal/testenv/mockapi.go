@@ -19,6 +19,7 @@ type MockAPIServer struct {
 	mu         sync.RWMutex
 	nodes      map[string]*mockNode // node name → guests
 	token      string               // expected "tokenID=tokenSecret"
+	localNode  string               // the node reported as local in cluster/status
 	server     *httptest.Server     // non-nil for test mode (httptest)
 	httpServer *http.Server         // non-nil for standalone mode
 }
@@ -54,6 +55,7 @@ func NewMockAPIServer(tokenID, tokenSecret string) *MockAPIServer {
 	// /api2/json/nodes/{node}/lxc, /api2/json/nodes/{node}/qemu,
 	// and /api2/json/nodes/{node}/{lxc|qemu}/{vmid}/termproxy
 	mux.HandleFunc("/api2/json/nodes/", m.handleNodePaths)
+	mux.HandleFunc("/api2/json/cluster/status", m.handleClusterStatus)
 	m.server = httptest.NewTLSServer(mux)
 	return m
 }
@@ -76,6 +78,7 @@ func (m *MockAPIServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api2/json/nodes", m.handleNodes)
 	mux.HandleFunc("/api2/json/nodes/", m.handleNodePaths)
+	mux.HandleFunc("/api2/json/cluster/status", m.handleClusterStatus)
 	return mux
 }
 
@@ -118,6 +121,17 @@ func (m *MockAPIServer) ListenAndServe(addr string) error {
 		return err
 	}
 	return m.httpServer.Serve(ln)
+}
+
+// SetLocalNode marks a node as the "local" node returned by
+// GET /api2/json/cluster/status. This simulates which Proxmox host
+// the --api-url points at.
+func (m *MockAPIServer) SetLocalNode(node string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.localNode = node
+	// Ensure the node exists in the map.
+	m.ensureNode(node)
 }
 
 // AddLXC adds a mock LXC container to a node.
@@ -182,6 +196,29 @@ func (m *MockAPIServer) handleNodes(w http.ResponseWriter, r *http.Request) {
 	var entries []nodeEntry
 	for name := range m.nodes {
 		entries = append(entries, nodeEntry{Node: name, Status: "online"})
+	}
+	writeJSON(w, map[string]any{apiDataKey: entries})
+}
+
+func (m *MockAPIServer) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
+	if !m.checkAuth(w, r) {
+		return
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	type clusterEntry struct {
+		Type  string `json:"type"`
+		Name  string `json:"name"`
+		Local int    `json:"local"`
+	}
+	var entries []clusterEntry
+	for name := range m.nodes {
+		local := 0
+		if name == m.localNode {
+			local = 1
+		}
+		entries = append(entries, clusterEntry{Type: "node", Name: name, Local: local})
 	}
 	writeJSON(w, map[string]any{apiDataKey: entries})
 }

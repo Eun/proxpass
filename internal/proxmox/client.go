@@ -83,32 +83,24 @@ func (c *APIClient) DiscoverGuests(ctx context.Context) ([]*models.Guest, error)
 	return append(cts, vms...), nil
 }
 
-// ResolveNodeName fetches /api2/json/nodes and returns the node name that
-// matches sshHost. Matching is case-insensitive and supports:
+// ResolveNodeName returns the Proxmox node name for this instance.
 //
-//  1. Exact match:    sshHost == nodename         (e.g. "rome" == "rome")
-//  2. FQDN prefix:   sshHost == "nodename...."   (e.g. "rome.erika.salzmann.berlin" has prefix "rome.")
+// When sshHost is non-empty, it is matched against the cluster node list
+// (case-insensitive exact match, or FQDN-prefix: "rome.domain" → "rome").
 //
-// When sshHost is empty and the cluster has exactly one node, that node is
-// returned automatically. With multiple nodes and no sshHost, an error
-// is returned listing the available nodes for disambiguation.
-//
-// This is reliable because Proxmox node names are always short hostnames,
-// and FQDNs are always <nodename>.<domain>.
+// When sshHost is empty, the local node is identified via
+// GET /api2/json/cluster/status which marks the node serving the request
+// with local=1. This is the correct approach for termproxy mode where
+// --api-url already points at the target node.
 func (c *APIClient) ResolveNodeName(ctx context.Context, sshHost string) (string, error) {
+	if sshHost == "" {
+		// No ssh-host hint: ask the API which node is local (serves this request).
+		return c.getLocalNode(ctx)
+	}
+
 	nodes, err := c.getNodes(ctx)
 	if err != nil {
 		return "", err
-	}
-
-	// Auto-detect when no sshHost is provided.
-	if sshHost == "" {
-		if len(nodes) == 1 {
-			return nodes[0], nil
-		}
-		return "", fmt.Errorf(
-			"cluster has %d nodes (%s); specify --ssh-host to disambiguate",
-			len(nodes), strings.Join(nodes, ", "))
 	}
 
 	ssh := strings.ToLower(sshHost)
@@ -120,6 +112,29 @@ func (c *APIClient) ResolveNodeName(ctx context.Context, sshHost string) (string
 	}
 	return "", fmt.Errorf("no Proxmox node matches ssh-host %q (known nodes: %s)",
 		sshHost, strings.Join(nodes, ", "))
+}
+
+// getLocalNode calls GET /api2/json/cluster/status and returns the node name
+// whose "local" field is 1 — that is, the node serving this API request.
+// This is how we determine which node --api-url points at without requiring
+// the user to supply --ssh-host in termproxy mode.
+func (c *APIClient) getLocalNode(ctx context.Context) (string, error) {
+	body, err := c.doGet(ctx, "/api2/json/cluster/status")
+	if err != nil {
+		return "", fmt.Errorf("get cluster status: %w", err)
+	}
+
+	var resp clusterStatusResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", fmt.Errorf("decode cluster status: %w", err)
+	}
+
+	for _, entry := range resp.Data {
+		if entry.Type == "node" && entry.Local == 1 {
+			return entry.Name, nil
+		}
+	}
+	return "", fmt.Errorf("no local node found in cluster status response")
 }
 
 // resolveNodeName is the internal wrapper used by DiscoverGuests.
@@ -137,6 +152,16 @@ type nodesResponse struct {
 type nodeEntry struct {
 	Node   string `json:"node"`
 	Status string `json:"status"`
+}
+
+type clusterStatusResponse struct {
+	Data []clusterStatusEntry `json:"data"`
+}
+
+type clusterStatusEntry struct {
+	Type  string `json:"type"`
+	Name  string `json:"name"`
+	Local int    `json:"local"` // 1 when this entry is the local node
 }
 
 type guestsResponse struct {

@@ -188,12 +188,17 @@ func TestCreateTermProxyTicket(t *testing.T) {
 	}
 }
 
-// TestResolveNodeNameAutoDetect verifies that ResolveNodeName returns the sole
-// node automatically when no sshHost is provided.
-func TestResolveNodeNameAutoDetect(t *testing.T) {
+// TestResolveNodeNameLocalNode verifies that ResolveNodeName with no sshHost
+// returns the node marked local=1 in the cluster/status response — even when
+// the cluster has multiple nodes.
+func TestResolveNodeNameLocalNode(t *testing.T) {
 	api := testenv.NewMockAPIServer(testTokenID, testTokenSecret)
 	defer api.Close()
-	api.AddLXC("solo-node", 100, "ct1", "running")
+	api.AddLXC("oslo", 100, "ct1", "running")
+	api.AddLXC("rome", 200, "ct2", "running")
+	api.AddLXC("paris", 300, "ct3", "running")
+	// Simulate --api-url pointing at "rome".
+	api.SetLocalNode("rome")
 
 	inst := &models.ProxmoxInstance{
 		APIURL:         api.URL(),
@@ -209,31 +214,7 @@ func TestResolveNodeNameAutoDetect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveNodeName: %v", err)
 	}
-	if node != "solo-node" {
-		t.Errorf("node: got %q, want %q", node, "solo-node")
-	}
-}
-
-// TestResolveNodeNameAutoDetectAmbiguous verifies that ResolveNodeName returns
-// an error when no sshHost is provided and the cluster has multiple nodes.
-func TestResolveNodeNameAutoDetectAmbiguous(t *testing.T) {
-	api := testenv.NewMockAPIServer(testTokenID, testTokenSecret)
-	defer api.Close()
-	api.AddLXC(testNode1, 100, "ct1", "running")
-	api.AddLXC("node2", 200, "ct2", "running")
-
-	inst := &models.ProxmoxInstance{
-		APIURL:         api.URL(),
-		APITokenID:     testTokenID,
-		APITokenSecret: testTokenSecret,
-	}
-	client, err := proxmox.NewAPIClient(inst)
-	if err != nil {
-		t.Fatalf("NewAPIClient: %v", err)
-	}
-
-	_, err = client.ResolveNodeName(context.Background(), "")
-	if err == nil {
-		t.Fatal("expected error for ambiguous multi-node cluster, got nil")
+	if node != "rome" {
+		t.Errorf("node: got %q, want %q", node, "rome")
 	}
 }
