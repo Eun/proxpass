@@ -45,23 +45,18 @@ func proxyViaTermProxy(
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// --- Step 1: Obtain a user session ticket ---
-	// The vncwebsocket endpoint validates the VNC ticket against the user
-	// identity from PVEAuthCookie. API tokens have identity user@realm!token,
-	// but the session ticket carries user@realm — matching what the termproxy
-	// POST embeds in the VNC ticket.
+	// --- Step 1: Create termproxy ticket via API token ---
+	// Both the termproxy POST and the vncwebsocket WebSocket use API token
+	// auth. verify_vnc_ticket checks the VNC ticket (assembled during the
+	// termproxy POST with identity user@realm!token) against the WebSocket
+	// request identity (also user@realm!token via Authorization header).
+	// They match, so the ticket verification succeeds.
 	apiClient, err := proxmox.NewAPIClient(inst)
 	if err != nil {
 		return fmt.Errorf("build api client: %w", err)
 	}
 
-	session, err := apiClient.GetSessionTicket(ctx)
-	if err != nil {
-		return fmt.Errorf("get session ticket: %w", err)
-	}
-
-	// --- Step 2: Create termproxy ticket using session auth ---
-	ticket, err := apiClient.CreateTermProxyTicketWithSession(ctx, inst.Node, guest, session)
+	ticket, err := apiClient.CreateTermProxyTicket(ctx, inst.Node, guest)
 	if err != nil {
 		return fmt.Errorf("create termproxy ticket: %w", err)
 	}
@@ -85,12 +80,14 @@ func proxyViaTermProxy(
 	wsURL := buildVNCWebSocketURL(apiURL, inst.Node, kind, guest.ProxmoxID, ticket)
 
 	// --- Step 4: Dial WebSocket ---
-	// Auth: PVEAuthCookie (user session ticket, same one used for termproxy POST)
-	// Subprotocol: "binary" (required by Proxmox vncwebsocket)
+	// Auth: same API token used for the termproxy POST, so identity matches.
+	// Subprotocol: "binary" (required by Proxmox vncwebsocket).
 	dialOpts := &websocket.DialOptions{
 		Subprotocols: []string{"binary"},
 		HTTPHeader: http.Header{
-			"Cookie": []string{"PVEAuthCookie=" + url.QueryEscape(session.Ticket)},
+			"Authorization": []string{
+				fmt.Sprintf("PVEAPIToken=%s=%s", inst.APITokenID, inst.APITokenSecret),
+			},
 		},
 		HTTPClient: proxmox.InsecureHTTPClient(),
 	}
@@ -124,7 +121,7 @@ func proxyViaTermProxy(
 	}
 
 	// --- Step 6: Send auth line: "<username>:<vncticket>\n" ---
-	authLine := fmt.Sprintf("%s:%s\n", session.Username, ticket.Ticket)
+	authLine := fmt.Sprintf("%s:%s\n", ticket.User, ticket.Ticket)
 	if err := conn.Write(ctx, websocket.MessageBinary, []byte(authLine)); err != nil {
 		return fmt.Errorf("send auth line: %w", err)
 	}
