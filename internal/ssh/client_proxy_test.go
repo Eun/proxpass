@@ -55,7 +55,7 @@ func TestClientProxyWithGuestName(t *testing.T) {
 	addr, clientSigner, mp, cancel := setupClientTest(t)
 	defer cancel()
 
-	output := sshExecOutput(t, addr, "alice", "webserver", clientSigner)
+	output := sshExecOutput(t, addr, "alice", testGuestWebserver, clientSigner)
 
 	if !strings.Contains(output, "[mock proxy]") {
 		t.Errorf("expected mock proxy banner in output, got: %q", output)
@@ -65,7 +65,7 @@ func TestClientProxyWithGuestName(t *testing.T) {
 	if len(sessions) == 0 {
 		t.Fatal("expected at least one proxy session to be recorded")
 	}
-	if sessions[0].GuestName != "webserver" {
+	if sessions[0].GuestName != testGuestWebserver {
 		t.Errorf("expected guest 'webserver', got %q", sessions[0].GuestName)
 	}
 }
@@ -151,7 +151,7 @@ func TestClientShellWithoutCommandShowsHelp(t *testing.T) {
 		t.Errorf("expected 'Available guests' header in output, got: %q", output)
 	}
 	// Seeded guests: webserver, database, devbox, staging
-	for _, name := range []string{"webserver", "database", "devbox", "staging"} {
+	for _, name := range []string{testGuestWebserver, "database", "devbox", "staging"} {
 		if !strings.Contains(output, name) {
 			t.Errorf("expected guest %q in output, got: %q", name, output)
 		}

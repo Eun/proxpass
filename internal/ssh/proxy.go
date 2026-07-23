@@ -92,18 +92,7 @@ func handleClientSession(
 			if req.WantReply {
 				_ = req.Reply(true, nil)
 			}
-			var w io.Writer
-			if ptyReq != nil {
-				w = newCRLFWriter(channel.Stderr())
-			} else {
-				w = channel.Stderr()
-			}
-			_, _ = fmt.Fprintf(w,
-				"Usage: ssh <host> [instance:]<identifier>\r\n\r\n"+
-					"Identifier can be a VMID (e.g. 100), type+VMID (e.g. ct100), or name (e.g. webserver).\r\n"+
-					"If multiple guests match, prefix with the instance name (e.g. rome:ct101).\r\n")
-			writeGuestList(ctx, w, repo, logger, clientName)
-			go gossh.DiscardRequests(reqs)
+			handleShellFallback(ctx, channel, reqs, repo, logger, clientName, ptyReq)
 			return
 
 		default:
@@ -490,6 +479,35 @@ func resolveGuest(
 	}
 
 	return nil, fmt.Errorf("guest %q not found", identifier)
+}
+
+// handleShellFallback handles a plain shell request (no exec command):
+// it replies to the request, writes the usage banner and the guest list,
+// and discards any further requests.
+func handleShellFallback(
+	ctx context.Context,
+	channel gossh.Channel,
+	reqs <-chan *gossh.Request,
+	repo db.Repository,
+	logger *log.Logger,
+	clientName string,
+	ptyReq *PtyRequest,
+) {
+	// Acknowledge the shell request before writing output.
+	// Note: req is already consumed by the caller; the channel has been
+	// opened, so we just need to write and drain.
+	var w io.Writer
+	if ptyReq != nil {
+		w = newCRLFWriter(channel.Stderr())
+	} else {
+		w = channel.Stderr()
+	}
+	_, _ = fmt.Fprintf(w,
+		"Usage: ssh <host> [instance:]<identifier>\r\n\r\n"+
+			"Identifier can be a VMID (e.g. 100), type+VMID (e.g. ct100), or name (e.g. webserver).\r\n"+
+			"If multiple guests match, prefix with the instance name (e.g. rome:ct101).\r\n")
+	writeGuestList(ctx, w, repo, logger, clientName)
+	go gossh.DiscardRequests(reqs)
 }
 
 // writeGuestList fetches all guests from repo and prints a formatted table to w.

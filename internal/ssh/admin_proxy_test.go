@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+const testGuestWebserver = "webserver"
+
 // TestAdminProxyWithTypeAndVMID verifies that an admin passing "ct100"
 // as the SSH command is proxied directly to CT 180 without showing the CLI.
 func TestAdminProxyWithTypeAndVMID(t *testing.T) {
@@ -58,7 +60,7 @@ func TestAdminProxyWithGuestName(t *testing.T) {
 	defer cancel()
 
 	// The seeded DB has CT "webserver" at ProxmoxID 100.
-	output := sshExecOutput(t, addr, "root", "webserver", adminSigner)
+	output := sshExecOutput(t, addr, "root", testGuestWebserver, adminSigner)
 
 	if !strings.Contains(output, "[mock proxy]") {
 		t.Errorf("expected mock proxy banner in output, got: %q", output)
@@ -68,7 +70,7 @@ func TestAdminProxyWithGuestName(t *testing.T) {
 	if len(sessions) == 0 {
 		t.Fatal("expected at least one proxy session to be recorded")
 	}
-	if sessions[0].GuestName != "webserver" {
+	if sessions[0].GuestName != testGuestWebserver {
 		t.Errorf("expected guest 'webserver', got %q", sessions[0].GuestName)
 	}
 }
@@ -135,7 +137,7 @@ func TestAdminCLIShellShowsGuestList(t *testing.T) {
 		t.Errorf("expected guest list, got mock proxy banner; output: %q", output)
 	}
 	// Seeded guests: webserver, database, devbox, staging
-	for _, name := range []string{"webserver", "database", "devbox", "staging"} {
+	for _, name := range []string{testGuestWebserver, "database", "devbox", "staging"} {
 		if !strings.Contains(output, name) {
 			t.Errorf("expected guest %q in output, got: %q", name, output)
 		}
