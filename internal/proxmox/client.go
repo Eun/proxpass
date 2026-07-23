@@ -19,6 +19,7 @@ type APIClient struct {
 	tokenID     string
 	tokenSecret string
 	httpClient  *http.Client
+	sshHost     string // used to identify this node among the cluster nodes
 }
 
 // NewAPIClient creates an API client for the given Proxmox instance.
@@ -42,6 +43,7 @@ func NewAPIClient(inst *models.ProxmoxInstance) (*APIClient, error) {
 		baseURL:     strings.TrimRight(inst.APIURL, "/"),
 		tokenID:     inst.APITokenID,
 		tokenSecret: inst.APITokenSecret,
+		sshHost:     inst.SSHHost,
 		httpClient: &http.Client{
 			// Never follow redirects. Proxmox can redirect to a URL that
 			// drops the port (e.g. https://host:8006 → https://host),
@@ -58,30 +60,52 @@ func NewAPIClient(inst *models.ProxmoxInstance) (*APIClient, error) {
 	}, nil
 }
 
-// DiscoverGuests queries the Proxmox API for all nodes, then fetches LXC
-// containers and QEMU VMs from each node, returning the combined guest list.
+// DiscoverGuests fetches LXC containers and QEMU VMs from the single cluster
+// node that matches inst.SSHHost. The node name is resolved via the Proxmox
+// REST API itself (no SSH required): /api2/json/nodes returns all node names,
+// and we match SSHHost against them by exact match or FQDN prefix.
 func (c *APIClient) DiscoverGuests(ctx context.Context) ([]*models.Guest, error) {
+	node, err := c.resolveNodeName(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("resolve node name: %w", err)
+	}
+
+	cts, err := c.getNodeGuests(ctx, node, "lxc", models.GuestTypeCT)
+	if err != nil {
+		return nil, fmt.Errorf("get lxc on node %s: %w", node, err)
+	}
+
+	vms, err := c.getNodeGuests(ctx, node, "qemu", models.GuestTypeVM)
+	if err != nil {
+		return nil, fmt.Errorf("get qemu on node %s: %w", node, err)
+	}
+
+	return append(cts, vms...), nil
+}
+
+// resolveNodeName fetches /api2/json/nodes and returns the node name whose
+// name matches c.sshHost. Matching is case-insensitive and supports:
+//
+//  1. Exact match:    sshHost == nodename         (e.g. "rome" == "rome")
+//  2. FQDN prefix:   sshHost == "nodename...."   (e.g. "rome.erika.salzmann.berlin" has prefix "rome.")
+//
+// This is reliable because Proxmox node names are always short hostnames,
+// and FQDNs are always <nodename>.<domain>.
+func (c *APIClient) resolveNodeName(ctx context.Context) (string, error) {
 	nodes, err := c.getNodes(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("get nodes: %w", err)
+		return "", err
 	}
 
-	var guests []*models.Guest
+	ssh := strings.ToLower(c.sshHost)
 	for _, node := range nodes {
-		cts, err := c.getNodeGuests(ctx, node, "lxc", models.GuestTypeCT)
-		if err != nil {
-			return nil, fmt.Errorf("get lxc on node %s: %w", node, err)
+		n := strings.ToLower(node)
+		if ssh == n || strings.HasPrefix(ssh, n+".") {
+			return node, nil
 		}
-		guests = append(guests, cts...)
-
-		vms, err := c.getNodeGuests(ctx, node, "qemu", models.GuestTypeVM)
-		if err != nil {
-			return nil, fmt.Errorf("get qemu on node %s: %w", node, err)
-		}
-		guests = append(guests, vms...)
 	}
-
-	return guests, nil
+	return "", fmt.Errorf("no Proxmox node matches ssh-host %q (known nodes: %s)",
+		c.sshHost, strings.Join(nodes, ", "))
 }
 
 // --- Proxmox API response structures ---

@@ -96,6 +96,11 @@ func (d *Discovery) discoverInstance(ctx context.Context, inst *models.ProxmoxIn
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		// Only store running guests: stopped guests cannot be entered via
+		// pct enter / qm terminal, so there is no point surfacing them.
+		if g.Status != models.StatusRunning {
+			continue
+		}
 		g.InstanceID = inst.ID
 		if err := d.repo.UpsertGuest(ctx, g); err != nil {
 			d.logger.Printf("discovery: upsert guest %s (proxmox_id=%d): %v", g.Name, g.ProxmoxID, err)

@@ -15,7 +15,8 @@ import (
 func TestDiscoveryRunOnce(t *testing.T) {
 	env := testenv.New(t)
 
-	// Create a mock discoverer factory that returns static guests
+	// Create a mock discoverer factory that returns one running and one stopped guest.
+	// Only the running guest must be upserted into the DB.
 	factory := func(_ *models.ProxmoxInstance) proxmox.GuestDiscoverer {
 		return &staticDiscoverer{guests: []*models.Guest{
 			{Type: models.GuestTypeCT, ProxmoxID: 300, Name: "newct", Status: models.StatusRunning},
@@ -35,20 +36,29 @@ func TestDiscoveryRunOnce(t *testing.T) {
 		t.Fatalf("ListGuests: %v", err)
 	}
 
-	// Should have original 4 seeded + 2 new = 6
-	if len(guests) != 6 {
-		t.Fatalf("expected 6 guests, got %d", len(guests))
+	// The seeded data has 3 running guests + 1 stopped guest (staging, proxmox_id=201).
+	// Discovery adds 1 running (newct) and skips 1 stopped (newvm).
+	// Stopped guests from the seed are NOT touched by this discovery pass.
+	// Total in DB: 3 original running + 1 original stopped + 1 new running = 5.
+	if len(guests) != 5 {
+		t.Fatalf("expected 5 guests (3 seeded-running + 1 seeded-stopped + 1 new-running), got %d", len(guests))
 	}
 
-	// Check the new ones exist
-	found := 0
+	// newct (running) must exist; newvm (stopped) must NOT exist
+	var foundNewCT, foundNewVM bool
 	for _, g := range guests {
-		if g.Name == "newct" || g.Name == "newvm" {
-			found++
+		switch g.Name {
+		case "newct":
+			foundNewCT = true
+		case "newvm":
+			foundNewVM = true
 		}
 	}
-	if found != 2 {
-		t.Fatalf("expected 2 new guests, found %d", found)
+	if !foundNewCT {
+		t.Error("expected running guest 'newct' to be stored, but it was not found")
+	}
+	if foundNewVM {
+		t.Error("expected stopped guest 'newvm' to be skipped, but it was stored")
 	}
 }
 
