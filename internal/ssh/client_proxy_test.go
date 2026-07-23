@@ -13,7 +13,8 @@ func TestClientProxyWithTypeAndVMID(t *testing.T) {
 
 	// The seeded DB has CT "webserver" at ProxmoxID 100.
 	// Pass "ct100" as the SSH exec command (username does not matter).
-	output := sshExecOutput(t, addr, "alice", "ct100", clientSigner)
+	// A PTY is required for guest proxy connections.
+	output := sshExecOutputPty(t, addr, "alice", "ct100", clientSigner, true)
 
 	if !strings.Contains(output, "[mock proxy]") {
 		t.Errorf("expected mock proxy banner in output, got: %q", output)
@@ -34,7 +35,8 @@ func TestClientProxyWithNumericVMID(t *testing.T) {
 	addr, clientSigner, mp, cancel := setupClientTest(t)
 	defer cancel()
 
-	output := sshExecOutput(t, addr, "alice", "100", clientSigner)
+	// A PTY is required for guest proxy connections.
+	output := sshExecOutputPty(t, addr, "alice", "100", clientSigner, true)
 
 	if !strings.Contains(output, "[mock proxy]") {
 		t.Errorf("expected mock proxy banner in output, got: %q", output)
@@ -55,7 +57,8 @@ func TestClientProxyWithGuestName(t *testing.T) {
 	addr, clientSigner, mp, cancel := setupClientTest(t)
 	defer cancel()
 
-	output := sshExecOutput(t, addr, "alice", testGuestWebserver, clientSigner)
+	// A PTY is required for guest proxy connections.
+	output := sshExecOutputPty(t, addr, "alice", testGuestWebserver, clientSigner, true)
 
 	if !strings.Contains(output, "[mock proxy]") {
 		t.Errorf("expected mock proxy banner in output, got: %q", output)
@@ -77,7 +80,8 @@ func TestClientProxyWithInstancePrefix(t *testing.T) {
 	defer cancel()
 
 	// Seeded instance is named "test-pve".
-	output := sshExecOutput(t, addr, "alice", "test-pve:ct100", clientSigner)
+	// A PTY is required for guest proxy connections.
+	output := sshExecOutputPty(t, addr, "alice", "test-pve:ct100", clientSigner, true)
 
 	if !strings.Contains(output, "[mock proxy]") {
 		t.Errorf("expected mock proxy banner in output, got: %q", output)

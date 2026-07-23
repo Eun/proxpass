@@ -15,7 +15,8 @@ func TestAdminProxyWithTypeAndVMID(t *testing.T) {
 
 	// The seeded DB has CT "webserver" at ProxmoxID 100.
 	// Pass "ct100" as the SSH exec command (not the username).
-	output := sshExecOutput(t, addr, "root", "ct100", adminSigner)
+	// A PTY is required for guest proxy connections.
+	output := sshExecOutputPty(t, addr, "root", "ct100", adminSigner, true)
 
 	if !strings.Contains(output, "[mock proxy]") {
 		t.Errorf("expected mock proxy banner in output, got: %q", output)
@@ -38,7 +39,8 @@ func TestAdminProxyWithNumericVMID(t *testing.T) {
 
 	// The seeded DB has CT "webserver" at ProxmoxID 100.
 	// Pass "100" as the SSH exec command.
-	output := sshExecOutput(t, addr, "root", "100", adminSigner)
+	// A PTY is required for guest proxy connections.
+	output := sshExecOutputPty(t, addr, "root", "100", adminSigner, true)
 
 	if !strings.Contains(output, "[mock proxy]") {
 		t.Errorf("expected mock proxy banner in output, got: %q", output)
@@ -60,7 +62,8 @@ func TestAdminProxyWithGuestName(t *testing.T) {
 	defer cancel()
 
 	// The seeded DB has CT "webserver" at ProxmoxID 100.
-	output := sshExecOutput(t, addr, "root", testGuestWebserver, adminSigner)
+	// A PTY is required for guest proxy connections.
+	output := sshExecOutputPty(t, addr, "root", testGuestWebserver, adminSigner, true)
 
 	if !strings.Contains(output, "[mock proxy]") {
 		t.Errorf("expected mock proxy banner in output, got: %q", output)
@@ -83,7 +86,8 @@ func TestAdminProxyWithInstancePrefix(t *testing.T) {
 
 	// Seeded instance is named "test-pve".
 	// Use "test-pve:ct100" to target it explicitly.
-	output := sshExecOutput(t, addr, "root", "test-pve:ct100", adminSigner)
+	// A PTY is required for guest proxy connections.
+	output := sshExecOutputPty(t, addr, "root", "test-pve:ct100", adminSigner, true)
 
 	if !strings.Contains(output, "[mock proxy]") {
 		t.Errorf("expected mock proxy banner in output, got: %q", output)
@@ -179,7 +183,8 @@ func TestAdminCLIUsernameIsIgnored(t *testing.T) {
 	for _, username := range []string{"root", "admin", "manage", "ct100", "alice"} {
 		username := username
 		t.Run(username, func(t *testing.T) {
-			output := sshExecOutput(t, addr, username, "ct100", adminSigner)
+			// A PTY is required for guest proxy connections.
+			output := sshExecOutputPty(t, addr, username, "ct100", adminSigner, true)
 			if !strings.Contains(output, "[mock proxy]") {
 				t.Errorf("username %q: expected proxy banner, got: %q", username, output)
 			}

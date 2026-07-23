@@ -143,18 +143,31 @@ The `--admin-key` flag accepts an SSH public key in `authorized_keys` format. Wh
 
 ## Client Connections
 
-Clients connect using the guest identifier as the SSH username:
+The guest identifier is passed as the SSH **exec command** (not the username).
+A PTY (`-t`) is required — without it the terminal echoes every character twice
+because both the local terminal and the remote guest's PTY produce output.
 
 ```bash
 # By VMID
-ssh -p 2222 100@proxpass-host
+ssh -t -p 2222 proxpass-host 100
 
 # By type+VMID (disambiguates collisions)
-ssh -p 2222 ct100@proxpass-host
-ssh -p 2222 vm200@proxpass-host
+ssh -t -p 2222 proxpass-host ct100
+ssh -t -p 2222 proxpass-host vm200
 
 # By name (case-insensitive)
-ssh -p 2222 webserver@proxpass-host
+ssh -t -p 2222 proxpass-host webserver
+
+# With an instance prefix (when the same VMID exists on multiple nodes)
+ssh -t -p 2222 proxpass-host rome:ct101
+```
+
+Add this to `~/.ssh/config` to avoid typing `-t` every time:
+
+```
+Host proxpass-host
+    Port 2222
+    RequestTTY yes
 ```
 
 ## Architecture
