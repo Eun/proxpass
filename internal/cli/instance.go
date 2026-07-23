@@ -55,7 +55,10 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 				Name:  cmdAdd,
 				Usage: "Add a Proxmox instance",
 				Flags: []ucli.Flag{
-					&ucli.StringFlag{Name: flagName, Required: true, Usage: "Instance name"},
+					&ucli.StringFlag{
+						Name:  flagName,
+						Usage: "Instance name (optional: if omitted the Proxmox node name is used)",
+					},
 					&ucli.StringFlag{Name: "api-url", Required: true, Usage: "Proxmox API URL (e.g. https://pve:8006)"},
 					&ucli.StringFlag{Name: "token-id", Required: true, Usage: "API token ID (e.g. user@pam!token)"},
 					&ucli.StringFlag{Name: "token-secret", Required: true, Usage: "API token secret"},
@@ -180,8 +183,14 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 						}
 					}
 
+					instName := cmd.String(flagName)
+					if instName == "" {
+						// Name was not supplied: fall back to the resolved Proxmox node name.
+						instName = nodeName
+					}
+
 					inst := &models.ProxmoxInstance{
-						Name:           cmd.String(flagName),
+						Name:           instName,
 						APIURL:         cmd.String("api-url"),
 						APITokenID:     cmd.String("token-id"),
 						APITokenSecret: cmd.String("token-secret"),

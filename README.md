@@ -35,6 +35,7 @@ ssh -p 2222 admin@proxpass
 
 # Manage Proxmox instances
 ssh -p 2222 admin@proxpass instance ls
+# Add with an explicit name
 ssh -p 2222 admin@proxpass instance add \
   --name pve1 \
   --api-url https://pve:8006 \
@@ -42,6 +43,13 @@ ssh -p 2222 admin@proxpass instance add \
   --token-secret "uuid" \
   --ssh-host pve1 \
   --ssh-key-path /root/.ssh/id_ed25519
+
+# --name is optional; when omitted, the Proxmox node name is used automatically
+ssh -p 2222 admin@proxpass instance add \
+  --api-url https://pve:8006 \
+  --token-id "user@pam!token" \
+  --token-secret "uuid"
+
 ssh -p 2222 admin@proxpass instance rm --name pve1
 
 # List and connect to guests
