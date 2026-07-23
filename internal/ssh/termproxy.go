@@ -3,6 +3,7 @@ package ssh
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -95,12 +96,18 @@ func proxyViaTermProxy(
 	defer func() { _ = conn.CloseNow() }()
 
 	// --- Step 4: Read handshake frame "OK" ---
-	// Proxmox closes the connection (EOF) without sending "OK" when the
-	// vncticket validation fails. Log enough context to diagnose.
+	// Proxmox sends "OK" once the ticket and auth check pass. If it closes
+	// immediately (EOF), it rejected verify_vnc_ticket. Log the close code.
 	_, handshake, err := conn.Read(ctx)
 	if err != nil {
-		logger.Printf("termproxy: handshake EOF for url=%s node=%s vmid=%d",
-			wsURL, inst.Node, guest.ProxmoxID)
+		var closeErr websocket.CloseError
+		if errors.As(err, &closeErr) {
+			logger.Printf("termproxy: server closed (code=%d reason=%q url=%s)",
+				closeErr.Code, closeErr.Reason, wsURL)
+			return fmt.Errorf("termproxy server closed connection: code=%d reason=%q",
+				closeErr.Code, closeErr.Reason)
+		}
+		logger.Printf("termproxy: handshake failed (url=%s): %v", wsURL, err)
 		return fmt.Errorf("read termproxy handshake: %w", err)
 	}
 	if string(handshake) != "OK" {
