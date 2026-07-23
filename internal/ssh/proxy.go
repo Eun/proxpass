@@ -181,12 +181,24 @@ func proxyToGuest(
 	}
 	defer func() { _ = session.Close() }()
 
-	// Request a PTY on the remote side if the client asked for one.
-	if ptyReq != nil {
-		modes := gossh.TerminalModes{}
-		if err := session.RequestPty(ptyReq.Term, int(ptyReq.Height), int(ptyReq.Width), modes); err != nil {
-			return fmt.Errorf("requesting remote pty: %w", err)
-		}
+	// Both pct enter (CT) and qm terminal (VM) use socat internally and
+	// require a PTY on the Proxmox SSH session unconditionally. Without one,
+	// socat's tcgetattr(0, ...) call fails with ENOTTY, causing the console
+	// to hang or immediately exit.
+	//
+	// Use the client's PTY parameters when available; fall back to a sane
+	// default (xterm-256color 80×24) for non-interactive callers (e.g. ssh -T).
+	effectivePty := ptyReq
+	if effectivePty == nil {
+		effectivePty = &PtyRequest{Term: "xterm-256color", Width: 80, Height: 24}
+	}
+	if err := session.RequestPty(
+		effectivePty.Term,
+		int(effectivePty.Height),
+		int(effectivePty.Width),
+		parseModes(effectivePty.Modes),
+	); err != nil {
+		return fmt.Errorf("requesting remote pty: %w", err)
 	}
 
 	// Build the command for the guest type.

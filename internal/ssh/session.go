@@ -113,6 +113,24 @@ func findClientByKey(repo db.Repository, key gossh.PublicKey) (*models.Client, e
 	return nil, nil
 }
 
+// parseModes decodes RFC 4254 §8 terminal mode bytes into gossh.TerminalModes.
+// The encoding is a sequence of (opcode uint8, value uint32-BE) pairs terminated
+// by TTY_OP_END (0x00). Unknown opcodes are included as-is; an empty or nil
+// slice returns an empty map.
+func parseModes(data []byte) gossh.TerminalModes {
+	modes := gossh.TerminalModes{}
+	for len(data) >= 5 {
+		opcode := data[0]
+		if opcode == 0 { // TTY_OP_END
+			break
+		}
+		val := binary.BigEndian.Uint32(data[1:5])
+		modes[opcode] = val
+		data = data[5:]
+	}
+	return modes
+}
+
 // keysEqual compares two marshaled public key byte slices.
 func keysEqual(a, b []byte) bool {
 	if len(a) != len(b) {
