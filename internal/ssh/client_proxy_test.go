@@ -130,12 +130,14 @@ func TestClientNoAccessReturnsError(t *testing.T) {
 }
 
 // TestClientShellWithoutCommandShowsHelp verifies that a plain shell
-// session (no exec command) writes a usage message and exits.
+// session (no exec command) writes a usage message, lists available guests,
+// and exits without proxying.
 func TestClientShellWithoutCommandShowsHelp(t *testing.T) {
 	addr, clientSigner, mp, cancel := setupClientTest(t)
 	defer cancel()
 
-	// No exec command: plain shell. The client should receive a usage message.
+	// No exec command: plain shell. The client should receive a usage message
+	// followed by the guest list (same output as 'guest ls').
 	output := sshShellStderrOutput(t, addr, "alice", clientSigner)
 
 	if strings.Contains(output, "[mock proxy]") {
@@ -143,6 +145,16 @@ func TestClientShellWithoutCommandShowsHelp(t *testing.T) {
 	}
 	if !strings.Contains(output, "Usage:") && !strings.Contains(output, "identifier") {
 		t.Errorf("expected usage message for plain shell, got: %q", output)
+	}
+	// Guest listing should follow the usage message.
+	if !strings.Contains(output, "Available guests") {
+		t.Errorf("expected 'Available guests' header in output, got: %q", output)
+	}
+	// Seeded guests: webserver, database, devbox, staging
+	for _, name := range []string{"webserver", "database", "devbox", "staging"} {
+		if !strings.Contains(output, name) {
+			t.Errorf("expected guest %q in output, got: %q", name, output)
+		}
 	}
 
 	sessions := mp.RecordedSessions()

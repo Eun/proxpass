@@ -87,7 +87,8 @@ func handleClientSession(
 			goto handleGuest
 
 		case reqTypeShell:
-			// Plain shell without an identifier: tell the client how to use proxpass.
+			// Plain shell without an identifier: tell the client how to use proxpass
+			// and list the available guests.
 			if req.WantReply {
 				_ = req.Reply(true, nil)
 			}
@@ -101,6 +102,7 @@ func handleClientSession(
 				"Usage: ssh <host> [instance:]<identifier>\r\n\r\n"+
 					"Identifier can be a VMID (e.g. 100), type+VMID (e.g. ct100), or name (e.g. webserver).\r\n"+
 					"If multiple guests match, prefix with the instance name (e.g. rome:ct101).\r\n")
+			writeGuestList(ctx, w, repo, logger, clientName)
 			go gossh.DiscardRequests(reqs)
 			return
 
@@ -488,6 +490,39 @@ func resolveGuest(
 	}
 
 	return nil, fmt.Errorf("guest %q not found", identifier)
+}
+
+// writeGuestList fetches all guests from repo and prints a formatted table to w.
+// Errors are logged but do not interrupt the caller.
+func writeGuestList(ctx context.Context, w io.Writer, repo db.Repository, logger *log.Logger, clientName string) {
+	guests, err := repo.ListGuests(ctx)
+	if err != nil {
+		logger.Printf("client %s: failed to list guests for shell listing: %v", clientName, err)
+		return
+	}
+	if len(guests) == 0 {
+		_, _ = fmt.Fprintf(w, "\r\nNo guests discovered.\r\n")
+		return
+	}
+	instances, err := repo.ListProxmoxInstances(ctx)
+	if err != nil {
+		logger.Printf("client %s: failed to list instances for shell listing: %v", clientName, err)
+		return
+	}
+	instMap := make(map[int64]string, len(instances))
+	for _, inst := range instances {
+		instMap[inst.ID] = inst.Name
+	}
+	_, _ = fmt.Fprintf(w, "\r\nAvailable guests:\r\n")
+	_, _ = fmt.Fprintf(w, "%-6s %-6s %-24s %-10s %s\r\n", "TYPE", "VMID", "NAME", "STATUS", "INSTANCE")
+	for _, g := range guests {
+		instName := instMap[g.InstanceID]
+		if instName == "" {
+			instName = fmt.Sprintf("(id:%d)", g.InstanceID)
+		}
+		_, _ = fmt.Fprintf(w, "%-6s %-6d %-24s %-10s %s\r\n",
+			g.Type, g.ProxmoxID, g.Name, g.Status, instName)
+	}
 }
 
 // writeErr writes a message to the channel's stderr, using \r\n line endings
