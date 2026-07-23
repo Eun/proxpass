@@ -63,22 +63,23 @@ func proxyViaTermProxy(
 	var session *proxmox.SessionTicket
 
 	if inst.Username != "" {
-		// Session ticket auth: get a user session ticket, use it for both
-		// the termproxy POST and the vncwebsocket Cookie.
+		logger.Printf("termproxy: using session auth (username=%q)", inst.Username)
 		session, err = apiClient.GetSessionTicket(ctx, inst.Username, inst.Password)
 		if err != nil {
 			return fmt.Errorf("get session ticket: %w", err)
 		}
+		logger.Printf("termproxy: session ticket obtained (username=%q ticket-prefix=%q)",
+			session.Username, truncateTicket(session.Ticket))
 		ticket, err = apiClient.CreateTermProxyTicketWithSession(ctx, inst.Node, guest, session)
 	} else {
-		// API token auth: both termproxy POST and vncwebsocket use the token.
-		// The VNC ticket is assembled with the token identity; the authid in
-		// the termproxy auth line must match (inst.APITokenID).
+		logger.Printf("termproxy: using API token auth (tokenID=%q)", inst.APITokenID)
 		ticket, err = apiClient.CreateTermProxyTicket(ctx, inst.Node, guest)
 	}
 	if err != nil {
 		return fmt.Errorf("create termproxy ticket: %w", err)
 	}
+	logger.Printf("termproxy: termproxy ticket obtained (port=%d user=%q ticket-prefix=%q)",
+		ticket.Port, ticket.User, truncateTicket(ticket.Ticket))
 
 	// --- Step 3: Build WebSocket URL ---
 	apiURL, err := url.Parse(inst.APIURL)
@@ -97,6 +98,7 @@ func proxyViaTermProxy(
 	}
 
 	wsURL := buildVNCWebSocketURL(apiURL, inst.Node, kind, guest.ProxmoxID, ticket)
+	logger.Printf("termproxy: dialing vncwebsocket url=%s", wsURL)
 
 	// --- Step 4: Dial WebSocket ---
 	// Subprotocol: "binary" (required by Proxmox vncwebsocket).
@@ -104,11 +106,13 @@ func proxyViaTermProxy(
 	// vncwebsocket verify_vnc_ticket check sees the same identity.
 	var wsHeader http.Header
 	if session != nil {
+		logger.Printf("termproxy: ws auth=cookie PVEAuthCookie prefix=%q", truncateTicket(session.Ticket))
 		wsHeader = http.Header{
 			// Cookie value must be the raw ticket — pveproxy parses it as-is.
 			"Cookie": []string{"PVEAuthCookie=" + session.Ticket},
 		}
 	} else {
+		logger.Printf("termproxy: ws auth=PVEAPIToken tokenID=%q", inst.APITokenID)
 		wsHeader = http.Header{
 			"Authorization": []string{
 				fmt.Sprintf("PVEAPIToken=%s=%s", inst.APITokenID, inst.APITokenSecret),
@@ -122,12 +126,27 @@ func proxyViaTermProxy(
 	}
 
 	conn, wsResp, err := websocket.Dial(ctx, wsURL, dialOpts)
-	if wsResp != nil && wsResp.Body != nil {
-		_ = wsResp.Body.Close()
+	if wsResp != nil {
+		logger.Printf("termproxy: ws dial http response status=%q proto=%q",
+			wsResp.Status, wsResp.Proto)
+		for k, vs := range wsResp.Header {
+			for _, v := range vs {
+				logger.Printf("termproxy: ws dial response header %q: %q", k, v)
+			}
+		}
+		if wsResp.Body != nil {
+			body, _ := io.ReadAll(wsResp.Body)
+			_ = wsResp.Body.Close()
+			if len(body) > 0 {
+				logger.Printf("termproxy: ws dial response body: %q", body)
+			}
+		}
 	}
 	if err != nil {
+		logger.Printf("termproxy: ws dial error: %v", err)
 		return fmt.Errorf("dial termproxy websocket %s: %w", wsURL, err)
 	}
+	logger.Printf("termproxy: ws dial succeeded")
 	defer func() { _ = conn.CloseNow() }()
 
 	// --- Step 5: Send auth line: "<authid>:<vncticket>\n" ---
@@ -143,14 +162,17 @@ func proxyViaTermProxy(
 		authid = inst.APITokenID
 	}
 	authLine := fmt.Sprintf("%s:%s\n", authid, ticket.Ticket)
+	logger.Printf("termproxy: sending auth line authid=%q ticket-prefix=%q",
+		authid, truncateTicket(ticket.Ticket))
 	if err := conn.Write(ctx, websocket.MessageBinary, []byte(authLine)); err != nil {
 		return fmt.Errorf("send auth line: %w", err)
 	}
+	logger.Printf("termproxy: auth line sent, waiting for OK")
 
 	// --- Step 6: Read "OK" response ---
 	// termproxy sends "OK" after validating the auth line. Any bytes after
 	// "OK" in the same frame are the start of the terminal stream.
-	_, firstMsg, err := conn.Read(ctx)
+	msgType, firstMsg, err := conn.Read(ctx)
 	if err != nil {
 		var closeErr websocket.CloseError
 		if errors.As(err, &closeErr) {
@@ -162,6 +184,7 @@ func proxyViaTermProxy(
 		logger.Printf("termproxy: handshake failed (url=%s): %v", wsURL, err)
 		return fmt.Errorf("read termproxy handshake: %w", err)
 	}
+	logger.Printf("termproxy: got first frame type=%d len=%d content=%q", msgType, len(firstMsg), firstMsg)
 	if len(firstMsg) < 2 || firstMsg[0] != 'O' || firstMsg[1] != 'K' {
 		return fmt.Errorf("unexpected termproxy handshake: %q", firstMsg)
 	}
@@ -262,6 +285,16 @@ func proxyViaTermProxy(
 // vncwebsocket endpoint. The WebSocket connects to the same host:port as
 // the API URL (e.g. rome:8006); the Proxmox API proxies the connection
 // through to the termproxy binary listening on localhost.
+// truncateTicket returns the first 20 bytes of a ticket value followed by "...",
+// so debug logs are informative without leaking the full credential.
+func truncateTicket(s string) string {
+	const n = 20
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
+
 func buildVNCWebSocketURL(apiURL *url.URL, node, kind string, vmid int, ticket *proxmox.TermProxyTicket) string {
 	wsScheme := "ws"
 	if apiURL.Scheme == "https" {
