@@ -25,8 +25,8 @@ func NewSQLiteRepository(dbPath string) (Repository, error) {
 	schema := []string{
 		`CREATE TABLE IF NOT EXISTS proxmox_instances (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT NOT NULL,
-			api_url TEXT NOT NULL,
+			name TEXT NOT NULL UNIQUE,
+			api_url TEXT NOT NULL UNIQUE,
 			api_token_id TEXT NOT NULL,
 			api_token_secret TEXT NOT NULL,
 			ssh_host TEXT NOT NULL,
@@ -37,6 +37,35 @@ func NewSQLiteRepository(dbPath string) (Repository, error) {
 		)`,
 		// Migration: add ssh_key column to existing databases that pre-date this feature.
 		`ALTER TABLE proxmox_instances ADD COLUMN ssh_key TEXT NOT NULL DEFAULT '' `,
+		// Migration: add UNIQUE constraints on name and api_url, and normalise
+		// api_url (trim trailing slashes) for existing rows. SQLite cannot add
+		// a UNIQUE constraint to an existing column via ALTER TABLE, so we
+		// rebuild the table using the standard SQLite rename-create-copy-drop
+		// pattern inside a transaction.
+		`CREATE TABLE IF NOT EXISTS proxmox_instances_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL UNIQUE,
+			api_url TEXT NOT NULL UNIQUE,
+			api_token_id TEXT NOT NULL,
+			api_token_secret TEXT NOT NULL,
+			ssh_host TEXT NOT NULL,
+			ssh_port INTEGER NOT NULL,
+			ssh_user TEXT NOT NULL,
+			ssh_key_path TEXT NOT NULL,
+			ssh_key TEXT NOT NULL DEFAULT ''
+		)`,
+		// Copy existing rows, trimming trailing slashes from api_url.
+		// TRIM with characters argument is SQLite-specific and strips any
+		// combination of the listed chars from both ends; rtrim strips right only.
+		`INSERT OR IGNORE INTO proxmox_instances_new
+			(id, name, api_url, api_token_id, api_token_secret,
+			 ssh_host, ssh_port, ssh_user, ssh_key_path, ssh_key)
+		SELECT id, name, rtrim(api_url, '/'), api_token_id, api_token_secret,
+			   ssh_host, ssh_port, ssh_user, ssh_key_path, ssh_key
+		FROM proxmox_instances
+		WHERE name NOT IN (SELECT name FROM proxmox_instances_new)`,
+		`DROP TABLE IF EXISTS proxmox_instances`,
+		`ALTER TABLE proxmox_instances_new RENAME TO proxmox_instances`,
 		`CREATE TABLE IF NOT EXISTS guests (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			type TEXT NOT NULL,
@@ -94,6 +123,12 @@ func isDuplicateColumnError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "duplicate column name")
 }
 
+// isUniqueConstraintError returns true when SQLite rejects an INSERT or UPDATE
+// because it would violate a UNIQUE constraint.
+func isUniqueConstraintError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
+
 func (r *sqliteRepo) Close() error {
 	return r.db.Close()
 }
@@ -101,6 +136,9 @@ func (r *sqliteRepo) Close() error {
 // --- Proxmox Instances ---
 
 func (r *sqliteRepo) AddProxmoxInstance(ctx context.Context, inst *models.ProxmoxInstance) error {
+	// Normalise the URL before storing so the UNIQUE constraint compares
+	// canonical forms (no trailing slashes).
+	inst.APIURL = strings.TrimRight(inst.APIURL, "/")
 	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO proxmox_instances
 		(name, api_url, api_token_id, api_token_secret, ssh_host, ssh_port, ssh_user, ssh_key_path, ssh_key)
@@ -109,6 +147,12 @@ func (r *sqliteRepo) AddProxmoxInstance(ctx context.Context, inst *models.Proxmo
 		inst.SSHHost, inst.SSHPort, inst.SSHUser, inst.SSHKeyPath, inst.SSHKey,
 	)
 	if err != nil {
+		if isUniqueConstraintError(err) {
+			if strings.Contains(err.Error(), "api_url") {
+				return fmt.Errorf("an instance with api-url %q already exists", inst.APIURL)
+			}
+			return fmt.Errorf("an instance named %q already exists", inst.Name)
+		}
 		return err
 	}
 	inst.ID, err = res.LastInsertId()
@@ -141,6 +185,7 @@ func (r *sqliteRepo) ListProxmoxInstances(ctx context.Context) ([]*models.Proxmo
 }
 
 func (r *sqliteRepo) UpdateProxmoxInstance(ctx context.Context, inst *models.ProxmoxInstance) error {
+	inst.APIURL = strings.TrimRight(inst.APIURL, "/")
 	_, err := r.db.ExecContext(ctx,
 		`UPDATE proxmox_instances SET
 		name = ?, api_url = ?, api_token_id = ?,
@@ -151,6 +196,12 @@ func (r *sqliteRepo) UpdateProxmoxInstance(ctx context.Context, inst *models.Pro
 		inst.APITokenSecret, inst.SSHHost, inst.SSHPort,
 		inst.SSHUser, inst.SSHKeyPath, inst.SSHKey, inst.ID,
 	)
+	if err != nil && isUniqueConstraintError(err) {
+		if strings.Contains(err.Error(), "api_url") {
+			return fmt.Errorf("an instance with api-url %q already exists", inst.APIURL)
+		}
+		return fmt.Errorf("an instance named %q already exists", inst.Name)
+	}
 	return err
 }
 
