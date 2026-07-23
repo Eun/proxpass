@@ -72,12 +72,15 @@ func proxyViaTermProxy(
 	wsURL := buildVNCWebSocketURL(apiURL, inst.Node, kind, guest.ProxmoxID, ticket)
 
 	// --- Step 3: Dial WebSocket ---
-	// The vncwebsocket endpoint authenticates via a PVEAuthCookie whose value
-	// is the VNC ticket returned by the termproxy POST, NOT via PVEAPIToken.
+	// The vncwebsocket endpoint requires:
+	//   Cookie: PVEAuthCookie=PVEAPIToken=<tokenID>=<secret>
+	// The vncticket query param authenticates the specific session;
+	// the cookie authenticates the caller identity (must match the ticket issuer).
+	apiToken := fmt.Sprintf("PVEAPIToken=%s=%s", inst.APITokenID, inst.APITokenSecret)
 	dialOpts := &websocket.DialOptions{
 		HTTPHeader: http.Header{
 			"Cookie": []string{
-				fmt.Sprintf("PVEAuthCookie=%s", url.QueryEscape(ticket.Ticket)),
+				fmt.Sprintf("PVEAuthCookie=%s", url.QueryEscape(apiToken)),
 			},
 		},
 		// Proxmox uses self-signed certificates; skip TLS verification.
