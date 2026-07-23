@@ -10,10 +10,7 @@ import (
 )
 
 func TestAPIClientDiscoverGuests(t *testing.T) {
-	api := testenv.NewMockAPIServer(
-		"user@pam!tok",
-		"secret123",
-	)
+	api := testenv.NewMockAPIServer(testTokenID, "secret123")
 	defer api.Close()
 
 	api.AddLXC("node1", 100, "ct1", "running")
@@ -23,7 +20,7 @@ func TestAPIClientDiscoverGuests(t *testing.T) {
 
 	inst := &models.ProxmoxInstance{
 		APIURL:         api.URL(),
-		APITokenID:     "user@pam!tok",
+		APITokenID:     testTokenID,
 		APITokenSecret: "secret123",
 	}
 
@@ -40,7 +37,6 @@ func TestAPIClientDiscoverGuests(t *testing.T) {
 		t.Fatalf("expected 4 guests, got %d", len(guests))
 	}
 
-	// Verify types
 	ctCount, vmCount := 0, 0
 	for _, g := range guests {
 		switch g.Type {
@@ -59,10 +55,7 @@ func TestAPIClientDiscoverGuests(t *testing.T) {
 }
 
 func TestAPIClientBadAuth(t *testing.T) {
-	api := testenv.NewMockAPIServer(
-		"user@pam!tok",
-		"secret123",
-	)
+	api := testenv.NewMockAPIServer(testTokenID, "secret123")
 	defer api.Close()
 
 	api.AddLXC("node1", 100, "ct1", "running")
@@ -97,12 +90,14 @@ func TestNewAPIClientURLValidation(t *testing.T) {
 		{"empty string", "", true},
 		{"scheme-relative", "//pve:8006", true},
 		{"ftp scheme", "ftp://pve:8006", true},
+		{"missing port", "https://pve", true},
+		{"missing port full host", "https://rome.erika.salzmann.berlin", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			inst := &models.ProxmoxInstance{
 				APIURL:         tt.apiURL,
-				APITokenID:     "user@pam!tok",
+				APITokenID:     testTokenID,
 				APITokenSecret: "secret",
 			}
 			_, err := proxmox.NewAPIClient(inst)
