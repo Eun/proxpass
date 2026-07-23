@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -121,10 +122,8 @@ func setupAdminTest(t *testing.T) (
 }
 
 // sshShellOutput dials the proxpass server, opens a shell session with the
-// given username, immediately closes stdin (EOF), reads all output, and returns it.
-//
-// Closing stdin causes the server-side channel read to return io.EOF, which
-// makes MockProxier.ProxyToGuest return and the session end cleanly.
+// given username, closes stdin immediately (triggering EOF on the server side),
+// reads all output until the session closes, and returns it.
 func sshShellOutput(t *testing.T, addr, username string, signer gossh.Signer) string {
 	t.Helper()
 
@@ -145,12 +144,16 @@ func sshShellOutput(t *testing.T, addr, username string, signer gossh.Signer) st
 		t.Fatalf("new session: %v", err)
 	}
 
-	var buf bytes.Buffer
-	sess.Stdout = &buf
-	sess.Stderr = &buf
+	// Pipe stdout and stderr into a buffer that we read concurrently.
+	stdoutPipe, err := sess.StdoutPipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	stderrPipe, err := sess.StderrPipe()
+	if err != nil {
+		t.Fatalf("stderr pipe: %v", err)
+	}
 
-	// CloseWrite sends EOF on stdin once we've started the shell.
-	// This lets ProxyToGuest / the CLI handler see EOF and exit.
 	stdinPipe, err := sess.StdinPipe()
 	if err != nil {
 		t.Fatalf("stdin pipe: %v", err)
@@ -160,19 +163,41 @@ func sshShellOutput(t *testing.T, addr, username string, signer gossh.Signer) st
 		t.Fatalf("shell: %v", err)
 	}
 
-	// Close stdin immediately so the server side sees EOF.
+	// Give the server a moment to write any banner before closing stdin.
+	// This avoids a race where stdin EOF is seen before ProxyToGuest writes.
+	time.Sleep(50 * time.Millisecond)
+
+	// Close stdin so the server-side handler (CLI or proxy) sees EOF and exits.
 	stdinPipe.Close()
 
-	// Wait up to 10 s for the session to finish.
-	done := make(chan error, 1)
-	go func() { done <- sess.Wait() }()
+	// Drain stdout and stderr concurrently, then wait for the session.
+	var buf bytes.Buffer
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(&buf, stdoutPipe)
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(&buf, stderrPipe)
+	}()
 
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	// Wait for all output to be drained or timeout.
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		sess.Close()
 		t.Fatalf("session did not finish within 10s for username %q; output so far: %q", username, buf.String())
 	}
+
+	_ = sess.Wait()
 
 	return buf.String()
 }
