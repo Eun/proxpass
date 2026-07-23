@@ -3,14 +3,19 @@ package db
 import (
 	"context"
 	"database/sql"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite" // register sqlite3 driver
 
 	"proxpass/internal/models"
 )
+
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
 
 type sqliteRepo struct {
 	db *sql.DB
@@ -22,105 +27,20 @@ func NewSQLiteRepository(dbPath string) (Repository, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	schema := []string{
-		`CREATE TABLE IF NOT EXISTS proxmox_instances (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT NOT NULL UNIQUE,
-			api_url TEXT NOT NULL UNIQUE,
-			api_token_id TEXT NOT NULL,
-			api_token_secret TEXT NOT NULL,
-			ssh_host TEXT NOT NULL,
-			ssh_port INTEGER NOT NULL,
-			ssh_user TEXT NOT NULL,
-			ssh_key_path TEXT NOT NULL,
-			ssh_key TEXT NOT NULL DEFAULT ''
-		)`,
-		// Migration: add ssh_key column to existing databases that pre-date this feature.
-		`ALTER TABLE proxmox_instances ADD COLUMN ssh_key TEXT NOT NULL DEFAULT '' `,
-		// Migration: add UNIQUE constraints on name and api_url, and normalise
-		// api_url (trim trailing slashes) for existing rows. SQLite cannot add
-		// a UNIQUE constraint to an existing column via ALTER TABLE, so we
-		// rebuild the table using the standard SQLite rename-create-copy-drop
-		// pattern inside a transaction.
-		`CREATE TABLE IF NOT EXISTS proxmox_instances_new (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT NOT NULL UNIQUE,
-			api_url TEXT NOT NULL UNIQUE,
-			api_token_id TEXT NOT NULL,
-			api_token_secret TEXT NOT NULL,
-			ssh_host TEXT NOT NULL,
-			ssh_port INTEGER NOT NULL,
-			ssh_user TEXT NOT NULL,
-			ssh_key_path TEXT NOT NULL,
-			ssh_key TEXT NOT NULL DEFAULT ''
-		)`,
-		// Copy existing rows, trimming trailing slashes from api_url.
-		// TRIM with characters argument is SQLite-specific and strips any
-		// combination of the listed chars from both ends; rtrim strips right only.
-		`INSERT OR IGNORE INTO proxmox_instances_new
-			(id, name, api_url, api_token_id, api_token_secret,
-			 ssh_host, ssh_port, ssh_user, ssh_key_path, ssh_key)
-		SELECT id, name, rtrim(api_url, '/'), api_token_id, api_token_secret,
-			   ssh_host, ssh_port, ssh_user, ssh_key_path, ssh_key
-		FROM proxmox_instances
-		WHERE name NOT IN (SELECT name FROM proxmox_instances_new)`,
-		`DROP TABLE IF EXISTS proxmox_instances`,
-		`ALTER TABLE proxmox_instances_new RENAME TO proxmox_instances`,
-		`CREATE TABLE IF NOT EXISTS guests (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			type TEXT NOT NULL,
-			name TEXT NOT NULL,
-			status TEXT NOT NULL,
-			proxmox_id INTEGER NOT NULL,
-			instance_id INTEGER NOT NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS clients (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT NOT NULL UNIQUE,
-			public_keys TEXT NOT NULL,
-			group_ids TEXT NOT NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS groups (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT NOT NULL UNIQUE,
-			client_ids TEXT NOT NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS access_rules (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			type TEXT NOT NULL,
-			subject_id INTEGER NOT NULL,
-			guest_id INTEGER NOT NULL,
-			UNIQUE(type, subject_id, guest_id)
-		)`,
-		`CREATE TABLE IF NOT EXISTS default_policy (
-			id INTEGER PRIMARY KEY CHECK (id = 1),
-			authorized_client_ids TEXT NOT NULL,
-			authorized_group_ids TEXT NOT NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS admin_keys (
-			public_key TEXT PRIMARY KEY
-		)`,
+	// Configure goose: SQLite dialect, embedded migration files, no logging.
+	goose.SetBaseFS(migrationsFS)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("goose set dialect: %w", err)
 	}
+	goose.SetLogger(goose.NopLogger())
 
-	for _, s := range schema {
-		if _, err := db.ExecContext(context.Background(), s); err != nil {
-			// ALTER TABLE … ADD COLUMN fails with "duplicate column name" when the
-			// column already exists (fresh DB created with the new schema). Ignore
-			// that specific error; treat everything else as fatal.
-			if !isDuplicateColumnError(err) {
-				return nil, fmt.Errorf("failed to execute schema: %w", err)
-			}
-		}
+	if err := goose.Up(db, "migrations"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("running migrations: %w", err)
 	}
 
 	return &sqliteRepo{db: db}, nil
-}
-
-// isDuplicateColumnError returns true when SQLite rejects an ALTER TABLE … ADD COLUMN
-// because the column already exists. This happens when a fresh database is created
-// with the new CREATE TABLE schema and the migration ALTER TABLE is applied again.
-func isDuplicateColumnError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "duplicate column name")
 }
 
 // isUniqueConstraintError returns true when SQLite rejects an INSERT or UPDATE
