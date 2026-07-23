@@ -105,7 +105,8 @@ func proxyViaTermProxy(
 	var wsHeader http.Header
 	if session != nil {
 		wsHeader = http.Header{
-			"Cookie": []string{"PVEAuthCookie=" + url.QueryEscape(session.Ticket)},
+			// Cookie value must be the raw ticket — pveproxy parses it as-is.
+			"Cookie": []string{"PVEAuthCookie=" + session.Ticket},
 		}
 	} else {
 		wsHeader = http.Header{

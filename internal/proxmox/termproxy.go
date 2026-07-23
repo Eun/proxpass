@@ -171,7 +171,8 @@ func (c *APIClient) doPostWithSession(ctx context.Context, path string, session 
 	if err != nil {
 		return nil, fmt.Errorf("new request %s: %w", reqURL, err)
 	}
-	req.Header.Set("Cookie", "PVEAuthCookie="+url.QueryEscape(session.Ticket))
+	// Cookie value must be the raw ticket — Proxmox parses it as-is; URL-encoding breaks auth.
+	req.Header.Set("Cookie", "PVEAuthCookie="+session.Ticket)
 	req.Header.Set("CSRFPreventionToken", session.CSRFPreventionToken)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
