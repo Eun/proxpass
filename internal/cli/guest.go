@@ -14,8 +14,9 @@ import (
 
 func guestCmd(deps *Deps) *ucli.Command { //nolint:gocognit // CLI command tree
 	return &ucli.Command{
-		Name:  "guest",
-		Usage: "Manage and connect to guests",
+		Name:   "guest",
+		Usage:  "Manage and connect to guests",
+		Action: unknownSubcmdAction,
 		Commands: []*ucli.Command{
 			{
 				Name:  cmdLs,

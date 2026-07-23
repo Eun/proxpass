@@ -12,8 +12,9 @@ import (
 
 func groupCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI command tree
 	return &ucli.Command{
-		Name:  flagGroup,
-		Usage: "Manage client groups",
+		Name:   flagGroup,
+		Usage:  "Manage client groups",
+		Action: unknownSubcmdAction,
 		Commands: []*ucli.Command{
 			{
 				Name:  cmdLs,

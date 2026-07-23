@@ -13,8 +13,9 @@ import (
 
 func clientCmd(deps *Deps) *ucli.Command { //nolint:gocognit // CLI command tree
 	return &ucli.Command{
-		Name:  flagClient,
-		Usage: "Manage SSH clients",
+		Name:   flagClient,
+		Usage:  "Manage SSH clients",
+		Action: unknownSubcmdAction,
 		Commands: []*ucli.Command{
 			{
 				Name:  cmdLs,

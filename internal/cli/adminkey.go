@@ -12,8 +12,9 @@ import (
 
 func adminKeyCmd(deps *Deps) *ucli.Command {
 	return &ucli.Command{
-		Name:  "admin-key",
-		Usage: "Manage admin SSH keys",
+		Name:   "admin-key",
+		Usage:  "Manage admin SSH keys",
+		Action: unknownSubcmdAction,
 		Commands: []*ucli.Command{
 			{
 				Name:  cmdLs,

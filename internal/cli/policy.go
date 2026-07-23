@@ -12,8 +12,9 @@ import (
 
 func policyCmd(deps *Deps) *ucli.Command { //nolint:gocognit // CLI command tree
 	return &ucli.Command{
-		Name:  "policy",
-		Usage: "Manage default access policy",
+		Name:   "policy",
+		Usage:  "Manage default access policy",
+		Action: unknownSubcmdAction,
 		Commands: []*ucli.Command{
 			{
 				Name:  cmdLs,
