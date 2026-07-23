@@ -1,13 +1,14 @@
 package ssh
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/pem"
-	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -24,7 +25,8 @@ import (
 func modeBytes(pairs ...uint32) []byte {
 	var buf []byte
 	for i := 0; i < len(pairs)-1; i += 2 {
-		buf = append(buf, byte(pairs[i]))
+		opcode := byte(pairs[i]) //nolint:gosec // opcodes are SSH terminal mode constants, always ≤255
+		buf = append(buf, opcode)
 		var b4 [4]byte
 		binary.BigEndian.PutUint32(b4[:], pairs[i+1])
 		buf = append(buf, b4[:]...)
@@ -81,7 +83,7 @@ func TestParseModes(t *testing.T) {
 			data: func() []byte {
 				b := modeBytes(uint32(gossh.ECHO), 1) // includes TTY_OP_END
 				b = b[:len(b)-1]                      // strip TTY_OP_END
-				b = append(b, byte(gossh.ICRNL), 0, 0, 0) // only 4 bytes
+				b = append(b, byte(gossh.ICRNL), 0, 0, 0)
 				return b
 			}(),
 			wantModes: gossh.TerminalModes{
@@ -128,7 +130,7 @@ type ptySeenEvent struct {
 //
 // Returns a ProxmoxInstance pointing at the mock, and a channel that receives
 // one ptySeenEvent per session (buffered 256).
-func startMockProxmoxSSH(t *testing.T) (*models.ProxmoxInstance, <-chan ptySeenEvent) {
+func startMockProxmoxSSH(t *testing.T) (inst *models.ProxmoxInstance, ptyCh <-chan ptySeenEvent) {
 	t.Helper()
 
 	// Host key (throwaway)
@@ -158,12 +160,13 @@ func startMockProxmoxSSH(t *testing.T) (*models.ProxmoxInstance, <-chan ptySeenE
 	}
 	srvCfg.AddHostKey(hostSigner)
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 
-	ptyCh := make(chan ptySeenEvent, 256)
+	ch := make(chan ptySeenEvent, 256)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -174,7 +177,7 @@ func startMockProxmoxSSH(t *testing.T) (*models.ProxmoxInstance, <-chan ptySeenE
 			if err != nil {
 				return
 			}
-			go mockHandleConn(tcpConn, srvCfg, ptyCh)
+			go mockHandleConn(tcpConn, srvCfg, ch)
 		}
 	}()
 
@@ -183,19 +186,28 @@ func startMockProxmoxSSH(t *testing.T) (*models.ProxmoxInstance, <-chan ptySeenE
 		wg.Wait()
 	})
 
-	host, portS, _ := net.SplitHostPort(ln.Addr().String())
-	var portInt int
-	fmt.Sscanf(portS, "%d", &portInt)
+	host, portS, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("split host port: %v", err)
+	}
+	portInt, err := strconv.Atoi(portS)
+	if err != nil {
+		t.Fatalf("parse port: %v", err)
+	}
 
-	inst := &models.ProxmoxInstance{
+	inst = &models.ProxmoxInstance{
 		SSHHost: host,
 		SSHPort: portInt,
 		SSHUser: "root",
 		SSHKey:  string(pem.EncodeToMemory(clientKeyPEM)),
 	}
-	return inst, ptyCh
+	return inst, ch
 }
 
+// mockHandleConn processes a single SSH connection on the mock server.
+// It is split out from startMockProxmoxSSH to keep cognitive complexity low.
+//
+//nolint:gocognit // mock SSH server requires sequential request dispatch
 func mockHandleConn(tcpConn net.Conn, srvCfg *gossh.ServerConfig, ptyCh chan<- ptySeenEvent) {
 	defer func() { _ = tcpConn.Close() }()
 	sshConn, chans, reqs, err := gossh.NewServerConn(tcpConn, srvCfg)
@@ -215,9 +227,9 @@ func mockHandleConn(tcpConn net.Conn, srvCfg *gossh.ServerConfig, ptyCh chan<- p
 			var seen ptySeenEvent
 			for req := range chReqs {
 				switch req.Type {
-				case "pty-req":
+				case reqTypePTY:
 					seen.requested = true
-					if p, err := parsePtyReq(req.Payload); err == nil {
+					if p, parseErr := parsePtyReq(req.Payload); parseErr == nil {
 						seen.term = p.Term
 						seen.width = int(p.Width)
 						seen.height = int(p.Height)
@@ -226,7 +238,7 @@ func mockHandleConn(tcpConn net.Conn, srvCfg *gossh.ServerConfig, ptyCh chan<- p
 					if req.WantReply {
 						_ = req.Reply(true, nil)
 					}
-				case "exec", "shell":
+				case reqTypeExec, reqTypeShell:
 					if req.WantReply {
 						_ = req.Reply(true, nil)
 					}
@@ -246,10 +258,10 @@ func mockHandleConn(tcpConn net.Conn, srvCfg *gossh.ServerConfig, ptyCh chan<- p
 // discards all writes - simulating a client that immediately disconnected.
 type fakeChannel struct{}
 
-func (*fakeChannel) Read([]byte) (int, error)                          { return 0, io.EOF }
-func (*fakeChannel) Write(b []byte) (int, error)                       { return len(b), nil }
-func (*fakeChannel) Close() error                                       { return nil }
-func (*fakeChannel) CloseWrite() error                                  { return nil }
+func (*fakeChannel) Read([]byte) (int, error)                             { return 0, io.EOF }
+func (*fakeChannel) Write(b []byte) (int, error)                          { return len(b), nil }
+func (*fakeChannel) Close() error                                         { return nil }
+func (*fakeChannel) CloseWrite() error                                    { return nil }
 func (*fakeChannel) SendRequest(_ string, _ bool, _ []byte) (bool, error) { return false, nil }
 func (*fakeChannel) Stderr() io.ReadWriter {
 	return struct {
@@ -310,7 +322,7 @@ func TestProxyToGuestForwardsModes(t *testing.T) {
 	inst, ptyCh := startMockProxmoxSSH(t)
 
 	modes := modeBytes(uint32(gossh.ECHO), 1, uint32(gossh.ICRNL), 1)
-	ptyReq := &PtyRequest{Term: "xterm", Width: 120, Height: 40, Modes: modes}
+	ptyReq := &PtyRequest{Term: termXterm, Width: 120, Height: 40, Modes: modes}
 
 	guest := &models.Guest{Name: "test-ct", Type: models.GuestTypeCT, ProxmoxID: 100}
 	reqs := make(chan *gossh.Request)
@@ -322,8 +334,8 @@ func TestProxyToGuestForwardsModes(t *testing.T) {
 		if !seen.requested {
 			t.Fatal("PTY not requested")
 		}
-		if seen.term != "xterm" {
-			t.Errorf("term = %q, want xterm", seen.term)
+		if seen.term != termXterm {
+			t.Errorf("term = %q, want %s", seen.term, termXterm)
 		}
 		if seen.modes[gossh.ECHO] != 1 {
 			t.Errorf("ECHO = %d, want 1", seen.modes[gossh.ECHO])

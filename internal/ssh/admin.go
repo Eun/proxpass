@@ -34,7 +34,7 @@ func DefaultAdminHandler( //nolint:gocognit // SSH session handler
 
 		for req := range reqs {
 			switch req.Type {
-			case "pty-req":
+			case reqTypePTY:
 				p, err := parsePtyReq(req.Payload)
 				if err != nil {
 					logger.Printf("admin: bad pty-req: %v", err)
@@ -48,7 +48,7 @@ func DefaultAdminHandler( //nolint:gocognit // SSH session handler
 					_ = req.Reply(true, nil)
 				}
 
-			case "exec":
+			case reqTypeExec:
 				if req.WantReply {
 					_ = req.Reply(true, nil)
 				}
@@ -62,7 +62,7 @@ func DefaultAdminHandler( //nolint:gocognit // SSH session handler
 				remaining = reqs
 				goto handleCommand
 
-			case "shell":
+			case reqTypeShell:
 				if req.WantReply {
 					_ = req.Reply(true, nil)
 				}
