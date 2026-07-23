@@ -43,8 +43,5 @@ func validateAPIURL(rawURL string) error {
 	if parsed.Host == "" {
 		return fmt.Errorf("--api-url %q: missing host", rawURL)
 	}
-	if parsed.Port() == "" {
-		return fmt.Errorf("--api-url %q: port is required (e.g. https://%s:8006)", rawURL, parsed.Hostname())
-	}
 	return nil
 }

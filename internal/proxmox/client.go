@@ -36,9 +36,6 @@ func NewAPIClient(inst *models.ProxmoxInstance) (*APIClient, error) {
 	if parsed.Host == "" {
 		return nil, fmt.Errorf("invalid api-url %q: missing host", inst.APIURL)
 	}
-	if parsed.Port() == "" {
-		return nil, fmt.Errorf("invalid api-url %q: port is required (e.g. https://%s:8006)", inst.APIURL, parsed.Hostname())
-	}
 	return &APIClient{
 		// Use the trimmed original string, not parsed.String(), to guarantee
 		// the port is preserved exactly as the user specified it.

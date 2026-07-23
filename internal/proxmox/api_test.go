@@ -90,8 +90,6 @@ func TestNewAPIClientURLValidation(t *testing.T) {
 		{"empty string", "", true},
 		{"scheme-relative", "//pve:8006", true},
 		{"ftp scheme", "ftp://pve:8006", true},
-		{"missing port", "https://pve", true},
-		{"missing port full host", "https://rome.erika.salzmann.berlin", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
