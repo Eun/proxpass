@@ -14,17 +14,34 @@ const (
 	StatusStopped Status = "stopped"
 )
 
+// ConnectionType controls how proxpass connects to a guest console.
+type ConnectionType string
+
+const (
+	// ConnectionTypeTermProxy uses the Proxmox REST API termproxy endpoint
+	// and a WebSocket to attach a terminal. This is the default and does not
+	// require SSH credentials on the Proxmox host.
+	ConnectionTypeTermProxy ConnectionType = "termproxy"
+
+	// ConnectionTypeSSH SSHes into the Proxmox host and runs
+	// pct enter / qm terminal. Requires ssh_host and an SSH key.
+	ConnectionTypeSSH ConnectionType = "ssh"
+)
+
 type ProxmoxInstance struct {
-	ID             int64  `json:"id"`
-	Name           string `json:"name"`
-	APIURL         string `json:"api_url"`
-	APITokenID     string `json:"api_token_id"`
-	APITokenSecret string `json:"api_token_secret"`
-	SSHHost        string `json:"ssh_host"`
-	SSHPort        int    `json:"ssh_port"`
-	SSHUser        string `json:"ssh_user"`
-	SSHKeyPath     string `json:"ssh_key_path"`
-	SSHKey         string `json:"ssh_key"` // PEM-encoded private key (stored in DB; preferred over SSHKeyPath when non-empty)
+	ID             int64          `json:"id"`
+	Name           string         `json:"name"`
+	APIURL         string         `json:"api_url"`
+	APITokenID     string         `json:"api_token_id"`
+	APITokenSecret string         `json:"api_token_secret"`
+	ConnectionType ConnectionType `json:"connection_type"` // "termproxy" (default) or "ssh"
+	Node           string         `json:"node"`            // resolved Proxmox short node name
+
+	SSHHost    string `json:"ssh_host"`
+	SSHPort    int    `json:"ssh_port"`
+	SSHUser    string `json:"ssh_user"`
+	SSHKeyPath string `json:"ssh_key_path"`
+	SSHKey     string `json:"ssh_key"` // PEM-encoded private key (stored in DB; preferred over SSHKeyPath when non-empty)
 }
 
 type Guest struct {

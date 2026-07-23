@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"proxpass/internal/models"
+	"proxpass/internal/proxmox"
 
 	ucli "github.com/urfave/cli/v3"
 	gossh "golang.org/x/crypto/ssh"
@@ -38,8 +39,13 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 						return nil
 					}
 					for _, inst := range instances {
-						fmt.Fprintf(deps.Out, "%-20s  API: %s  SSH: %s:%d\n",
-							inst.Name, inst.APIURL, inst.SSHHost, inst.SSHPort)
+						if inst.ConnectionType == models.ConnectionTypeSSH {
+							fmt.Fprintf(deps.Out, "%-20s  API: %s  SSH: %s:%d  node: %s\n",
+								inst.Name, inst.APIURL, inst.SSHHost, inst.SSHPort, inst.Node)
+						} else {
+							fmt.Fprintf(deps.Out, "%-20s  API: %s  node: %s  (termproxy)\n",
+								inst.Name, inst.APIURL, inst.Node)
+						}
 					}
 					return nil
 				},
@@ -52,42 +58,61 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 					&ucli.StringFlag{Name: "api-url", Required: true, Usage: "Proxmox API URL (e.g. https://pve:8006)"},
 					&ucli.StringFlag{Name: "token-id", Required: true, Usage: "API token ID (e.g. user@pam!token)"},
 					&ucli.StringFlag{Name: "token-secret", Required: true, Usage: "API token secret"},
-					&ucli.StringFlag{Name: "ssh-host", Required: true, Usage: "SSH host (host or host:port, default port 22)"},
+					&ucli.StringFlag{
+						Name:  "connection-type",
+						Value: string(models.ConnectionTypeTermProxy),
+						Usage: `Connection type: "termproxy" (default) or "ssh"`,
+					},
+					&ucli.StringFlag{
+						Name:  "ssh-host",
+						Usage: "SSH host (host or host:port); required for --connection-type ssh",
+					},
 					&ucli.StringFlag{Name: "ssh-user", Value: "root", Usage: "SSH username"},
 					&ucli.StringFlag{
 						Name:  "ssh-key-path",
-						Usage: "Path to SSH private key on the proxpass server (mutually exclusive with --ssh-key, --generate-ssh-key)",
+						Usage: "Path to SSH private key (--connection-type ssh only; exclusive with --ssh-key, --generate-ssh-key)",
 					},
 					&ucli.StringFlag{
 						Name:  "ssh-key",
-						Usage: "PEM-encoded private key content (mutually exclusive with --ssh-key-path, --generate-ssh-key)",
+						Usage: "PEM-encoded private key (--connection-type ssh only; exclusive with --ssh-key-path, --generate-ssh-key)",
 					},
 					&ucli.BoolFlag{
 						Name:  "generate-ssh-key",
-						Usage: "Generate a new ED25519 key pair; prints the public key to add to Proxmox authorized_keys",
+						Usage: "Generate ED25519 key pair (--connection-type ssh only)",
 					},
 				},
-				Action: func(ctx context.Context, cmd *ucli.Command) error {
+				Action: func(ctx context.Context, cmd *ucli.Command) error { //nolint:cyclop // CLI command validation is inherently branchy
+					connType := models.ConnectionType(cmd.String("connection-type"))
+					if connType != models.ConnectionTypeTermProxy && connType != models.ConnectionTypeSSH {
+						return fmt.Errorf("--connection-type must be %q or %q", models.ConnectionTypeTermProxy, models.ConnectionTypeSSH)
+					}
+
 					generateKey := cmd.Bool("generate-ssh-key")
 					keyPath := cmd.String("ssh-key-path")
 					keyInline := cmd.String("ssh-key")
 
-					// Exactly one key source must be supplied.
-					set := 0
-					if keyPath != "" {
-						set++
-					}
-					if keyInline != "" {
-						set++
-					}
-					if generateKey {
-						set++
-					}
-					if set == 0 {
-						return fmt.Errorf("one of --ssh-key-path, --ssh-key, or --generate-ssh-key is required")
-					}
-					if set > 1 {
-						return fmt.Errorf("--ssh-key-path, --ssh-key, and --generate-ssh-key are mutually exclusive")
+					//nolint:nestif // SSH key validation is inherently nested
+					if connType == models.ConnectionTypeSSH {
+						// SSH mode: --ssh-host and exactly one key source are required.
+						if cmd.String("ssh-host") == "" {
+							return fmt.Errorf("--ssh-host is required when --connection-type ssh")
+						}
+						set := 0
+						if keyPath != "" {
+							set++
+						}
+						if keyInline != "" {
+							set++
+						}
+						if generateKey {
+							set++
+						}
+						if set == 0 {
+							return fmt.Errorf("one of --ssh-key-path, --ssh-key, or --generate-ssh-key is required when --connection-type ssh")
+						}
+						if set > 1 {
+							return fmt.Errorf("--ssh-key-path, --ssh-key, and --generate-ssh-key are mutually exclusive")
+						}
 					}
 
 					// Validate api-url before storing: scheme must be http/https
@@ -99,36 +124,59 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 						return err
 					}
 
-					sshHost, sshPort, err := parseHostPort(
-						cmd.String("ssh-host"), 22)
-					if err != nil {
-						return fmt.Errorf("invalid --ssh-host: %w", err)
+					var sshHost string
+					var sshPort int
+					if cmd.String("ssh-host") != "" {
+						var err error
+						sshHost, sshPort, err = parseHostPort(cmd.String("ssh-host"), 22)
+						if err != nil {
+							return fmt.Errorf("invalid --ssh-host: %w", err)
+						}
 					}
 
 					var sshKeyPEM string
 					var pubKeyAuthorized string
-					switch {
-					case keyInline != "":
-						// Validate that the supplied value is a parseable private key.
-						if _, err := gossh.ParsePrivateKey([]byte(keyInline)); err != nil {
-							return fmt.Errorf("--ssh-key: not a valid PEM private key: %w", err)
+					if connType == models.ConnectionTypeSSH {
+						switch {
+						case keyInline != "":
+							// Validate that the supplied value is a parseable private key.
+							if _, err := gossh.ParsePrivateKey([]byte(keyInline)); err != nil {
+								return fmt.Errorf("--ssh-key: not a valid PEM private key: %w", err)
+							}
+							sshKeyPEM = keyInline
+						case generateKey:
+							pub, priv, err := ed25519.GenerateKey(rand.Reader)
+							if err != nil {
+								return fmt.Errorf("generating SSH key: %w", err)
+							}
+							privPEM, err := gossh.MarshalPrivateKey(priv, "")
+							if err != nil {
+								return fmt.Errorf("marshaling SSH private key: %w", err)
+							}
+							sshKeyPEM = string(pem.EncodeToMemory(privPEM))
+							pubSSH, err := gossh.NewPublicKey(pub)
+							if err != nil {
+								return fmt.Errorf("marshaling SSH public key: %w", err)
+							}
+							pubKeyAuthorized = string(gossh.MarshalAuthorizedKey(pubSSH))
 						}
-						sshKeyPEM = keyInline
-					case generateKey:
-						pub, priv, err := ed25519.GenerateKey(rand.Reader)
-						if err != nil {
-							return fmt.Errorf("generating SSH key: %w", err)
+					}
+
+					// Resolve the node name from the API.
+					// This validates that the API URL is reachable and determines
+					// which Proxmox node name corresponds to this instance.
+					nodeName, err := resolveInstanceNode(ctx, cmd.String("api-url"), cmd.String("token-id"), cmd.String("token-secret"), sshHost)
+					if err != nil {
+						return fmt.Errorf("resolving node name: %w", err)
+					}
+
+					// For termproxy, verify the Proxmox version supports API token auth.
+					// This check runs once at instance-add time so the user gets a clear
+					// error immediately rather than at connection time.
+					if connType == models.ConnectionTypeTermProxy {
+						if err := checkTermProxyVersion(ctx, cmd.String("api-url"), cmd.String("token-id"), cmd.String("token-secret")); err != nil {
+							return err
 						}
-						privPEM, err := gossh.MarshalPrivateKey(priv, "")
-						if err != nil {
-							return fmt.Errorf("marshaling SSH private key: %w", err)
-						}
-						sshKeyPEM = string(pem.EncodeToMemory(privPEM))
-						pubSSH, err := gossh.NewPublicKey(pub)
-						if err != nil {
-							return fmt.Errorf("marshaling SSH public key: %w", err)
-						}
-						pubKeyAuthorized = string(gossh.MarshalAuthorizedKey(pubSSH))
 					}
 
 					inst := &models.ProxmoxInstance{
@@ -136,6 +184,8 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 						APIURL:         cmd.String("api-url"),
 						APITokenID:     cmd.String("token-id"),
 						APITokenSecret: cmd.String("token-secret"),
+						ConnectionType: connType,
+						Node:           nodeName,
 						SSHHost:        sshHost,
 						SSHPort:        sshPort,
 						SSHUser:        cmd.String("ssh-user"),
@@ -145,7 +195,7 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 					if err := deps.Repo.AddProxmoxInstance(ctx, inst); err != nil {
 						return err
 					}
-					fmt.Fprintf(deps.Out, "Instance %q added.\n", inst.Name)
+					fmt.Fprintf(deps.Out, "Instance %q added (connection: %s, node: %s).\n", inst.Name, inst.ConnectionType, inst.Node)
 					if pubKeyAuthorized != "" {
 						fmt.Fprintf(deps.Out, "Public key (add to Proxmox authorized_keys on %s):\n%s", inst.SSHHost, pubKeyAuthorized)
 					}
@@ -240,13 +290,17 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 						fmt.Fprintf(deps.Out, "API URL:          %s\n", inst.APIURL)
 						fmt.Fprintf(deps.Out, "API Token ID:     %s\n", inst.APITokenID)
 						fmt.Fprintf(deps.Out, "API Token Secret: %s\n", inst.APITokenSecret)
-						fmt.Fprintf(deps.Out, "SSH Host:         %s\n", inst.SSHHost)
-						fmt.Fprintf(deps.Out, "SSH Port:         %d\n", inst.SSHPort)
-						fmt.Fprintf(deps.Out, "SSH User:         %s\n", inst.SSHUser)
-						if inst.SSHKey != "" {
-							fmt.Fprintf(deps.Out, "SSH Key:          (generated, stored in DB)\n")
-						} else {
-							fmt.Fprintf(deps.Out, "SSH Key Path:     %s\n", inst.SSHKeyPath)
+						fmt.Fprintf(deps.Out, "Connection Type:  %s\n", inst.ConnectionType)
+						fmt.Fprintf(deps.Out, "Node:             %s\n", inst.Node)
+						if inst.ConnectionType == models.ConnectionTypeSSH {
+							fmt.Fprintf(deps.Out, "SSH Host:         %s\n", inst.SSHHost)
+							fmt.Fprintf(deps.Out, "SSH Port:         %d\n", inst.SSHPort)
+							fmt.Fprintf(deps.Out, "SSH User:         %s\n", inst.SSHUser)
+							if inst.SSHKey != "" {
+								fmt.Fprintf(deps.Out, "SSH Key:          (generated, stored in DB)\n")
+							} else {
+								fmt.Fprintf(deps.Out, "SSH Key Path:     %s\n", inst.SSHKeyPath)
+							}
 						}
 					}
 					return nil
@@ -254,4 +308,40 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 			},
 		},
 	}
+}
+
+// checkTermProxyVersion creates a temporary APIClient and verifies that the
+// Proxmox VE version supports termproxy with API token auth.
+func checkTermProxyVersion(ctx context.Context, apiURL, tokenID, tokenSecret string) error {
+	inst := &models.ProxmoxInstance{
+		APIURL:         apiURL,
+		APITokenID:     tokenID,
+		APITokenSecret: tokenSecret,
+	}
+	client, err := proxmox.NewAPIClient(inst)
+	if err != nil {
+		return err
+	}
+	return client.CheckTermProxySupport(ctx)
+}
+
+// resolveInstanceNode creates a temporary APIClient and resolves the
+// Proxmox node name that should be stored with this instance.
+//
+// When sshHost is non-empty it is matched against the cluster node list
+// (exact or FQDN-prefix match). When sshHost is empty and the cluster has
+// exactly one node that node is used automatically; otherwise an error is
+// returned asking the caller to supply --ssh-host for disambiguation.
+func resolveInstanceNode(ctx context.Context, apiURL, tokenID, tokenSecret, sshHost string) (string, error) {
+	inst := &models.ProxmoxInstance{
+		APIURL:         apiURL,
+		APITokenID:     tokenID,
+		APITokenSecret: tokenSecret,
+		SSHHost:        sshHost,
+	}
+	client, err := proxmox.NewAPIClient(inst)
+	if err != nil {
+		return "", err
+	}
+	return client.ResolveNodeName(ctx, sshHost)
 }

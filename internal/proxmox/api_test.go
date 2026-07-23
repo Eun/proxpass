@@ -9,22 +9,27 @@ import (
 	"proxpass/internal/testenv"
 )
 
+const (
+	testTokenSecret = "secret123"
+	testNode1       = "node1"
+)
+
 func TestAPIClientDiscoverGuests(t *testing.T) {
-	api := testenv.NewMockAPIServer(testTokenID, "secret123")
+	api := testenv.NewMockAPIServer(testTokenID, testTokenSecret)
 	defer api.Close()
 
 	// node1 has 2 CTs and 1 VM; node2 has 1 VM.
 	// When SSHHost="node1", DiscoverGuests must only return node1's guests.
-	api.AddLXC("node1", 100, "ct1", "running")
-	api.AddLXC("node1", 101, "ct2", "stopped")
-	api.AddQEMU("node1", 200, "vm1", "running")
+	api.AddLXC(testNode1, 100, "ct1", "running")
+	api.AddLXC(testNode1, 101, "ct2", "stopped")
+	api.AddQEMU(testNode1, 200, "vm1", "running")
 	api.AddQEMU("node2", 300, "vm2", "running") // different node — must not appear
 
 	inst := &models.ProxmoxInstance{
 		APIURL:         api.URL(),
 		APITokenID:     testTokenID,
-		APITokenSecret: "secret123",
-		SSHHost:        "node1", // scope discovery to node1 only
+		APITokenSecret: testTokenSecret,
+		SSHHost:        testNode1, // scope discovery to node1 only
 	}
 
 	client, err := proxmox.NewAPIClient(inst)
@@ -62,7 +67,7 @@ func TestAPIClientDiscoverGuests(t *testing.T) {
 // TestAPIClientDiscoverGuestsFQDN verifies that SSHHost as a FQDN resolves
 // to the correct short Proxmox node name via FQDN-prefix matching.
 func TestAPIClientDiscoverGuestsFQDN(t *testing.T) {
-	api := testenv.NewMockAPIServer(testTokenID, "secret123")
+	api := testenv.NewMockAPIServer(testTokenID, testTokenSecret)
 	defer api.Close()
 
 	api.AddLXC("rome", 100, "ct1", "running")
@@ -71,7 +76,7 @@ func TestAPIClientDiscoverGuestsFQDN(t *testing.T) {
 	inst := &models.ProxmoxInstance{
 		APIURL:         api.URL(),
 		APITokenID:     testTokenID,
-		APITokenSecret: "secret123",
+		APITokenSecret: testTokenSecret,
 		// FQDN: should match node "rome" via prefix "rome."
 		SSHHost: "rome.erika.salzmann.berlin",
 	}
@@ -94,16 +99,16 @@ func TestAPIClientDiscoverGuestsFQDN(t *testing.T) {
 }
 
 func TestAPIClientBadAuth(t *testing.T) {
-	api := testenv.NewMockAPIServer(testTokenID, "secret123")
+	api := testenv.NewMockAPIServer(testTokenID, testTokenSecret)
 	defer api.Close()
 
-	api.AddLXC("node1", 100, "ct1", "running")
+	api.AddLXC(testNode1, 100, "ct1", "running")
 
 	inst := &models.ProxmoxInstance{
 		APIURL:         api.URL(),
 		APITokenID:     "wrong",
 		APITokenSecret: "wrong",
-		SSHHost:        "node1",
+		SSHHost:        testNode1,
 	}
 
 	client, err := proxmox.NewAPIClient(inst)
@@ -146,5 +151,70 @@ func TestNewAPIClientURLValidation(t *testing.T) {
 				t.Errorf("unexpected error for api-url %q: %v", tt.apiURL, err)
 			}
 		})
+	}
+}
+
+// TestCreateTermProxyTicket verifies that CreateTermProxyTicket POSTs to the
+// correct endpoint and correctly parses the ticket/port from the response.
+func TestCreateTermProxyTicket(t *testing.T) {
+	api := testenv.NewMockAPIServer(testTokenID, testTokenSecret)
+	defer api.Close()
+	api.AddLXC(testNode1, 100, "ct1", "running")
+	// Register a termproxy response for vmid 100 on node1.
+	api.AddTermProxy(testNode1, "lxc", 100, "TICKET123", 5900)
+
+	inst := &models.ProxmoxInstance{
+		APIURL:         api.URL(),
+		APITokenID:     testTokenID,
+		APITokenSecret: testTokenSecret,
+		SSHHost:        testNode1,
+		Node:           testNode1,
+	}
+	client, err := proxmox.NewAPIClient(inst)
+	if err != nil {
+		t.Fatalf("NewAPIClient: %v", err)
+	}
+
+	guest := &models.Guest{Type: models.GuestTypeCT, ProxmoxID: 100}
+	ticket, err := client.CreateTermProxyTicket(context.Background(), "node1", guest)
+	if err != nil {
+		t.Fatalf("CreateTermProxyTicket: %v", err)
+	}
+	if ticket.Ticket != "TICKET123" {
+		t.Errorf("ticket: got %q, want %q", ticket.Ticket, "TICKET123")
+	}
+	if ticket.Port != 5900 {
+		t.Errorf("port: got %d, want %d", ticket.Port, 5900)
+	}
+}
+
+// TestResolveNodeNameLocalNode verifies that ResolveNodeName with no sshHost
+// returns the node marked local=1 in the cluster/status response — even when
+// the cluster has multiple nodes.
+func TestResolveNodeNameLocalNode(t *testing.T) {
+	api := testenv.NewMockAPIServer(testTokenID, testTokenSecret)
+	defer api.Close()
+	api.AddLXC("oslo", 100, "ct1", "running")
+	api.AddLXC("rome", 200, "ct2", "running")
+	api.AddLXC("paris", 300, "ct3", "running")
+	// Simulate --api-url pointing at "rome".
+	api.SetLocalNode("rome")
+
+	inst := &models.ProxmoxInstance{
+		APIURL:         api.URL(),
+		APITokenID:     testTokenID,
+		APITokenSecret: testTokenSecret,
+	}
+	client, err := proxmox.NewAPIClient(inst)
+	if err != nil {
+		t.Fatalf("NewAPIClient: %v", err)
+	}
+
+	node, err := client.ResolveNodeName(context.Background(), "")
+	if err != nil {
+		t.Fatalf("ResolveNodeName: %v", err)
+	}
+	if node != "rome" {
+		t.Errorf("node: got %q, want %q", node, "rome")
 	}
 }

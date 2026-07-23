@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"proxpass/internal/models"
@@ -83,21 +84,27 @@ func (c *APIClient) DiscoverGuests(ctx context.Context) ([]*models.Guest, error)
 	return append(cts, vms...), nil
 }
 
-// resolveNodeName fetches /api2/json/nodes and returns the node name whose
-// name matches c.sshHost. Matching is case-insensitive and supports:
+// ResolveNodeName returns the Proxmox node name for this instance.
 //
-//  1. Exact match:    sshHost == nodename         (e.g. "rome" == "rome")
-//  2. FQDN prefix:   sshHost == "nodename...."   (e.g. "rome.erika.salzmann.berlin" has prefix "rome.")
+// When sshHost is non-empty, it is matched against the cluster node list
+// (case-insensitive exact match, or FQDN-prefix: "rome.domain" → "rome").
 //
-// This is reliable because Proxmox node names are always short hostnames,
-// and FQDNs are always <nodename>.<domain>.
-func (c *APIClient) resolveNodeName(ctx context.Context) (string, error) {
+// When sshHost is empty, the local node is identified via
+// GET /api2/json/cluster/status which marks the node serving the request
+// with local=1. This is the correct approach for termproxy mode where
+// --api-url already points at the target node.
+func (c *APIClient) ResolveNodeName(ctx context.Context, sshHost string) (string, error) {
+	if sshHost == "" {
+		// No ssh-host hint: ask the API which node is local (serves this request).
+		return c.getLocalNode(ctx)
+	}
+
 	nodes, err := c.getNodes(ctx)
 	if err != nil {
 		return "", err
 	}
 
-	ssh := strings.ToLower(c.sshHost)
+	ssh := strings.ToLower(sshHost)
 	for _, node := range nodes {
 		n := strings.ToLower(node)
 		if ssh == n || strings.HasPrefix(ssh, n+".") {
@@ -105,7 +112,36 @@ func (c *APIClient) resolveNodeName(ctx context.Context) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no Proxmox node matches ssh-host %q (known nodes: %s)",
-		c.sshHost, strings.Join(nodes, ", "))
+		sshHost, strings.Join(nodes, ", "))
+}
+
+// getLocalNode calls GET /api2/json/cluster/status and returns the node name
+// whose "local" field is 1 — that is, the node serving this API request.
+// This is how we determine which node --api-url points at without requiring
+// the user to supply --ssh-host in termproxy mode.
+func (c *APIClient) getLocalNode(ctx context.Context) (string, error) {
+	body, err := c.doGet(ctx, "/api2/json/cluster/status")
+	if err != nil {
+		return "", fmt.Errorf("get cluster status: %w", err)
+	}
+
+	var resp clusterStatusResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", fmt.Errorf("decode cluster status: %w", err)
+	}
+
+	for _, entry := range resp.Data {
+		if entry.Type == "node" && entry.Local == 1 {
+			return entry.Name, nil
+		}
+	}
+	return "", fmt.Errorf("no local node found in cluster status response")
+}
+
+// resolveNodeName is the internal wrapper used by DiscoverGuests.
+// It resolves c.sshHost against the cluster node list.
+func (c *APIClient) resolveNodeName(ctx context.Context) (string, error) {
+	return c.ResolveNodeName(ctx, c.sshHost)
 }
 
 // --- Proxmox API response structures ---
@@ -117,6 +153,16 @@ type nodesResponse struct {
 type nodeEntry struct {
 	Node   string `json:"node"`
 	Status string `json:"status"`
+}
+
+type clusterStatusResponse struct {
+	Data []clusterStatusEntry `json:"data"`
+}
+
+type clusterStatusEntry struct {
+	Type  string `json:"type"`
+	Name  string `json:"name"`
+	Local int    `json:"local"` // 1 when this entry is the local node
 }
 
 type guestsResponse struct {
@@ -235,5 +281,99 @@ func normalizeStatus(raw string) models.Status {
 		return models.StatusStopped
 	default:
 		return models.StatusStopped
+	}
+}
+
+// minTermProxyVersion is the minimum pve-manager version that supports
+// termproxy with API token auth end-to-end.
+//
+// History:
+//   - pve-manager 9.0.13 (2025-11-14): REST endpoint allows API tokens for
+//     POST .../termproxy and GET .../vncwebsocket.
+//   - pve-container 6.1.3 + pve-manager 9.1.9 (both 2026-04-21): pass
+//     --vncticket-endpoint to the termproxy binary, which makes it validate
+//     via the vncticket endpoint instead of /access/ticket (which rejects
+//     API token IDs as invalid usernames).
+//
+// Therefore the minimum working version is pve-manager 9.1.9.
+var minTermProxyVersion = [3]int{9, 1, 9}
+
+// versionResponse is the JSON envelope from GET /api2/json/version.
+type versionResponse struct {
+	Data struct {
+		Version string `json:"version"` // full pve-manager version, e.g. "9.1.9"
+		Release string `json:"release"` // major.minor, e.g. "9.1"
+	} `json:"data"`
+}
+
+// CheckTermProxySupport calls GET /api2/json/version and returns an error if
+// the pve-manager version is older than minTermProxyVersion.
+func (c *APIClient) CheckTermProxySupport(ctx context.Context) error {
+	body, err := c.doGet(ctx, "/api2/json/version")
+	if err != nil {
+		return fmt.Errorf("get proxmox version: %w", err)
+	}
+
+	var resp versionResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return fmt.Errorf("decode version response: %w", err)
+	}
+
+	version := resp.Data.Version
+	if version == "" {
+		return fmt.Errorf("proxmox version response missing 'version' field")
+	}
+
+	got, err := parsePVEVersion(version)
+	if err != nil {
+		return fmt.Errorf("parse proxmox version %q: %w", version, err)
+	}
+
+	required := minTermProxyVersion
+	if got[0] < required[0] ||
+		(got[0] == required[0] && got[1] < required[1]) ||
+		(got[0] == required[0] && got[1] == required[1] && got[2] < required[2]) {
+		return fmt.Errorf(
+			"proxmox VE %s does not support termproxy connection type: "+
+				"requires pve-manager >= %d.%d.%d "+
+				"(pve-container 6.1.3 + pve-manager 9.1.9, released 2026-04-21); "+
+				"use --connection-type ssh instead, or upgrade your proxmox host",
+			version, required[0], required[1], required[2],
+		)
+	}
+	return nil
+}
+
+// parsePVEVersion parses a pve-manager version string (e.g. "9.1.9") into
+// a [3]int of {major, minor, patch}. Trailing components (e.g. "~beta1") are
+// ignored; missing components default to 0.
+func parsePVEVersion(v string) ([3]int, error) {
+	// Strip any tilde suffix (pre-release notation used in Debian versioning).
+	v = strings.SplitN(v, "~", 2)[0]
+	parts := strings.SplitN(v, ".", 3)
+	var out [3]int
+	for i := range min(len(parts), 3) {
+		n, err := strconv.Atoi(parts[i])
+		if err != nil {
+			return out, fmt.Errorf("component %d %q: %w", i, parts[i], err)
+		}
+		out[i] = n
+	}
+	return out, nil
+}
+
+// InsecureHTTPClient returns an *http.Client that skips TLS certificate
+// verification. Used by the termproxy WebSocket dialer to connect to
+// Proxmox hosts that use self-signed certificates.
+func InsecureHTTPClient() *http.Client {
+	return &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true, //nolint:gosec // Proxmox self-signed certs
+			},
+		},
 	}
 }

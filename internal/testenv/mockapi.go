@@ -3,6 +3,7 @@ package testenv
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -18,13 +19,20 @@ type MockAPIServer struct {
 	mu         sync.RWMutex
 	nodes      map[string]*mockNode // node name → guests
 	token      string               // expected "tokenID=tokenSecret"
+	localNode  string               // the node reported as local in cluster/status
 	server     *httptest.Server     // non-nil for test mode (httptest)
 	httpServer *http.Server         // non-nil for standalone mode
 }
 
 type mockNode struct {
-	LXC  []mockGuest
-	QEMU []mockGuest
+	LXC         []mockGuest
+	QEMU        []mockGuest
+	TermProxies map[string]mockTermProxy // key: "lxc/<vmid>" or "qemu/<vmid>"
+}
+
+type mockTermProxy struct {
+	Ticket string
+	Port   int
 }
 
 type mockGuest struct {
@@ -44,8 +52,10 @@ func NewMockAPIServer(tokenID, tokenSecret string) *MockAPIServer {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api2/json/nodes", m.handleNodes)
 	// Use a catch-all pattern and parse the path manually for
-	// /api2/json/nodes/{node}/lxc and /api2/json/nodes/{node}/qemu
-	mux.HandleFunc("/api2/json/nodes/", m.handleNodeGuests)
+	// /api2/json/nodes/{node}/lxc, /api2/json/nodes/{node}/qemu,
+	// and /api2/json/nodes/{node}/{lxc|qemu}/{vmid}/termproxy
+	mux.HandleFunc("/api2/json/nodes/", m.handleNodePaths)
+	mux.HandleFunc("/api2/json/cluster/status", m.handleClusterStatus)
 	m.server = httptest.NewTLSServer(mux)
 	return m
 }
@@ -67,7 +77,8 @@ func (m *MockAPIServer) Close() {
 func (m *MockAPIServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api2/json/nodes", m.handleNodes)
-	mux.HandleFunc("/api2/json/nodes/", m.handleNodeGuests)
+	mux.HandleFunc("/api2/json/nodes/", m.handleNodePaths)
+	mux.HandleFunc("/api2/json/cluster/status", m.handleClusterStatus)
 	return mux
 }
 
@@ -112,6 +123,17 @@ func (m *MockAPIServer) ListenAndServe(addr string) error {
 	return m.httpServer.Serve(ln)
 }
 
+// SetLocalNode marks a node as the "local" node returned by
+// GET /api2/json/cluster/status. This simulates which Proxmox host
+// the --api-url points at.
+func (m *MockAPIServer) SetLocalNode(node string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.localNode = node
+	// Ensure the node exists in the map.
+	m.ensureNode(node)
+}
+
 // AddLXC adds a mock LXC container to a node.
 func (m *MockAPIServer) AddLXC(node string, vmid int, name, status string) {
 	m.mu.Lock()
@@ -128,9 +150,24 @@ func (m *MockAPIServer) AddQEMU(node string, vmid int, name, status string) {
 	n.QEMU = append(n.QEMU, mockGuest{VMID: vmid, Name: name, Status: status})
 }
 
+// AddTermProxy registers a mock termproxy ticket for a guest.
+// kind must be "lxc" or "qemu".
+func (m *MockAPIServer) AddTermProxy(node, kind string, vmid int, ticket string, port int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := m.ensureNode(node)
+	if n.TermProxies == nil {
+		n.TermProxies = make(map[string]mockTermProxy)
+	}
+	key := fmt.Sprintf("%s/%d", kind, vmid)
+	n.TermProxies[key] = mockTermProxy{Ticket: ticket, Port: port}
+}
+
 func (m *MockAPIServer) ensureNode(name string) *mockNode {
 	if m.nodes[name] == nil {
-		m.nodes[name] = &mockNode{}
+		m.nodes[name] = &mockNode{
+			TermProxies: make(map[string]mockTermProxy),
+		}
 	}
 	return m.nodes[name]
 }
@@ -163,21 +200,64 @@ func (m *MockAPIServer) handleNodes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{apiDataKey: entries})
 }
 
-func (m *MockAPIServer) handleNodeGuests(w http.ResponseWriter, r *http.Request) {
+func (m *MockAPIServer) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
+	if !m.checkAuth(w, r) {
+		return
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	type clusterEntry struct {
+		Type  string `json:"type"`
+		Name  string `json:"name"`
+		Local int    `json:"local"`
+	}
+	var entries []clusterEntry
+	for name := range m.nodes {
+		local := 0
+		if name == m.localNode {
+			local = 1
+		}
+		entries = append(entries, clusterEntry{Type: "node", Name: name, Local: local})
+	}
+	writeJSON(w, map[string]any{apiDataKey: entries})
+}
+
+// handleNodePaths dispatches /api2/json/nodes/{node}/... requests:
+//   - GET  /api2/json/nodes/{node}/lxc      → list LXC guests
+//   - GET  /api2/json/nodes/{node}/qemu     → list QEMU guests
+//   - POST /api2/json/nodes/{node}/{lxc|qemu}/{vmid}/termproxy → create termproxy ticket
+func (m *MockAPIServer) handleNodePaths(w http.ResponseWriter, r *http.Request) {
 	if !m.checkAuth(w, r) {
 		return
 	}
 
-	// Parse: /api2/json/nodes/{node}/lxc or /api2/json/nodes/{node}/qemu
+	// Strip prefix: /api2/json/nodes/
 	path := strings.TrimPrefix(r.URL.Path, "/api2/json/nodes/")
-	parts := strings.SplitN(path, "/", 2)
-	if len(parts) != 2 {
+	parts := strings.Split(path, "/")
+
+	if len(parts) < 2 {
 		http.NotFound(w, r)
 		return
 	}
 	nodeName := parts[0]
-	kind := parts[1] // "lxc" or "qemu"
 
+	// /api2/json/nodes/{node}/{lxc|qemu}/{vmid}/termproxy
+	if len(parts) == 4 && parts[3] == "termproxy" && r.Method == http.MethodPost {
+		m.handleTermProxy(w, r, nodeName, parts[1], parts[2])
+		return
+	}
+
+	// /api2/json/nodes/{node}/lxc or /api2/json/nodes/{node}/qemu
+	if len(parts) == 2 {
+		m.handleNodeGuests(w, r, nodeName, parts[1])
+		return
+	}
+
+	http.NotFound(w, r)
+}
+
+func (m *MockAPIServer) handleNodeGuests(w http.ResponseWriter, _ *http.Request, nodeName, kind string) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -194,11 +274,38 @@ func (m *MockAPIServer) handleNodeGuests(w http.ResponseWriter, r *http.Request)
 	case guestTypeQEMU:
 		guests = n.QEMU
 	default:
-		http.NotFound(w, r)
+		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 
 	writeJSON(w, map[string]any{apiDataKey: guests})
+}
+
+func (m *MockAPIServer) handleTermProxy(w http.ResponseWriter, _ *http.Request, nodeName, kind, vmidStr string) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	n := m.nodes[nodeName]
+	if n == nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	key := fmt.Sprintf("%s/%s", kind, vmidStr)
+	tp, ok := n.TermProxies[key]
+	if !ok {
+		http.Error(w, "termproxy not configured for this guest", http.StatusNotFound)
+		return
+	}
+
+	// Proxmox returns port as a JSON string, not a number.
+	writeJSON(w, map[string]any{
+		apiDataKey: map[string]any{
+			"ticket": tp.Ticket,
+			"port":   fmt.Sprintf("%d", tp.Port),
+			"user":   "root@pam",
+		},
+	})
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
