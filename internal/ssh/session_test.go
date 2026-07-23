@@ -82,8 +82,8 @@ func TestParsePtyReq(t *testing.T) {
 		},
 		{
 			name:       "no modes section",
-			data:       buildPtyReqPayload("xterm", 100, 50, 0, 0, nil),
-			wantTerm:   "xterm",
+			data:       buildPtyReqPayload(termXterm, 100, 50, 0, 0, nil),
+			wantTerm:   termXterm,
 			wantWidth:  100,
 			wantHeight: 50,
 		},

@@ -15,7 +15,10 @@ import (
 )
 
 // AdminSessionHandler is called for every authenticated admin session.
-type AdminSessionHandler func(channel gossh.Channel, reqs <-chan *gossh.Request, repo db.Repository)
+// conn is the underlying server connection; its User() method returns
+// the SSH username the client supplied, which is used to determine
+// whether to proxy directly to a guest or run the admin CLI.
+type AdminSessionHandler func(channel gossh.Channel, reqs <-chan *gossh.Request, conn *gossh.ServerConn, repo db.Repository)
 
 // DefaultAdminHandler returns an AdminSessionHandler that runs
 // CLI commands received via SSH exec requests.
@@ -24,7 +27,7 @@ func DefaultAdminHandler( //nolint:gocognit // SSH session handler
 	discoverer proxmox.DiscovererFactory,
 	logger *log.Logger,
 ) AdminSessionHandler {
-	return func(channel gossh.Channel, reqs <-chan *gossh.Request, repo db.Repository) {
+	return func(channel gossh.Channel, reqs <-chan *gossh.Request, conn *gossh.ServerConn, repo db.Repository) {
 		defer func() { _ = channel.Close() }()
 
 		// Wait for shell or exec request.
@@ -32,9 +35,12 @@ func DefaultAdminHandler( //nolint:gocognit // SSH session handler
 		var ptyReq *PtyRequest
 		var remaining <-chan *gossh.Request
 
+		// Capture the SSH username so we can detect a direct guest-proxy request.
+		identifier := conn.User()
+
 		for req := range reqs {
 			switch req.Type {
-			case "pty-req":
+			case reqTypePTY:
 				p, err := parsePtyReq(req.Payload)
 				if err != nil {
 					logger.Printf("admin: bad pty-req: %v", err)
@@ -48,7 +54,7 @@ func DefaultAdminHandler( //nolint:gocognit // SSH session handler
 					_ = req.Reply(true, nil)
 				}
 
-			case "exec":
+			case reqTypeExec:
 				if req.WantReply {
 					_ = req.Reply(true, nil)
 				}
@@ -62,7 +68,7 @@ func DefaultAdminHandler( //nolint:gocognit // SSH session handler
 				remaining = reqs
 				goto handleCommand
 
-			case "shell":
+			case reqTypeShell:
 				if req.WantReply {
 					_ = req.Reply(true, nil)
 				}
@@ -79,6 +85,13 @@ func DefaultAdminHandler( //nolint:gocognit // SSH session handler
 		return
 
 	handleCommand:
+		// If the SSH username looks like a guest identifier (e.g. "ct100",
+		// "vm200", "webserver"), proxy the admin directly to that guest.
+		// Admins bypass HasAccess checks — they can reach any guest.
+		if tryAdminProxy(context.Background(), identifier, channel, remaining, repo, proxier, ptyReq, logger) {
+			return
+		}
+
 		// Discard remaining requests in background
 		go func() {
 			for req := range remaining {
@@ -142,6 +155,62 @@ func DefaultAdminHandler( //nolint:gocognit // SSH session handler
 			}
 		}
 	}
+}
+
+// tryAdminProxy attempts to resolve the SSH username as a guest identifier and,
+// if successful, proxies the admin channel directly to that guest.
+// It returns true if the proxy was attempted (caller should return), false if
+// the caller should fall through to the CLI handler.
+//
+// Admins bypass HasAccess checks and can reach any guest unconditionally.
+func tryAdminProxy(
+	ctx context.Context,
+	identifier string,
+	channel gossh.Channel,
+	remaining <-chan *gossh.Request,
+	repo db.Repository,
+	proxier GuestProxier,
+	ptyReq *PtyRequest,
+	logger *log.Logger,
+) bool {
+	if identifier == "" || identifier == "root" {
+		return false
+	}
+
+	guests, err := repo.ListGuests(ctx)
+	if err != nil {
+		return false
+	}
+
+	g, err := resolveGuest(identifier, guests)
+	if err != nil {
+		return false
+	}
+
+	inst := findInstanceByID(ctx, repo, g.InstanceID, logger)
+	if inst == nil {
+		return false
+	}
+
+	// Forward remaining SSH requests to the proxy via a buffered bridge channel.
+	proxyReqs := make(chan *gossh.Request, 4)
+	go func() {
+		for req := range remaining {
+			select {
+			case proxyReqs <- req:
+			default:
+				if req.WantReply {
+					_ = req.Reply(false, nil)
+				}
+			}
+		}
+		close(proxyReqs)
+	}()
+
+	if proxyErr := proxier.ProxyToGuest(channel, proxyReqs, g, inst, ptyReq, logger); proxyErr != nil {
+		logger.Printf("admin: proxy to guest %q error: %v", g.Name, proxyErr)
+	}
+	return true
 }
 
 // splitArgs does a simple shell-like split of a command string.
