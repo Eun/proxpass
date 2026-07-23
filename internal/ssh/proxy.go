@@ -32,8 +32,12 @@ const (
 )
 
 // handleClientSession is invoked for every authenticated client channel.
-// The SSH username on the connection is used to resolve the target guest.
-// Resolution order: numeric VMID → type+VMID (e.g. ct100) → name.
+// The guest target is passed as the SSH exec command:
+//
+//	ssh -p 2222 host ct100
+//	ssh -p 2222 host rome:ct101
+//
+// omitting the command (a plain shell) writes a help message and closes.
 //
 //nolint:gocognit // SSH session handling requires sequential branching
 func handleClientSession(
@@ -47,69 +51,12 @@ func handleClientSession(
 	defer func() { _ = channel.Close() }()
 
 	ctx := context.Background()
-	identifier := conn.User()
 	clientName := conn.Permissions.Extensions["client_name"]
 
-	guests, err := repo.ListGuests(ctx)
-	if err != nil {
-		logger.Printf("client %s: failed to list guests: %v", clientName, err)
-		_, _ = fmt.Fprintf(channel.Stderr(), "internal error\r\n")
-		return
-	}
-
-	guest, err := resolveGuest(identifier, guests)
-	if err != nil {
-		logger.Printf("client %s: %v", clientName, err)
-		_, _ = fmt.Fprintf(channel.Stderr(), "%v\r\n", err)
-		return
-	}
-
-	// Resolve client and check access.
-	client, err := repo.GetClientByName(ctx, clientName)
-	if err != nil {
-		logger.Printf("client %s: lookup failed: %v", clientName, err)
-		_, _ = fmt.Fprintf(channel.Stderr(), "internal error\r\n")
-		return
-	}
-
-	ok, err := repo.HasAccess(ctx, client.ID, guest.ID)
-	if err != nil {
-		logger.Printf("client %s: access check failed: %v", clientName, err)
-		_, _ = fmt.Fprintf(channel.Stderr(), "internal error\r\n")
-		return
-	}
-	if !ok {
-		logger.Printf("client %s: access denied to guest %s", clientName, guest.Name)
-		_, _ = fmt.Fprintf(channel.Stderr(), "access denied\r\n")
-		return
-	}
-
-	// Find the Proxmox instance that owns this guest.
-	instances, err := repo.ListProxmoxInstances(ctx)
-	if err != nil {
-		logger.Printf("client %s: failed to list instances: %v", clientName, err)
-		_, _ = fmt.Fprintf(channel.Stderr(), "internal error\r\n")
-		return
-	}
-
-	var inst *models.ProxmoxInstance
-	for _, i := range instances {
-		if i.ID == guest.InstanceID {
-			inst = i
-			break
-		}
-	}
-	if inst == nil {
-		logger.Printf("client %s: proxmox instance %d not found for guest %s",
-			clientName, guest.InstanceID, guest.Name)
-		_, _ = fmt.Fprintf(channel.Stderr(), "internal error\r\n")
-		return
-	}
-
-	// Collect the initial PTY request (if any) before proxying.
-	var pty *PtyRequest
-	// We drain requests in the background once the proxy starts, but we need
-	// to handle the initial pty-req and shell/exec first.
+	// Wait for the exec request that carries the guest identifier.
+	var execCmd string
+	var ptyReq *PtyRequest
+	var remaining <-chan *gossh.Request
 	for req := range reqs {
 		switch req.Type {
 		case reqTypePTY:
@@ -121,21 +68,40 @@ func handleClientSession(
 				}
 				continue
 			}
-			pty = p
+			ptyReq = p
 			if req.WantReply {
 				_ = req.Reply(true, nil)
 			}
 
-		case reqTypeShell, reqTypeExec:
+		case reqTypeExec:
 			if req.WantReply {
 				_ = req.Reply(true, nil)
 			}
-			// Now proxy the session. Window-change requests that arrive
-			// later are forwarded inside proxyToGuest.
-			if err := proxier.ProxyToGuest(channel, reqs, guest, inst, pty, logger); err != nil {
-				logger.Printf("client %s: proxy error: %v", clientName, err)
-				_, _ = fmt.Fprintf(channel.Stderr(), "proxy error: %v\r\n", err)
+			if len(req.Payload) >= 4 {
+				cmdLen := int(req.Payload[0])<<24 | int(req.Payload[1])<<16 | int(req.Payload[2])<<8 | int(req.Payload[3])
+				if len(req.Payload) >= 4+cmdLen {
+					execCmd = string(req.Payload[4 : 4+cmdLen])
+				}
 			}
+			remaining = reqs
+			goto handleGuest
+
+		case reqTypeShell:
+			// Plain shell without an identifier: tell the client how to use proxpass.
+			if req.WantReply {
+				_ = req.Reply(true, nil)
+			}
+			var w io.Writer
+			if ptyReq != nil {
+				w = newCRLFWriter(channel.Stderr())
+			} else {
+				w = channel.Stderr()
+			}
+			_, _ = fmt.Fprintf(w,
+				"Usage: ssh <host> [instance:]<identifier>\r\n\r\n"+
+					"Identifier can be a VMID (e.g. 100), type+VMID (e.g. ct100), or name (e.g. webserver).\r\n"+
+					"If multiple guests match, prefix with the instance name (e.g. rome:ct101).\r\n")
+			go gossh.DiscardRequests(reqs)
 			return
 
 		default:
@@ -143,6 +109,63 @@ func handleClientSession(
 				_ = req.Reply(false, nil)
 			}
 		}
+	}
+	return
+
+handleGuest:
+	// Parse the exec command as the guest identifier.
+	instName, identifier := parseGuestTarget(execCmd)
+
+	guests, err := repo.ListGuests(ctx)
+	if err != nil {
+		logger.Printf("client %s: failed to list guests: %v", clientName, err)
+		writeErr(channel, ptyReq, "internal error")
+		go gossh.DiscardRequests(remaining)
+		return
+	}
+
+	instances, err := repo.ListProxmoxInstances(ctx)
+	if err != nil {
+		logger.Printf("client %s: failed to list instances: %v", clientName, err)
+		writeErr(channel, ptyReq, "internal error")
+		go gossh.DiscardRequests(remaining)
+		return
+	}
+
+	guest, inst, err := resolveGuestAndInstance(identifier, instName, guests, instances)
+	if err != nil {
+		logger.Printf("client %s: %v", clientName, err)
+		writeErr(channel, ptyReq, err.Error())
+		go gossh.DiscardRequests(remaining)
+		return
+	}
+
+	// Resolve client and check access.
+	client, err := repo.GetClientByName(ctx, clientName)
+	if err != nil {
+		logger.Printf("client %s: lookup failed: %v", clientName, err)
+		writeErr(channel, ptyReq, "internal error")
+		go gossh.DiscardRequests(remaining)
+		return
+	}
+
+	ok, err := repo.HasAccess(ctx, client.ID, guest.ID)
+	if err != nil {
+		logger.Printf("client %s: access check failed: %v", clientName, err)
+		writeErr(channel, ptyReq, "internal error")
+		go gossh.DiscardRequests(remaining)
+		return
+	}
+	if !ok {
+		logger.Printf("client %s: access denied to guest %s", clientName, guest.Name)
+		writeErr(channel, ptyReq, "access denied")
+		go gossh.DiscardRequests(remaining)
+		return
+	}
+
+	if err := proxier.ProxyToGuest(channel, remaining, guest, inst, ptyReq, logger); err != nil {
+		logger.Printf("client %s: proxy error: %v", clientName, err)
+		writeErr(channel, ptyReq, fmt.Sprintf("proxy error: %v", err))
 	}
 }
 
@@ -201,7 +224,7 @@ func proxyToGuest(
 	// to hang or immediately exit.
 	//
 	// Use the client's PTY parameters when available; fall back to a sane
-	// default (xterm-256color 80×24) for non-interactive callers (e.g. ssh -T).
+	// default (xterm-256color 80¤24) for non-interactive callers (e.g. ssh -T).
 	effectivePty := ptyReq
 	if effectivePty == nil {
 		effectivePty = &PtyRequest{Term: termXterm256Color, Width: 80, Height: 24}
@@ -267,7 +290,7 @@ func proxyToGuest(
 						_ = session.WindowChange(int(h), int(w))
 					}
 					if req.WantReply {
-						_ = req.Reply(parseErr == nil, nil)
+						_ = req.Reply((parseErr == nil), nil)
 					}
 				default:
 					if req.WantReply {
@@ -305,7 +328,7 @@ func proxyToGuest(
 	err = session.Wait()
 	// Signal the request-forwarding goroutine and tear down the remote
 	// side.  We do NOT close clientChan so the admin handler can reuse
-	// the channel for the TUI after the proxy session ends.
+	// the channel for the TIU after the proxy session ends.
 	close(done)
 	_ = remoteStdin.Close()
 	_ = session.Close()
@@ -314,21 +337,88 @@ func proxyToGuest(
 	return err
 }
 
-// resolveGuest looks up a guest by the identifier the SSH client
-// provided as the username. Resolution order:
+// parseGuestTarget splits an optional "instance:identifier" string.
+// If no colon is present, instanceName is empty.
+func parseGuestTarget(s string) (instanceName, identifier string) {
+	if idx := strings.IndexByte(s, ':'); idx >= 0 {
+		return s[:idx], s[idx+1:]
+	}
+	return "", s
+}
+
+// resolveGuestAndInstance looks up a guest and its Proxmox instance by identifier
+// and an optional instance name filter.
 //
-//  1. Numeric VMID — e.g. "100" matches ProxmoxID 100.
-//     If multiple guests share the same VMID (across instances),
-//     an error is returned asking the user to use type+id.
-//  2. Type+VMID — e.g. "ct100" or "vm200" (case-insensitive).
-//     Always unique within a type.
-//  3. Guest name — e.g. "webserver" (case-insensitive).
-//     If multiple guests share the same name, an error is returned.
+// Resolution order for identifier:
+//  1. Numeric VMID.
+//  2. Type+VMID (e.g. "ct100", "vm200").
+//  3. Guest name (case-insensitive).
 //
-//nolint:gocognit // sequential resolution tiers require nested checks
+// If instName is non-empty, only guests on that instance are considered.
+// If multiple guests match, an error is returned hinting to use instance:identifier.
+func resolveGuestAndInstance(
+	identifier string,
+	instName string,
+	guests []*models.Guest,
+	instances []*models.ProxmoxInstance,
+) (*models.Guest, *models.ProxmoxInstance, error) {
+	// Build instance lookup map by ID and by name.
+	instByID := make(map[int64]*models.ProxmoxInstance, len(instances))
+	var instFilterID int64 = -1 // -1 means no filter
+	switch {
+	case instName != "":
+		found := false
+		for _, inst := range instances {
+			instByID[inst.ID] = inst
+			if strings.EqualFold(inst.Name, instName) {
+				instFilterID = inst.ID
+				found = true
+			}
+		}
+		if !found {
+			return nil, nil, fmt.Errorf("instance %q not found", instName)
+		}
+	default:
+		for _, inst := range instances {
+			instByID[inst.ID] = inst
+		}
+	}
+
+	// Filter guests by instance if a filter was given.
+	var pool []*models.Guest
+	if instFilterID >= 0 {
+		for _, g := range guests {
+			if g.InstanceID == instFilterID {
+				pool = append(pool, g)
+			}
+		}
+	} else {
+		pool = guests
+	}
+
+	guest, err := resolveGuest(identifier, pool, instName == "" /* hintInstance*/)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	inst := instByID[guest.InstanceID]
+	if inst == nil {
+		return nil, nil, fmt.Errorf("proxmox instance for guest %q not found", guest.Name)
+	}
+	return guest, inst, nil
+}
+
+// resolveGuest looks up a guest by the identifier within the given pool.
+// Resolution order: numeric VMID → type+VMID (ct100, vm200) ‒ name.
+//
+// hintInstance controls whether error messages suggest using the
+// instance:identifier format to disambiguate.
+//
+//nolint:gocognit,nestif // sequential resolution tiers require nested checks
 func resolveGuest(
 	identifier string,
 	guests []*models.Guest,
+	hintInstance bool,
 ) (*models.Guest, error) {
 	lower := strings.ToLower(identifier)
 
@@ -344,13 +434,16 @@ func resolveGuest(
 			return matches[0], nil
 		}
 		if len(matches) > 1 {
+			if hintInstance {
+				return nil, fmt.Errorf(
+					"VMID %d matches %d guests; use instance:identifier (see 'guest ls')",
+					vmid, len(matches))
+			}
 			return nil, fmt.Errorf(
-				"VMID %d matches %d guests; use type+id instead "+
-					"(e.g. %s%d)",
-				vmid, len(matches),
-				matches[0].Type, vmid)
+				"VMID %d matches %d guests; use type+id instead (e.g. %s%d)",
+				vmid, len(matches), matches[0].Type, vmid)
 		}
-		// No match by VMID — fall through to other methods.
+		// No match by VMID; fall through to other methods.
 	}
 
 	// --- 2. Try type+VMID (e.g. "ct100", "vm200") ---
@@ -359,12 +452,9 @@ func resolveGuest(
 	} {
 		p := string(prefix)
 		if strings.HasPrefix(lower, p) {
-			if vmid, err := strconv.Atoi(
-				lower[len(p):],
-			); err == nil {
+			if vmid, err := strconv.Atoi(lower[len(p):]); err == nil {
 				for _, g := range guests {
-					if g.Type == prefix &&
-						g.ProxmoxID == vmid {
+					if g.Type == prefix && g.ProxmoxID == vmid {
 						return g, nil
 					}
 				}
@@ -383,32 +473,31 @@ func resolveGuest(
 		return matches[0], nil
 	}
 	if len(matches) > 1 {
+		if hintInstance {
+			return nil, fmt.Errorf(
+				"name %q matches %d guests; use instance:identifier (see 'guest ls')",
+				identifier, len(matches))
+		}
 		var hints []string
 		for _, g := range matches {
-			hints = append(hints,
-				fmt.Sprintf("%s%d", g.Type, g.ProxmoxID))
+			hints = append(hints, fmt.Sprintf("%s%d", g.Type, g.ProxmoxID))
 		}
 		return nil, fmt.Errorf(
 			"name %q matches %d guests; use a unique id: %s",
-			identifier, len(matches),
-			strings.Join(hints, ", "))
+			identifier, len(matches), strings.Join(hints, ", "))
 	}
 
 	return nil, fmt.Errorf("guest %q not found", identifier)
 }
 
-// findInstanceByID looks up a ProxmoxInstance by its database ID.
-// Returns nil when not found or when the repository lookup fails.
-func findInstanceByID(ctx context.Context, repo db.Repository, id int64, logger *log.Logger) *models.ProxmoxInstance {
-	instances, err := repo.ListProxmoxInstances(ctx)
-	if err != nil {
-		logger.Printf("findInstanceByID: failed to list instances: %v", err)
-		return nil
+// writeErr writes a message to the channel's stderr, using \r\n line endings
+// when a PTY is active.
+func writeErr(channel gossh.Channel, ptyReq *PtyRequest, msg string) {
+	var w io.Writer
+	if ptyReq != nil {
+		w = newCRLFWriter(channel.Stderr())
+	} else {
+		w = channel.Stderr()
 	}
-	for _, inst := range instances {
-		if inst.ID == id {
-			return inst
-		}
-	}
-	return nil
+	_, _ = fmt.Fprintf(w, "%s\r\n", msg)
 }
