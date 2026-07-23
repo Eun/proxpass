@@ -49,6 +49,8 @@ func proxyViaTermProxy(
 	if err != nil {
 		return fmt.Errorf("create termproxy ticket: %w", err)
 	}
+	logger.Printf("termproxy: ticket obtained (port=%d user=%q ticket-prefix=%q)",
+		ticket.Port, ticket.User, truncateTicket(ticket.Ticket))
 
 	// --- Step 2: Build WebSocket URL ---
 	// The WebSocket connects to the same host as the API but on the port
@@ -90,16 +92,24 @@ func proxyViaTermProxy(
 	defer func() { _ = conn.CloseNow() }()
 
 	// --- Step 4: Read handshake frame "OK" ---
+	// termproxy sends "OK" immediately after the WebSocket upgrade.
 	// Proxmox closes the connection (EOF) without sending "OK" when the
 	// vncticket validation fails. Log enough context to diagnose.
-	_, handshake, err := conn.Read(ctx)
+	// Any bytes after "OK" in the same frame are the start of the terminal stream.
+	_, firstMsg, err := conn.Read(ctx)
 	if err != nil {
 		logger.Printf("termproxy: handshake EOF for url=%s node=%s vmid=%d",
 			wsURL, inst.Node, guest.ProxmoxID)
 		return fmt.Errorf("read termproxy handshake: %w", err)
 	}
-	if string(handshake) != "OK" {
-		return fmt.Errorf("unexpected termproxy handshake: %q", handshake)
+	if len(firstMsg) < 2 || firstMsg[0] != 'O' || firstMsg[1] != 'K' {
+		return fmt.Errorf("unexpected termproxy handshake: %q", firstMsg)
+	}
+	// Forward any terminal data that arrived in the same frame as "OK".
+	if len(firstMsg) > 2 {
+		if _, err := clientChan.Write(firstMsg[2:]); err != nil {
+			return fmt.Errorf("write initial terminal data: %w", err)
+		}
 	}
 
 	// --- Step 5: Send initial resize frame if PTY was requested ---
@@ -188,7 +198,17 @@ func proxyViaTermProxy(
 	return nil
 }
 
-// buildTermProxyWebSocketURL constructs the WebSocket URL to connect directly
+// truncateTicket returns the first 20 bytes of a ticket value followed by "...",
+// so debug logs are informative without leaking the full credential.
+func truncateTicket(s string) string {
+	const n = 20
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
+
+// buildVNCWebSocketURL constructs the WebSocket URL to connect directly
 // to the termproxy binary, which listens on the port returned by the termproxy
 // POST endpoint.
 //
