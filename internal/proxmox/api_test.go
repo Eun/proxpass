@@ -59,6 +59,40 @@ func TestAPIClientDiscoverGuests(t *testing.T) {
 	}
 }
 
+// TestAPIClientDiscoverGuestsFQDN verifies that SSHHost as a FQDN resolves
+// to the correct short Proxmox node name via FQDN-prefix matching.
+func TestAPIClientDiscoverGuestsFQDN(t *testing.T) {
+	api := testenv.NewMockAPIServer(testTokenID, "secret123")
+	defer api.Close()
+
+	api.AddLXC("rome", 100, "ct1", "running")
+	api.AddQEMU("london", 200, "vm1", "running") // different node — must not appear
+
+	inst := &models.ProxmoxInstance{
+		APIURL:         api.URL(),
+		APITokenID:     testTokenID,
+		APITokenSecret: "secret123",
+		// FQDN: should match node "rome" via prefix "rome."
+		SSHHost: "rome.erika.salzmann.berlin",
+	}
+
+	client, err := proxmox.NewAPIClient(inst)
+	if err != nil {
+		t.Fatalf("NewAPIClient: %v", err)
+	}
+	guests, err := client.DiscoverGuests(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverGuests: %v", err)
+	}
+
+	if len(guests) != 1 {
+		t.Fatalf("expected 1 guest from node rome, got %d", len(guests))
+	}
+	if guests[0].Name != "ct1" {
+		t.Errorf("expected guest ct1, got %s", guests[0].Name)
+	}
+}
+
 func TestAPIClientBadAuth(t *testing.T) {
 	api := testenv.NewMockAPIServer(testTokenID, "secret123")
 	defer api.Close()
