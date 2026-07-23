@@ -85,10 +85,15 @@ func DefaultAdminHandler( //nolint:gocognit // SSH session handler
 		return
 
 	handleCommand:
+		// If an exec command was provided (e.g. "ssh dsm@host guest ls"), always
+		// run the CLI regardless of the SSH username. The username is used only
+		// for direct shell sessions (no exec payload).
+		//
 		// If the SSH username looks like a guest identifier (e.g. "ct100",
-		// "vm200", "webserver"), proxy the admin directly to that guest.
-		// Admins bypass HasAccess checks — they can reach any guest.
-		proxied, proxyErr := tryAdminProxy(context.Background(), identifier, channel, remaining, repo, proxier, ptyReq, logger)
+		// "vm200", "webserver") and no exec command was given, proxy the admin
+		// directly to that guest. Admins bypass HasAccess checks — they can
+		// reach any guest.
+		proxied, proxyErr := tryAdminProxy(context.Background(), identifier, execCmd, channel, remaining, repo, proxier, ptyReq, logger)
 		if proxied {
 			return
 		}
@@ -172,19 +177,32 @@ func DefaultAdminHandler( //nolint:gocognit // SSH session handler
 	}
 }
 
+// cliOnlyUsernames is the set of SSH usernames that always open the admin CLI
+// regardless of what guests exist in the database. These are conventional
+// admin usernames; their presence as the SSH username unambiguously signals
+// "I want the CLI, not a guest proxy".
+var cliOnlyUsernames = map[string]bool{
+	"":       true,
+	"root":   true,
+	"admin":  true,
+	"manage": true,
+}
+
 // tryAdminProxy attempts to resolve the SSH username as a guest identifier and,
 // if successful, proxies the admin channel directly to that guest.
 //
 // Return values:
 //   - (true, nil)  — proxy was started; caller must return.
-//   - (false, nil) — identifier is blank or "root"; fall through to the CLI.
-//   - (false, err) — identifier looks like a guest but could not be resolved or
+//   - (false, nil) — username is a CLI-only name, or an exec command was
+//     supplied; fall through to the CLI.
+//   - (false, err) — username looks like a guest but could not be resolved or
 //     proxied; caller should report the error and return.
 //
 // Admins bypass HasAccess checks and can reach any guest unconditionally.
 func tryAdminProxy(
 	ctx context.Context,
 	identifier string,
+	execCmd string,
 	channel gossh.Channel,
 	remaining <-chan *gossh.Request,
 	repo db.Repository,
@@ -192,7 +210,13 @@ func tryAdminProxy(
 	ptyReq *PtyRequest,
 	logger *log.Logger,
 ) (bool, error) {
-	if identifier == "" || identifier == "root" {
+	// A CLI-only username always goes straight to the admin CLI.
+	if cliOnlyUsernames[identifier] {
+		return false, nil
+	}
+	// An exec payload (e.g. "guest ls") always runs the CLI, even when the
+	// SSH username looks like a guest identifier.
+	if execCmd != "" {
 		return false, nil
 	}
 

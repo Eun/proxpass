@@ -293,3 +293,108 @@ func TestAdminWithUnknownUsernameShowsError(t *testing.T) {
 
 	t.Logf("output for unknown username %q: %q", "zzz9999", output)
 }
+
+// sshExecOutput dials the proxpass server, runs the given command via SSH exec
+// (like "ssh user@host <command>"), collects stdout+stderr, and returns the
+// combined output.
+func sshExecOutput(t *testing.T, addr, username, command string, signer gossh.Signer) string {
+	t.Helper()
+
+	cfg := &gossh.ClientConfig{
+		User:            username,
+		Auth:            []gossh.AuthMethod{gossh.PublicKeys(signer)},
+		HostKeyCallback: gossh.InsecureIgnoreHostKey(), //nolint:gosec // test only
+	}
+
+	client, err := gossh.Dial("tcp", addr, cfg)
+	if err != nil {
+		t.Fatalf("dial proxpass (%s): %v", username, err)
+	}
+	defer client.Close()
+
+	sess, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("new session: %v", err)
+	}
+
+	var buf strings.Builder
+	sess.Stdout = &buf
+	sess.Stderr = &buf
+
+	_ = sess.Run(command)
+	return buf.String()
+}
+
+// TestAdminWithExecCommandRunsCLI verifies that when an exec command is
+// supplied, the CLI is always run — even when the SSH username looks like a
+// guest identifier. e.g. "ssh dsm@host guest ls" must run "guest ls", not
+// proxy to a guest named "dsm".
+func TestAdminWithExecCommandRunsCLI(t *testing.T) {
+	addr, adminSigner, mp, cancel := setupAdminTest(t)
+	defer cancel()
+
+	// "ct100" would normally trigger a direct proxy on a plain shell session,
+	// but here we pass an exec command so the CLI must run instead.
+	output := sshExecOutput(t, addr, "ct100", "guest ls", adminSigner)
+
+	if strings.Contains(output, "[mock proxy]") {
+		t.Errorf("expected CLI output, got mock proxy banner; output: %q", output)
+	}
+
+	sessions := mp.RecordedSessions()
+	if len(sessions) != 0 {
+		t.Errorf("expected no proxy sessions when exec command is given, got %d", len(sessions))
+	}
+
+	// The CLI ran: "guest ls" should produce some output (even if the guest
+	// list is non-empty, the command itself should not error out).
+	t.Logf("output for 'ct100' + exec 'guest ls': %q", output)
+}
+
+// TestAdminWithExecCommandUnknownUsernameRunsCLI verifies that even with an
+// unknown username, an exec command always goes to the CLI rather than
+// returning a "guest not found" error.
+func TestAdminWithExecCommandUnknownUsernameRunsCLI(t *testing.T) {
+	addr, adminSigner, mp, cancel := setupAdminTest(t)
+	defer cancel()
+
+	output := sshExecOutput(t, addr, "zzz9999", "guest ls", adminSigner)
+
+	if strings.Contains(output, "[mock proxy]") {
+		t.Errorf("expected CLI output, got mock proxy banner; output: %q", output)
+	}
+	if strings.Contains(output, "not found") {
+		t.Errorf("exec + unknown username should run CLI, not produce a 'not found' error; output: %q", output)
+	}
+
+	sessions := mp.RecordedSessions()
+	if len(sessions) != 0 {
+		t.Errorf("expected no proxy sessions, got %d", len(sessions))
+	}
+
+	t.Logf("output for 'zzz9999' + exec 'guest ls': %q", output)
+}
+
+// TestAdminCLIOnlyUsernamesNeverProxy verifies that the reserved CLI-only
+// usernames (root, admin, manage, empty) always open the admin CLI, never
+// attempting a guest proxy even when guests exist in the database.
+func TestAdminCLIOnlyUsernamesNeverProxy(t *testing.T) {
+	addr, adminSigner, mp, cancel := setupAdminTest(t)
+	defer cancel()
+
+	for _, username := range []string{"root", "admin", "manage"} {
+		username := username
+		t.Run(username, func(t *testing.T) {
+			output := sshShellOutput(t, addr, username, adminSigner)
+
+			if strings.Contains(output, "[mock proxy]") {
+				t.Errorf("username %q: expected CLI, got mock proxy banner; output: %q", username, output)
+			}
+
+			sessions := mp.RecordedSessions()
+			if len(sessions) != 0 {
+				t.Errorf("username %q: expected no proxy sessions, got %d", username, len(sessions))
+			}
+		})
+	}
+}
