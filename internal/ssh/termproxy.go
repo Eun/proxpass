@@ -101,9 +101,18 @@ func proxyViaTermProxy(
 	}
 	defer func() { _ = conn.CloseNow() }()
 
-	// --- Step 5: Read "OK" handshake ---
-	// The first message starts with bytes "OK" (0x4F 0x4B); any bytes after
-	// are the start of the terminal stream. EOF here means auth/ticket failure.
+	// --- Step 5: Send auth line: "<authid>:<vncticket>\n" ---
+	// termproxy reads this first, validates via /access/vncticket, then sends "OK".
+	// authid must be the full API token ID (e.g. root@pam!proxpass) because that
+	// is the identity under which the VNC ticket was assembled.
+	authLine := fmt.Sprintf("%s:%s\n", inst.APITokenID, ticket.Ticket)
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte(authLine)); err != nil {
+		return fmt.Errorf("send auth line: %w", err)
+	}
+
+	// --- Step 6: Read "OK" response ---
+	// termproxy sends "OK" after validating the auth line. Any bytes after
+	// "OK" in the same frame are the start of the terminal stream.
 	_, firstMsg, err := conn.Read(ctx)
 	if err != nil {
 		var closeErr websocket.CloseError
@@ -120,18 +129,7 @@ func proxyViaTermProxy(
 		return fmt.Errorf("unexpected termproxy handshake: %q", firstMsg)
 	}
 
-	// --- Step 6: Send auth line: "<authid>:<vncticket>\n" ---
-	// The termproxy binary POSTs authid+vncticket to /access/vncticket which
-	// calls verify_vnc_ticket(ticket, authid, path, port). The VNC ticket was
-	// assembled during the termproxy POST under the API token identity
-	// (e.g. root@pam!proxpass), so authid must be the full token ID, not the
-	// bare username returned in the 'user' field of the termproxy response.
-	authLine := fmt.Sprintf("%s:%s\n", inst.APITokenID, ticket.Ticket)
-	if err := conn.Write(ctx, websocket.MessageBinary, []byte(authLine)); err != nil {
-		return fmt.Errorf("send auth line: %w", err)
-	}
-
-	// Write any terminal data that came in the same frame as "OK".
+	// Forward any terminal data that arrived in the same frame as "OK".
 	if len(firstMsg) > 2 {
 		if _, err := clientChan.Write(firstMsg[2:]); err != nil {
 			return fmt.Errorf("write initial terminal data: %w", err)
