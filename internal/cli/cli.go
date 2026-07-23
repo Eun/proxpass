@@ -79,12 +79,43 @@ func Build(deps *Deps) *ucli.Command {
 // error here — instead of silently printing help — the user always receives a
 // clear message such as:
 //
-//	Error: unknown command "foobar"; run 'proxpass --help' for usage
+//	Error: unknown command "foobar"; run '--help' for usage
+//	Error: unknown command "foobar"; run 'guest --help' for usage
+//
+// Note: the program name ("proxpass") is intentionally omitted because users
+// connect via 'ssh -p 2222 host <command>' and never type "proxpass" directly.
 func unknownSubcmdAction(_ context.Context, cmd *ucli.Command) error {
 	if cmd.NArg() > 0 {
+		// Build a user-visible command prefix that excludes the root binary name.
+		// cmd.FullName() returns e.g. "proxpass guest"; we drop "proxpass" because
+		// users invoke commands as 'ssh host <command>', not 'proxpass <command>'.
+		prefix := userVisibleName(cmd)
+		if prefix == "" {
+			return fmt.Errorf("unknown command %q; run '--help' for usage",
+				cmd.Args().First())
+		}
 		return fmt.Errorf("unknown command %q; run '%s --help' for usage",
-			cmd.Args().First(), cmd.FullName())
+			cmd.Args().First(), prefix)
 	}
 	// No arguments: fall through to the built-in help output.
 	return ucli.ShowSubcommandHelp(cmd)
+}
+
+// userVisibleName returns the command name as the user sees it over SSH:
+// the root command maps to an empty string (users type nothing before their
+// command), and subcommands return only the part after the root binary name.
+//
+// Example: for the "guest" subcommand, FullName() returns "proxpass guest";
+// this function returns "guest" so the error reads: run 'guest --help'.
+func userVisibleName(cmd *ucli.Command) string {
+	full := cmd.FullName()
+	root := cmd.Root().Name
+	if full == root {
+		return ""
+	}
+	// Strip the root name and the space that follows it.
+	if len(full) > len(root)+1 {
+		return full[len(root)+1:]
+	}
+	return full
 }
