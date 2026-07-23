@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 
 	"proxpass/internal/models"
 )
@@ -19,10 +20,11 @@ type TermProxyTicket struct {
 }
 
 // termProxyResponse is the JSON envelope returned by POST .../termproxy.
+// Proxmox returns the port as a JSON string (e.g. "5900"), not a number.
 type termProxyResponse struct {
 	Data struct {
 		Ticket string `json:"ticket"`
-		Port   int    `json:"port"`
+		Port   string `json:"port"`
 		User   string `json:"user"`
 	} `json:"data"`
 }
@@ -57,9 +59,14 @@ func (c *APIClient) CreateTermProxyTicket(ctx context.Context, node string, gues
 		return nil, fmt.Errorf("decode termproxy response: %w", err)
 	}
 
+	port, err := strconv.Atoi(resp.Data.Port)
+	if err != nil {
+		return nil, fmt.Errorf("decode termproxy port %q: %w", resp.Data.Port, err)
+	}
+
 	return &TermProxyTicket{
 		Ticket: resp.Data.Ticket,
-		Port:   resp.Data.Port,
+		Port:   port,
 		User:   resp.Data.User,
 	}, nil
 }

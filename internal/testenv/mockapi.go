@@ -298,10 +298,11 @@ func (m *MockAPIServer) handleTermProxy(w http.ResponseWriter, _ *http.Request, 
 		return
 	}
 
+	// Proxmox returns port as a JSON string, not a number.
 	writeJSON(w, map[string]any{
 		apiDataKey: map[string]any{
 			"ticket": tp.Ticket,
-			"port":   tp.Port,
+			"port":   fmt.Sprintf("%d", tp.Port),
 			"user":   "root@pam",
 		},
 	})
