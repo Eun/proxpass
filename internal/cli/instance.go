@@ -53,23 +53,34 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 			},
 			{
 				Name:  cmdAdd,
-				Usage: "Add a Proxmox instance",
+				Usage: "Add one or more Proxmox instances",
+				Description: `Adds one or more Proxmox instances to proxpass.
+
+When a single --url is supplied, --name may optionally override the
+automatically resolved node name.  When multiple --url flags are
+specified, --name is disallowed and each instance is named after
+its Proxmox node name.`,
 				Flags: []ucli.Flag{
 					&ucli.StringFlag{
 						Name:  flagName,
-						Usage: "Instance name (optional: if omitted the Proxmox node name is used)",
+						Usage: "Instance name (only valid with a single --url; if omitted the Proxmox node name is used)",
 					},
-					&ucli.StringFlag{Name: "api-url", Required: true, Usage: "Proxmox API URL (e.g. https://pve:8006)"},
+					&ucli.StringSliceFlag{
+						Name:     "url",
+						Required: true,
+						Usage:    "Proxmox API URL — may be repeated to add multiple instances at once (e.g. https://pve:8006)",
+					},
 					&ucli.StringFlag{Name: "token-id", Required: true, Usage: "API token ID (e.g. user@pam!token)"},
 					&ucli.StringFlag{Name: "token-secret", Required: true, Usage: "API token secret"},
 					&ucli.StringFlag{
 						Name:  "connection-type",
 						Value: string(models.ConnectionTypeTermProxy),
-						Usage: `Connection type: "termproxy" (default) or "ssh"`,
+						Usage: `Connection type: "termproxy" (default) or "ssh"; applies to all supplied --url values`,
 					},
 					&ucli.StringFlag{
-						Name:  "ssh-host",
-						Usage: "SSH host (host or host:port); required for --connection-type ssh",
+						Name: "ssh-host",
+						Usage: "SSH host (host or host:port); required for --connection-type ssh with a single --url." +
+							" When multiple --url are given the SSH host is derived from the node name resolved for each URL",
 					},
 					&ucli.StringFlag{Name: "ssh-user", Value: "root", Usage: "SSH username"},
 					&ucli.StringFlag{
@@ -86,6 +97,16 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 					},
 				},
 				Action: func(ctx context.Context, cmd *ucli.Command) error { //nolint:cyclop // CLI command validation is inherently branchy
+					urls := cmd.StringSlice("url")
+
+					// Disallow --name when multiple --url flags were supplied.
+					if len(urls) > 1 && cmd.String(flagName) != "" {
+						return fmt.Errorf(
+							"--name cannot be used when multiple --url flags are specified;" +
+								" each instance will be named after its Proxmox node name",
+						)
+					}
+
 					connType := models.ConnectionType(cmd.String("connection-type"))
 					if connType != models.ConnectionTypeTermProxy && connType != models.ConnectionTypeSSH {
 						return fmt.Errorf("--connection-type must be %q or %q", models.ConnectionTypeTermProxy, models.ConnectionTypeSSH)
@@ -97,9 +118,11 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 
 					//nolint:nestif // SSH key validation is inherently nested
 					if connType == models.ConnectionTypeSSH {
-						// SSH mode: --ssh-host and exactly one key source are required.
-						if cmd.String("ssh-host") == "" {
-							return fmt.Errorf("--ssh-host is required when --connection-type ssh")
+						// When multiple --url values are given, --ssh-host is not
+						// required; the node name resolved from the API is used as
+						// the SSH host instead.
+						if len(urls) == 1 && cmd.String("ssh-host") == "" {
+							return fmt.Errorf("--ssh-host is required when --connection-type ssh and a single --url is specified")
 						}
 						set := 0
 						if keyPath != "" {
@@ -119,22 +142,10 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 						}
 					}
 
-					// Validate api-url before storing: scheme must be http/https
-					// and a port must be explicitly specified.
-					// (Without a scheme, url.Parse treats the host as the scheme
-					// and silently drops the port; without a port, requests go
-					// to the scheme default: 80 or 443.)
-					if err := validateAPIURL(cmd.String("api-url")); err != nil {
-						return err
-					}
-
-					var sshHost string
-					var sshPort int
-					if cmd.String("ssh-host") != "" {
-						var err error
-						sshHost, sshPort, err = parseHostPort(cmd.String("ssh-host"), 22)
-						if err != nil {
-							return fmt.Errorf("invalid --ssh-host: %w", err)
+					// Validate all supplied URLs up-front before touching anything.
+					for _, rawURL := range urls {
+						if err := validateAPIURL(rawURL); err != nil {
+							return err
 						}
 					}
 
@@ -166,73 +177,10 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 						}
 					}
 
-					// Resolve the node name from the API.
-					// This validates that the API URL is reachable and determines
-					// which Proxmox node name corresponds to this instance.
-					nodeName, err := resolveInstanceNode(ctx, cmd.String("api-url"), cmd.String("token-id"), cmd.String("token-secret"), sshHost)
-					if err != nil {
-						return fmt.Errorf("resolving node name: %w", err)
-					}
-
-					// For termproxy, verify the Proxmox version supports API token auth.
-					// This check runs once at instance-add time so the user gets a clear
-					// error immediately rather than at connection time.
-					if connType == models.ConnectionTypeTermProxy {
-						if err := checkTermProxyVersion(ctx, cmd.String("api-url"), cmd.String("token-id"), cmd.String("token-secret")); err != nil {
+					// Add each instance in sequence.
+					for _, rawURL := range urls {
+						if err := addSingleInstance(ctx, deps, cmd, connType, rawURL, sshKeyPEM, pubKeyAuthorized, keyPath); err != nil {
 							return err
-						}
-					}
-
-					instName := cmd.String(flagName)
-					if instName == "" {
-						// Name was not supplied: fall back to the resolved Proxmox node name.
-						instName = nodeName
-					}
-
-					inst := &models.ProxmoxInstance{
-						Name:           instName,
-						APIURL:         cmd.String("api-url"),
-						APITokenID:     cmd.String("token-id"),
-						APITokenSecret: cmd.String("token-secret"),
-						ConnectionType: connType,
-						Node:           nodeName,
-						SSHHost:        sshHost,
-						SSHPort:        sshPort,
-						SSHUser:        cmd.String("ssh-user"),
-						SSHKeyPath:     keyPath,
-						SSHKey:         sshKeyPEM,
-					}
-					if err := deps.Repo.AddProxmoxInstance(ctx, inst); err != nil {
-						return err
-					}
-					fmt.Fprintf(deps.Out, "Instance %q added (connection: %s, node: %s).\n", inst.Name, inst.ConnectionType, inst.Node)
-					if pubKeyAuthorized != "" {
-						fmt.Fprintf(deps.Out, "Public key (add to Proxmox authorized_keys on %s):\n%s", inst.SSHHost, pubKeyAuthorized)
-					}
-
-					// Run discovery on the new instance.
-					if deps.Discoverer != nil {
-						// Re-read to get the DB-assigned ID.
-						instances, err := deps.Repo.ListProxmoxInstances(ctx)
-						if err != nil {
-							return nil // non-fatal
-						}
-						for _, i := range instances {
-							if i.Name != inst.Name {
-								continue
-							}
-							d := deps.Discoverer(i)
-							guests, err := d.DiscoverGuests(ctx)
-							if err != nil {
-								fmt.Fprintf(deps.ErrOut, "Discovery failed: %v\n", err)
-								return nil
-							}
-							for _, g := range guests {
-								g.InstanceID = i.ID
-								_ = deps.Repo.UpsertGuest(ctx, g)
-							}
-							fmt.Fprintf(deps.Out, "Discovered %d guests.\n", len(guests))
-							break
 						}
 					}
 					return nil
@@ -318,6 +266,118 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 			},
 		},
 	}
+}
+
+// addSingleInstance handles adding one Proxmox instance for the given rawURL.
+// It is called once per --url value from the "instance add" action.
+func addSingleInstance( //nolint:cyclop // multi-URL dispatch adds branching
+	ctx context.Context,
+	deps *Deps,
+	cmd *ucli.Command,
+	connType models.ConnectionType,
+	rawURL string,
+	sshKeyPEM string,
+	pubKeyAuthorized string,
+	keyPath string,
+) error {
+	urls := cmd.StringSlice("url")
+	multiURL := len(urls) > 1
+
+	// When multiple --url are specified and --connection-type is ssh,
+	// we derive the SSH host from the node name (see below).
+	// For a single --url we respect the explicit --ssh-host value.
+	explicitSSHHost := cmd.String("ssh-host")
+	if multiURL {
+		explicitSSHHost = "" // resolved from node name
+	}
+
+	var sshHost string
+	var sshPort int
+	if explicitSSHHost != "" {
+		var err error
+		sshHost, sshPort, err = parseHostPort(explicitSSHHost, 22)
+		if err != nil {
+			return fmt.Errorf("invalid --ssh-host: %w", err)
+		}
+	}
+
+	// Resolve the node name from the API.
+	// This validates that the API URL is reachable and determines
+	// which Proxmox node name corresponds to this instance.
+	nodeName, err := resolveInstanceNode(ctx, rawURL, cmd.String("token-id"), cmd.String("token-secret"), sshHost)
+	if err != nil {
+		return fmt.Errorf("resolving node name for %s: %w", rawURL, err)
+	}
+
+	// When multiple --url are used with --connection-type ssh,
+	// use the resolved node name as the SSH host.
+	if multiURL && connType == models.ConnectionTypeSSH {
+		sshHost = nodeName
+		sshPort = 22
+	}
+
+	// For termproxy, verify the Proxmox version supports API token auth.
+	// This check runs once at instance-add time so the user gets a clear
+	// error immediately rather than at connection time.
+	if connType == models.ConnectionTypeTermProxy {
+		if err := checkTermProxyVersion(ctx, rawURL, cmd.String("token-id"), cmd.String("token-secret")); err != nil {
+			return err
+		}
+	}
+
+	instName := cmd.String(flagName)
+	if instName == "" {
+		// Name was not supplied (or multiple URLs): fall back to the resolved node name.
+		instName = nodeName
+	}
+
+	inst := &models.ProxmoxInstance{
+		Name:           instName,
+		APIURL:         rawURL,
+		APITokenID:     cmd.String("token-id"),
+		APITokenSecret: cmd.String("token-secret"),
+		ConnectionType: connType,
+		Node:           nodeName,
+		SSHHost:        sshHost,
+		SSHPort:        sshPort,
+		SSHUser:        cmd.String("ssh-user"),
+		SSHKeyPath:     keyPath,
+		SSHKey:         sshKeyPEM,
+	}
+	if err := deps.Repo.AddProxmoxInstance(ctx, inst); err != nil {
+		return err
+	}
+	fmt.Fprintf(deps.Out, "Instance %q added (connection: %s, node: %s).\n", inst.Name, inst.ConnectionType, inst.Node)
+	if pubKeyAuthorized != "" {
+		fmt.Fprintf(deps.Out, "Public key (add to Proxmox authorized_keys on %s):\n%s", inst.SSHHost, pubKeyAuthorized)
+	}
+
+	// Run discovery on the new instance.
+	if deps.Discoverer != nil {
+		// Re-read to get the DB-assigned ID.
+		allInstances, err := deps.Repo.ListProxmoxInstances(ctx)
+		if err != nil {
+			return nil // non-fatal
+		}
+		for _, i := range allInstances {
+			if i.Name != inst.Name {
+				continue
+			}
+			d := deps.Discoverer(i)
+			guests, err := d.DiscoverGuests(ctx)
+			if err != nil {
+				fmt.Fprintf(deps.ErrOut, "Discovery failed: %v\n", err)
+				return nil
+			}
+			for _, g := range guests {
+				g.InstanceID = i.ID
+				_ = deps.Repo.UpsertGuest(ctx, g)
+			}
+			fmt.Fprintf(deps.Out, "Discovered %d guests.\n", len(guests))
+			break
+		}
+	}
+	return nil
 }
 
 // checkTermProxyVersion creates a temporary APIClient and verifies that the
