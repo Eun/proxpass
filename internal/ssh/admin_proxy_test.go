@@ -188,3 +188,67 @@ func TestAdminCLIUsernameIsIgnored(t *testing.T) {
 		})
 	}
 }
+
+// TestAdminCLIUnknownTopLevelCommandReturnsError verifies that an admin
+// running a command with an unknown top-level subcommand (e.g. "bogus cmd")
+// receives a clear error message and is not silently shown help output.
+func TestAdminCLIUnknownTopLevelCommandReturnsError(t *testing.T) {
+	addr, adminSigner, _, cancel := setupAdminTest(t)
+	defer cancel()
+
+	output := sshExecErroutput(t, addr, "root", "bogus cmd", adminSigner)
+
+	if strings.Contains(output, "USAGE:") && !strings.Contains(output, "unknown") {
+		t.Errorf("expected error, not silent help; output: %q", output)
+	}
+	if !strings.Contains(output, "unknown") && !strings.Contains(output, "Error") {
+		t.Errorf("expected 'unknown' or 'Error' in output, got: %q", output)
+	}
+}
+
+// TestAdminCLIUnknownSubcommandReturnsError verifies that using an unknown
+// subcommand under a known group (e.g. "guest foobar") returns an error
+// instead of silently printing help.
+func TestAdminCLIUnknownSubcommandReturnsError(t *testing.T) {
+	addr, adminSigner, _, cancel := setupAdminTest(t)
+	defer cancel()
+
+	for _, cmd := range []string{
+		"guest foobar",
+		"instance foobar",
+		"client foobar",
+		"group foobar",
+		"access foobar",
+		"policy foobar",
+		"admin-key foobar",
+	} {
+		cmd := cmd
+		t.Run(cmd, func(t *testing.T) {
+			output := sshExecErroutput(t, addr, "root", cmd, adminSigner)
+			if !strings.Contains(output, "unknown") && !strings.Contains(output, "Error") {
+				t.Errorf("expected error for %q, got: %q", cmd, output)
+			}
+		})
+	}
+}
+
+// TestAdminCLIInvalidFlagDoesNotCrashServer verifies that passing an invalid
+// flag to a CLI command produces an error message without killing the server.
+// Previously, urfave/cli would call os.Exit(1) on invalid flags, which would
+// crash the whole proxpass daemon.
+func TestAdminCLIInvalidFlagDoesNotCrashServer(t *testing.T) {
+	addr, adminSigner, _, cancel := setupAdminTest(t)
+	defer cancel()
+
+	// Run a command with an invalid flag – the server must survive and return
+	// an error message.
+	output := sshExecErroutput(t, addr, "root", "guest ls --invalid-flag", adminSigner)
+
+	// The server should still be reachable after the bad command.
+	output2 := sshExecOutput(t, addr, "root", "guest ls", adminSigner)
+	if !strings.Contains(output2, "NAME") && !strings.Contains(output2, "No guests") {
+		t.Errorf("server appears unreachable after invalid flag; follow-up 'guest ls' output: %q", output2)
+	}
+
+	t.Logf("invalid flag output: %q", output)
+}

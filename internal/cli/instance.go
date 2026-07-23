@@ -17,8 +17,9 @@ import (
 
 func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo // CLI command tree
 	return &ucli.Command{
-		Name:  "instance",
-		Usage: "Manage Proxmox instances",
+		Name:   "instance",
+		Usage:  "Manage Proxmox instances",
+		Action: unknownSubcmdAction,
 		Commands: []*ucli.Command{
 			{
 				Name:  cmdLs,

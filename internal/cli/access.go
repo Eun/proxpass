@@ -12,8 +12,9 @@ import (
 
 func accessCmd(deps *Deps) *ucli.Command {
 	return &ucli.Command{
-		Name:  "access",
-		Usage: "Manage access rules",
+		Name:   "access",
+		Usage:  "Manage access rules",
+		Action: unknownSubcmdAction,
 		Commands: []*ucli.Command{
 			{
 				Name:  cmdLs,
