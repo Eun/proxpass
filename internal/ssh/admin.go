@@ -15,7 +15,10 @@ import (
 )
 
 // AdminSessionHandler is called for every authenticated admin session.
-type AdminSessionHandler func(channel gossh.Channel, reqs <-chan *gossh.Request, repo db.Repository)
+// conn is the underlying server connection; its User() method returns
+// the SSH username the client supplied, which is used to determine
+// whether to proxy directly to a guest or run the admin CLI.
+type AdminSessionHandler func(channel gossh.Channel, reqs <-chan *gossh.Request, conn *gossh.ServerConn, repo db.Repository)
 
 // DefaultAdminHandler returns an AdminSessionHandler that runs
 // CLI commands received via SSH exec requests.
@@ -24,13 +27,16 @@ func DefaultAdminHandler( //nolint:gocognit // SSH session handler
 	discoverer proxmox.DiscovererFactory,
 	logger *log.Logger,
 ) AdminSessionHandler {
-	return func(channel gossh.Channel, reqs <-chan *gossh.Request, repo db.Repository) {
+	return func(channel gossh.Channel, reqs <-chan *gossh.Request, conn *gossh.ServerConn, repo db.Repository) {
 		defer func() { _ = channel.Close() }()
 
 		// Wait for shell or exec request.
 		var execCmd string
 		var ptyReq *PtyRequest
 		var remaining <-chan *gossh.Request
+
+		// Capture the SSH username so we can detect a direct guest-proxy request.
+		identifier := conn.User()
 
 		for req := range reqs {
 			switch req.Type {
@@ -79,6 +85,39 @@ func DefaultAdminHandler( //nolint:gocognit // SSH session handler
 		return
 
 	handleCommand:
+		// If the SSH username looks like a guest identifier (e.g. "ct100",
+		// "vm200", "webserver"), proxy the admin directly to that guest.
+		// Admins bypass HasAccess checks — they can reach any guest.
+		if identifier != "" && identifier != "root" {
+			ctx := context.Background()
+			guests, err := repo.ListGuests(ctx)
+			if err == nil {
+				if g, resolveErr := resolveGuest(identifier, guests); resolveErr == nil {
+					if inst := findInstanceByID(ctx, repo, g.InstanceID, logger); inst != nil {
+						// Drain remaining requests so the goroutines spawned
+						// inside ProxyToGuest don't race with an unclosed channel.
+						proxyReqs := make(chan *gossh.Request, 4)
+						go func() {
+							for req := range remaining {
+								select {
+								case proxyReqs <- req:
+								default:
+									if req.WantReply {
+										_ = req.Reply(false, nil)
+									}
+								}
+							}
+							close(proxyReqs)
+						}()
+						if proxyErr := proxier.ProxyToGuest(channel, proxyReqs, g, inst, ptyReq, logger); proxyErr != nil {
+							logger.Printf("admin: proxy to guest %q error: %v", g.Name, proxyErr)
+						}
+						return
+					}
+				}
+			}
+		}
+
 		// Discard remaining requests in background
 		go func() {
 			for req := range remaining {

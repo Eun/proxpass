@@ -67,6 +67,49 @@ func (s *Server) SetFlagAdmin(key gossh.PublicKey) {
 	s.flagAdminKey = key
 }
 
+// ListenAndServeOn starts the SSH server on the already-bound listener ln
+// and blocks until ctx is canceled. The caller is responsible for closing ln;
+// this method will also close it when ctx is done.
+func (s *Server) ListenAndServeOn(ctx context.Context, ln net.Listener) error {
+	signer, err := s.loadOrGenerateHostKey()
+	if err != nil {
+		return fmt.Errorf("host key: %w", err)
+	}
+
+	config := &gossh.ServerConfig{
+		PublicKeyCallback: s.publicKeyCallback,
+	}
+	config.AddHostKey(signer)
+
+	s.logger.Printf("SSH server listening on %s", ln.Addr())
+
+	go func() {
+		<-ctx.Done()
+		_ = ln.Close()
+	}()
+
+	var wg sync.WaitGroup
+	for {
+		tcpConn, err := ln.Accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				break
+			}
+			s.logger.Printf("accept error: %v", err)
+			continue
+		}
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.handleConnection(ctx, tcpConn, config)
+		}()
+	}
+
+	wg.Wait()
+	return ctx.Err()
+}
+
 // ListenAndServe starts the SSH server and blocks until ctx is canceled.
 func (s *Server) ListenAndServe(ctx context.Context) error {
 	signer, err := s.loadOrGenerateHostKey()
@@ -225,7 +268,7 @@ func (s *Server) handleChannel(conn *gossh.ServerConn, channel gossh.Channel, re
 
 	switch role {
 	case roleAdmin:
-		s.adminHandler(channel, reqs, s.repo)
+		s.adminHandler(channel, reqs, conn, s.repo)
 	case roleClient:
 		handleClientSession(channel, reqs, conn, s.repo, s.proxier, s.logger)
 	default:

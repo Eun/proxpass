@@ -459,5 +459,15 @@ func NewMockSSHServerOnAddr(addr, keyPath string) (*MockSSHServer, error) {
 	return m, nil
 }
 
+// RecordedSessions returns a snapshot of all proxy sessions recorded so far.
+// It is safe to call from multiple goroutines.
+func (p *MockProxier) RecordedSessions() []MockProxySession {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]MockProxySession, len(p.Sessions))
+	copy(out, p.Sessions)
+	return out
+}
+
 // Compile-time check.
 var _ proxssh.GuestProxier = (*MockProxier)(nil)

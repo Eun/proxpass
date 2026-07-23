@@ -370,3 +370,19 @@ func resolveGuest(
 
 	return nil, fmt.Errorf("guest %q not found", identifier)
 }
+
+// findInstanceByID looks up a ProxmoxInstance by its database ID.
+// Returns nil when not found or when the repository lookup fails.
+func findInstanceByID(ctx context.Context, repo db.Repository, id int64, logger *log.Logger) *models.ProxmoxInstance {
+	instances, err := repo.ListProxmoxInstances(ctx)
+	if err != nil {
+		logger.Printf("findInstanceByID: failed to list instances: %v", err)
+		return nil
+	}
+	for _, inst := range instances {
+		if inst.ID == id {
+			return inst
+		}
+	}
+	return nil
+}
