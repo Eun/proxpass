@@ -39,7 +39,7 @@ const (
 //
 // omitting the command (a plain shell) writes a help message and closes.
 //
-//nolint:gocognit // SSH session handling requires sequential branching
+//nolint:gocognit,funlen // SSH session handling requires sequential branching
 func handleClientSession(
 	channel gossh.Channel,
 	reqs <-chan *gossh.Request,
@@ -150,6 +150,18 @@ handleGuest:
 	if !ok {
 		logger.Printf("client %s: access denied to guest %s", clientName, guest.Name)
 		writeErr(channel, ptyReq, "access denied")
+		go gossh.DiscardRequests(remaining)
+		return
+	}
+
+	// A PTY is required for interactive guest access. Without one the client
+	// terminal stays in cooked mode (local echo on) while the remote guest's
+	// PTY also echoes, causing every typed character to appear twice.
+	// Clients must connect with: ssh -t proxpass <identifier>
+	// or set RequestTTY yes/force in ~/.ssh/config.
+	if ptyReq == nil {
+		logger.Printf("client %s: no pty-req received; refusing connection to %s", clientName, guest.Name)
+		writeErr(channel, nil, "error: a PTY is required for guest access.\r\nConnect with: ssh -t ... or add 'RequestTTY yes' to ~/.ssh/config")
 		go gossh.DiscardRequests(remaining)
 		return
 	}

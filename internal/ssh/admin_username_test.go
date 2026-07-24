@@ -220,6 +220,13 @@ func sshShellOutput(t *testing.T, addr, username string, signer gossh.Signer) st
 // collects stdout+stderr, and returns the combined output.
 func sshExecOutput(t *testing.T, addr, username, command string, signer gossh.Signer) string {
 	t.Helper()
+	return sshExecOutputPty(t, addr, username, command, signer, false)
+}
+
+// sshExecOutputPty dials the proxpass server and runs the given command,
+// optionally requesting a PTY first. Guest proxy connections require a PTY.
+func sshExecOutputPty(t *testing.T, addr, username, command string, signer gossh.Signer, requestPty bool) string {
+	t.Helper()
 
 	cfg := &gossh.ClientConfig{
 		User:            username,
@@ -236,6 +243,14 @@ func sshExecOutput(t *testing.T, addr, username, command string, signer gossh.Si
 	sess, err := client.NewSession()
 	if err != nil {
 		t.Fatalf("new session: %v", err)
+	}
+
+	if requestPty {
+		if err := sess.RequestPty("xterm-256color", 24, 80, gossh.TerminalModes{
+			gossh.ECHO: 1,
+		}); err != nil {
+			t.Fatalf("request pty: %v", err)
+		}
 	}
 
 	var buf strings.Builder

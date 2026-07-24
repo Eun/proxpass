@@ -233,6 +233,15 @@ func tryAdminProxy(
 		close(proxyReqs)
 	}()
 
+	// A PTY is required for interactive guest access (see handleClientSession
+	// for the full explanation). Admins must also use -t or RequestTTY.
+	if ptyReq == nil {
+		logger.Printf("admin: no pty-req for guest %q; refusing", guest.Name)
+		_, _ = fmt.Fprintf(channel.Stderr(),
+			"error: a PTY is required for guest access.\r\nConnect with: ssh -t ... or add 'RequestTTY yes' to ~/.ssh/config\r\n")
+		return true, nil
+	}
+
 	if proxyErr := proxier.ProxyToGuest(channel, proxyReqs, guest, inst, ptyReq, logger); proxyErr != nil {
 		logger.Printf("admin: proxy to guest %q error: %v", guest.Name, proxyErr)
 	}
