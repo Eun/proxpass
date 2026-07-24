@@ -9,7 +9,9 @@ import (
 
 	"proxpass/internal/cli"
 	"proxpass/internal/db"
+	"proxpass/internal/models"
 	"proxpass/internal/proxmox"
+	"proxpass/internal/tui"
 
 	gossh "golang.org/x/crypto/ssh"
 )
@@ -78,7 +80,7 @@ func DefaultAdminHandler( //nolint:gocognit // SSH session handler
 				if req.WantReply {
 					_ = req.Reply(true, nil)
 				}
-				// Interactive shell -- show help
+				// Interactive shell without a command: show interactive guest picker.
 				remaining = reqs
 				goto handleCommand
 
@@ -134,12 +136,17 @@ func DefaultAdminHandler( //nolint:gocognit // SSH session handler
 		}
 
 		var argv []string
-		if execCmd != "" {
+		if execCmd == "" {
+			// Interactive shell with no command: show interactive guest picker.
+			if ptyReq != nil {
+				adminPickerAndProxy(context.Background(), channel, remaining, repo, proxier, ptyReq, logger)
+				return
+			}
+			// No PTY: fall back to listing guests via CLI.
+			argv = []string{"proxpass", "guest", "ls"}
+		} else {
 			// Split the exec command into argv
 			argv = append([]string{"proxpass"}, splitArgs(execCmd)...)
-		} else {
-			// Interactive shell with no command -- list available guests
-			argv = []string{"proxpass", "guest", "ls"}
 		}
 
 		root := cli.Build(deps)
@@ -246,6 +253,75 @@ func tryAdminProxy(
 		logger.Printf("admin: proxy to guest %q error: %v", guest.Name, proxyErr)
 	}
 	return true, nil
+}
+
+// adminPickerAndProxy shows the interactive guest picker for an admin session
+// (no exec command provided). Admins can reach all guests unconditionally.
+func adminPickerAndProxy(
+	ctx context.Context,
+	channel gossh.Channel,
+	remaining <-chan *gossh.Request,
+	repo db.Repository,
+	proxier GuestProxier,
+	ptyReq *PtyRequest,
+	logger *log.Logger,
+) {
+	guests, err := repo.ListGuests(ctx)
+	if err != nil {
+		logger.Printf("admin: failed to list guests for picker: %v", err)
+		writeErr(channel, ptyReq, "internal error")
+		go gossh.DiscardRequests(remaining)
+		return
+	}
+
+	if len(guests) == 0 {
+		_, _ = fmt.Fprintf(newCRLFWriter(channel.Stderr()), "\r\nNo guests discovered.\r\n")
+		go gossh.DiscardRequests(remaining)
+		return
+	}
+
+	instances, err := repo.ListProxmoxInstances(ctx)
+	if err != nil {
+		logger.Printf("admin: failed to list instances for picker: %v", err)
+		writeErr(channel, ptyReq, "internal error")
+		go gossh.DiscardRequests(remaining)
+		return
+	}
+
+	instMap := make(map[int64]string, len(instances))
+	instByID := make(map[int64]*models.ProxmoxInstance, len(instances))
+	for _, inst := range instances {
+		instMap[inst.ID] = inst.Name
+		instByID[inst.ID] = inst
+	}
+
+	// Drain remaining SSH requests while the picker runs.
+	go gossh.DiscardRequests(remaining)
+
+	guest, _, pickErr := tui.PickGuest(channel, channel, guests, instMap, ptyReq.Width, ptyReq.Height)
+	if pickErr != nil {
+		logger.Printf("admin: picker error: %v", pickErr)
+		return
+	}
+	if guest == nil {
+		// User cancelled.
+		return
+	}
+
+	inst := instByID[guest.InstanceID]
+	if inst == nil {
+		writeErr(channel, ptyReq, fmt.Sprintf("instance for guest %q not found", guest.Name))
+		return
+	}
+
+	_, _ = fmt.Fprintf(newCRLFWriter(channel), "Connecting to %s (%s %d)...\r\n",
+		guest.Name, guest.Type, guest.ProxmoxID)
+
+	proxyReqs := make(chan *gossh.Request, 4)
+	defer close(proxyReqs)
+	if proxyErr := proxier.ProxyToGuest(channel, proxyReqs, guest, inst, ptyReq, logger); proxyErr != nil {
+		logger.Printf("admin: proxy error: %v", proxyErr)
+	}
 }
 
 // splitArgs does a simple shell-like split of a command string.
