@@ -2,6 +2,7 @@ package ssh
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -101,11 +102,14 @@ func DefaultAdminHandler( //nolint:gocognit // SSH session handler
 			return
 		}
 		if proxyErr != nil {
-			// Looked like a guest identifier but could not be resolved.
-			// Write a clear error and exit -- do not fall through to the CLI.
-			writeErr(channel, ptyReq, fmt.Sprintf("Error: %v", proxyErr))
-			go gossh.DiscardRequests(remaining)
-			return
+			if !errors.Is(proxyErr, &GuestNotFoundError{}) {
+				// Looked like a guest identifier but could not be resolved.
+				// Write a clear error and exit -- do not fall through to the CLI.
+				writeErr(channel, ptyReq, fmt.Sprintf("Error: %v", proxyErr))
+				go gossh.DiscardRequests(remaining)
+				return
+			}
+
 		}
 
 		// Discard remaining requests in background
@@ -266,6 +270,17 @@ func adminPickerAndProxy(
 	ptyReq *PtyRequest,
 	logger *log.Logger,
 ) {
+
+	// A PTY is required for interactive guest access (see handleClientSession
+	// for the full explanation). Admins must also use -t or RequestTTY.
+	if ptyReq == nil {
+		logger.Print("admin: no pty-req; refusing")
+		_, _ = fmt.Fprintf(channel.Stderr(),
+			"error: a PTY is required for guest access.\r\nConnect with: ssh -t ... or add 'RequestTTY yes' to ~/.ssh/config\r\n")
+		go gossh.DiscardRequests(remaining)
+		return
+	}
+
 	guests, err := repo.ListGuests(ctx)
 	if err != nil {
 		logger.Printf("admin: failed to list guests for picker: %v", err)

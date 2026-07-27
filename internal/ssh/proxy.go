@@ -32,6 +32,14 @@ const (
 	termXterm256Color = "xterm-256color"
 )
 
+type GuestNotFoundError struct {
+	GuestName string
+}
+
+func (e *GuestNotFoundError) Error() string {
+	return fmt.Sprintf("guest %q not found", e.GuestName)
+}
+
 // handleClientSession is invoked for every authenticated client channel.
 // The guest target is passed as the SSH exec command:
 //
@@ -490,7 +498,7 @@ func resolveGuest(
 			identifier, len(matches), strings.Join(hints, ", "))
 	}
 
-	return nil, fmt.Errorf("guest %q not found", identifier)
+	return nil, &GuestNotFoundError{GuestName: identifier}
 }
 
 // handleShellPicker handles a plain shell request (no exec command) for a normal
