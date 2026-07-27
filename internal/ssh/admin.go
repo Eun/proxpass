@@ -94,6 +94,14 @@ func DefaultAdminHandler( //nolint:gocognit // SSH session handler
 		return
 
 	handleCommand:
+		// A PTY is required for interactive guest access (see handleClientSession
+		// for the full explanation). Admins must also use -t or RequestTTY.
+		if failIfNoPtyRequest(channel.Stderr(), ptyReq) {
+			logger.Print("admin: no pty-req; refusing")
+			go gossh.DiscardRequests(remaining)
+			return
+		}
+
 		// If the exec command looks like a guest identifier, proxy directly.
 		// An identifier is a single token (no internal spaces).
 		// A CLI command (like "guest ls") has a space and always runs the CLI.
@@ -124,13 +132,8 @@ func DefaultAdminHandler( //nolint:gocognit // SSH session handler
 		// When a PTY is active the SSH channel is in raw mode:
 		// the client's terminal expects \r\n line endings, not bare \n.
 		var out, errOut io.Writer
-		if ptyReq != nil {
-			out = newCRLFWriter(channel)
-			errOut = newCRLFWriter(channel.Stderr())
-		} else {
-			out = channel
-			errOut = channel.Stderr()
-		}
+		out = newCRLFWriter(channel)
+		errOut = newCRLFWriter(channel.Stderr())
 
 		deps := &cli.Deps{
 			Repo:       repo,
@@ -139,19 +142,12 @@ func DefaultAdminHandler( //nolint:gocognit // SSH session handler
 			ErrOut:     errOut,
 		}
 
-		var argv []string
 		if execCmd == "" {
-			// Interactive shell with no command: show interactive guest picker.
-			if ptyReq != nil {
-				adminPickerAndProxy(context.Background(), channel, remaining, repo, proxier, ptyReq, logger)
-				return
-			}
-			// No PTY: fall back to listing guests via CLI.
-			argv = []string{"proxpass", "guest", "ls"}
-		} else {
-			// Split the exec command into argv
-			argv = append([]string{"proxpass"}, splitArgs(execCmd)...)
+			adminPickerAndProxy(context.Background(), 0, channel, remaining, repo, proxier, ptyReq, logger)
+			return
 		}
+		// Split the exec command into argv
+		argv := append([]string{"proxpass"}, splitArgs(execCmd)...)
 
 		root := cli.Build(deps)
 		if err := root.Run(context.Background(), argv); err != nil {
@@ -244,15 +240,6 @@ func tryAdminProxy(
 		close(proxyReqs)
 	}()
 
-	// A PTY is required for interactive guest access (see handleClientSession
-	// for the full explanation). Admins must also use -t or RequestTTY.
-	if ptyReq == nil {
-		logger.Printf("admin: no pty-req for guest %q; refusing", guest.Name)
-		_, _ = fmt.Fprintf(channel.Stderr(),
-			"error: a PTY is required for guest access.\r\nConnect with: ssh -t ... or add 'RequestTTY yes' to ~/.ssh/config\r\n")
-		return true, nil
-	}
-
 	if proxyErr := proxier.ProxyToGuest(channel, proxyReqs, guest, inst, ptyReq, logger); proxyErr != nil {
 		logger.Printf("admin: proxy to guest %q error: %v", guest.Name, proxyErr)
 	}
@@ -263,6 +250,7 @@ func tryAdminProxy(
 // (no exec command provided). Admins can reach all guests unconditionally.
 func adminPickerAndProxy(
 	ctx context.Context,
+	clientID int64,
 	channel gossh.Channel,
 	remaining <-chan *gossh.Request,
 	repo db.Repository,
@@ -271,22 +259,28 @@ func adminPickerAndProxy(
 	logger *log.Logger,
 ) {
 
-	// A PTY is required for interactive guest access (see handleClientSession
-	// for the full explanation). Admins must also use -t or RequestTTY.
-	if ptyReq == nil {
-		logger.Print("admin: no pty-req; refusing")
-		_, _ = fmt.Fprintf(channel.Stderr(),
-			"error: a PTY is required for guest access.\r\nConnect with: ssh -t ... or add 'RequestTTY yes' to ~/.ssh/config\r\n")
-		go gossh.DiscardRequests(remaining)
-		return
-	}
-
 	guests, err := repo.ListGuests(ctx)
 	if err != nil {
 		logger.Printf("admin: failed to list guests for picker: %v", err)
 		writeErr(channel, ptyReq, "internal error")
 		go gossh.DiscardRequests(remaining)
 		return
+	}
+
+	// filter the guests
+	if clientID != 0 {
+		for i := len(guests) - 1; i >= 0; i-- {
+			ok, err := repo.HasAccess(ctx, clientID, guests[i].ID)
+			if err != nil {
+				writeErr(channel, ptyReq, fmt.Sprintf("Error: %v", err))
+				go gossh.DiscardRequests(remaining)
+				return
+			}
+			if !ok {
+				guests = append(guests[:i], guests[i+1:]...)
+			}
+
+		}
 	}
 
 	if len(guests) == 0 {

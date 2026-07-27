@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"io"
 
 	"proxpass/internal/db"
 	"proxpass/internal/models"
@@ -142,4 +143,13 @@ func keysEqual(a, b []byte) bool {
 		}
 	}
 	return true
+}
+
+func failIfNoPtyRequest(w io.Writer, ptyReq *PtyRequest) (failed bool) {
+	if ptyReq == nil {
+		_, _ = fmt.Fprintf(w,
+			"error: a PTY is required for guest access.\r\nConnect with: ssh -t ... or add 'RequestTTY yes' to ~/.ssh/config\r\n")
+		return true
+	}
+	return false
 }

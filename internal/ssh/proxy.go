@@ -40,6 +40,11 @@ func (e *GuestNotFoundError) Error() string {
 	return fmt.Sprintf("guest %q not found", e.GuestName)
 }
 
+func (e *GuestNotFoundError) Is(err error) bool {
+	_, ok := err.(*GuestNotFoundError)
+	return ok
+}
+
 // handleClientSession is invoked for every authenticated client channel.
 // The guest target is passed as the SSH exec command:
 //
@@ -112,6 +117,26 @@ func handleClientSession(
 	return
 
 handleGuest:
+	if failIfNoPtyRequest(channel.Stderr(), ptyReq) {
+		logger.Printf("client %s: no pty-req received; refusing connection", clientName)
+		go gossh.DiscardRequests(remaining)
+		return
+	}
+
+	// Resolve client and check access.
+	client, err := repo.GetClientByName(ctx, clientName)
+	if err != nil {
+		logger.Printf("client %s: lookup failed: %v", clientName, err)
+		writeErr(channel, ptyReq, "internal error")
+		go gossh.DiscardRequests(remaining)
+		return
+	}
+
+	if execCmd == "" {
+		adminPickerAndProxy(context.Background(), client.ID, channel, remaining, repo, proxier, ptyReq, logger)
+		return
+	}
+
 	// Parse the exec command as the guest identifier.
 	instName, identifier := parseGuestTarget(execCmd)
 
@@ -139,15 +164,6 @@ handleGuest:
 		return
 	}
 
-	// Resolve client and check access.
-	client, err := repo.GetClientByName(ctx, clientName)
-	if err != nil {
-		logger.Printf("client %s: lookup failed: %v", clientName, err)
-		writeErr(channel, ptyReq, "internal error")
-		go gossh.DiscardRequests(remaining)
-		return
-	}
-
 	ok, err := repo.HasAccess(ctx, client.ID, guest.ID)
 	if err != nil {
 		logger.Printf("client %s: access check failed: %v", clientName, err)
@@ -158,18 +174,6 @@ handleGuest:
 	if !ok {
 		logger.Printf("client %s: access denied to guest %s", clientName, guest.Name)
 		writeErr(channel, ptyReq, "access denied")
-		go gossh.DiscardRequests(remaining)
-		return
-	}
-
-	// A PTY is required for interactive guest access. Without one the client
-	// terminal stays in cooked mode (local echo on) while the remote guest's
-	// PTY also echoes, causing every typed character to appear twice.
-	// Clients must connect with: ssh -t proxpass <identifier>
-	// or set RequestTTY yes/force in ~/.ssh/config.
-	if ptyReq == nil {
-		logger.Printf("client %s: no pty-req received; refusing connection to %s", clientName, guest.Name)
-		writeErr(channel, nil, "error: a PTY is required for guest access.\r\nConnect with: ssh -t ... or add 'RequestTTY yes' to ~/.ssh/config")
 		go gossh.DiscardRequests(remaining)
 		return
 	}
