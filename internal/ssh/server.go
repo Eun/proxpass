@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"proxpass/internal/db"
+	"proxpass/internal/proxmox"
 
 	gossh "golang.org/x/crypto/ssh"
 )
@@ -26,12 +27,12 @@ const (
 
 // Server is the proxpass SSH server.
 type Server struct {
-	listenAddr   string
-	hostKeyPath  string
-	repo         db.Repository
-	adminHandler AdminSessionHandler
-	proxier      GuestProxier
-	logger       *log.Logger
+	listenAddr  string
+	hostKeyPath string
+	repo        db.Repository
+	proxier     GuestProxier
+	discoverer  proxmox.DiscovererFactory
+	logger      *log.Logger
 	flagAdminKey gossh.PublicKey
 }
 
@@ -39,17 +40,17 @@ type Server struct {
 func NewServer(
 	listenAddr, hostKeyPath string,
 	repo db.Repository,
-	adminHandler AdminSessionHandler,
 	proxier GuestProxier,
+	discoverer proxmox.DiscovererFactory,
 	logger *log.Logger,
 ) *Server {
 	return &Server{
-		listenAddr:   listenAddr,
-		hostKeyPath:  hostKeyPath,
-		repo:         repo,
-		adminHandler: adminHandler,
-		proxier:      proxier,
-		logger:       logger,
+		listenAddr: listenAddr,
+		hostKeyPath: hostKeyPath,
+		repo:        repo,
+		proxier:     proxier,
+		discoverer:  discoverer,
+		logger:      logger,
 	}
 }
 
@@ -75,39 +76,10 @@ func (s *Server) ListenAndServeOn(ctx context.Context, ln net.Listener) error {
 	if err != nil {
 		return fmt.Errorf("host key: %w", err)
 	}
-
-	config := &gossh.ServerConfig{
-		PublicKeyCallback: s.publicKeyCallback,
-	}
-	config.AddHostKey(signer)
-
+	config := s.newServerConfig(signer)
 	s.logger.Printf("SSH server listening on %s", ln.Addr())
-
-	go func() {
-		<-ctx.Done()
-		_ = ln.Close()
-	}()
-
-	var wg sync.WaitGroup
-	for {
-		tcpConn, err := ln.Accept()
-		if err != nil {
-			if ctx.Err() != nil {
-				break
-			}
-			s.logger.Printf("accept error: %v", err)
-			continue
-		}
-
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			s.handleConnection(ctx, tcpConn, config)
-		}()
-	}
-
-	wg.Wait()
-	return ctx.Err()
+	go func() { <-ctx.Done(); _ = ln.Close() }()
+	return s.serveLoop(ctx, ln, config)
 }
 
 // ListenAndServe starts the SSH server and blocks until ctx is canceled.
@@ -116,11 +88,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("host key: %w", err)
 	}
-
-	config := &gossh.ServerConfig{
-		PublicKeyCallback: s.publicKeyCallback,
-	}
-	config.AddHostKey(signer)
+	config := s.newServerConfig(signer)
 
 	lc := net.ListenConfig{}
 	ln, err := lc.Listen(ctx, "tcp", s.listenAddr)
@@ -128,15 +96,18 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		return fmt.Errorf("listen: %w", err)
 	}
 	defer func() { _ = ln.Close() }()
-
 	s.logger.Printf("SSH server listening on %s", s.listenAddr)
+	go func() { <-ctx.Done(); _ = ln.Close() }()
+	return s.serveLoop(ctx, ln, config)
+}
 
-	// Close the listener when the context is canceled so Accept unblocks.
-	go func() {
-		<-ctx.Done()
-		_ = ln.Close()
-	}()
+func (s *Server) newServerConfig(signer gossh.Signer) *gossh.ServerConfig {
+	cfg := &gossh.ServerConfig{PublicKeyCallback: s.publicKeyCallback}
+	cfg.AddHostKey(signer)
+	return cfg
+}
 
+func (s *Server) serveLoop(ctx context.Context, ln net.Listener, config *gossh.ServerConfig) error {
 	var wg sync.WaitGroup
 	for {
 		tcpConn, err := ln.Accept()
@@ -147,14 +118,12 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 			s.logger.Printf("accept error: %v", err)
 			continue
 		}
-
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			s.handleConnection(ctx, tcpConn, config)
 		}()
 	}
-
 	wg.Wait()
 	return ctx.Err()
 }
@@ -166,14 +135,8 @@ func (s *Server) publicKeyCallback(conn gossh.ConnMetadata, key gossh.PublicKey)
 	ctx := context.Background()
 
 	// --- flag-based admin (always active while flag is set) ---
-	if s.flagAdminKey != nil {
-		if keysEqual(s.flagAdminKey.Marshal(), key.Marshal()) {
-			return &gossh.Permissions{
-				Extensions: map[string]string{
-					permRole: roleAdmin,
-				},
-			}, nil
-		}
+	if s.flagAdminKey != nil && keysEqual(s.flagAdminKey.Marshal(), key.Marshal()) {
+		return adminPerms(), nil
 	}
 
 	// --- admin keys ---
@@ -182,7 +145,6 @@ func (s *Server) publicKeyCallback(conn gossh.ConnMetadata, key gossh.PublicKey)
 		s.logger.Printf("auth: failed to list admin keys: %v", err)
 		return nil, fmt.Errorf("internal error")
 	}
-
 	offeredBytes := key.Marshal()
 	for _, raw := range adminKeys {
 		pub, _, _, _, parseErr := gossh.ParseAuthorizedKey([]byte(raw))
@@ -190,11 +152,7 @@ func (s *Server) publicKeyCallback(conn gossh.ConnMetadata, key gossh.PublicKey)
 			continue
 		}
 		if keysEqual(pub.Marshal(), offeredBytes) {
-			return &gossh.Permissions{
-				Extensions: map[string]string{
-					permRole: roleAdmin,
-				},
-			}, nil
+			return adminPerms(), nil
 		}
 	}
 
@@ -216,6 +174,12 @@ func (s *Server) publicKeyCallback(conn gossh.ConnMetadata, key gossh.PublicKey)
 	return nil, fmt.Errorf("unknown public key for %s", conn.User())
 }
 
+func adminPerms() *gossh.Permissions {
+	return &gossh.Permissions{
+		Extensions: map[string]string{permRole: roleAdmin},
+	}
+}
+
 // handleConnection performs the SSH handshake and dispatches channels.
 func (s *Server) handleConnection(ctx context.Context, tcpConn net.Conn, config *gossh.ServerConfig) {
 	defer func() { _ = tcpConn.Close() }()
@@ -229,14 +193,10 @@ func (s *Server) handleConnection(ctx context.Context, tcpConn net.Conn, config 
 	}
 	defer func() { _ = sshConn.Close() }()
 
-	s.logger.Printf("connection from %s (%s, role=%s)",
-		sshConn.RemoteAddr(), sshConn.User(),
-		sshConn.Permissions.Extensions["role"])
+	role := sshConn.Permissions.Extensions[permRole]
+	s.logger.Printf("connection from %s (%s, role=%s)", sshConn.RemoteAddr(), sshConn.User(), role)
 
-	// Discard global requests (keepalive, etc.).
 	go gossh.DiscardRequests(globalReqs)
-
-	// Close the connection when the context is done.
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -245,36 +205,46 @@ func (s *Server) handleConnection(ctx context.Context, tcpConn net.Conn, config 
 		}
 	}()
 
+	// Build sessionInfo from the authenticated connection.
+	var si sessionInfo
+	si.isAdmin = role == roleAdmin
+	if si.isAdmin {
+		si.logLabel = "admin"
+	} else {
+		clientName := sshConn.Permissions.Extensions["client_name"]
+		si.logLabel = "client/" + clientName
+
+	}
+
 	for newChan := range chans {
 		if newChan.ChannelType() != "session" {
 			_ = newChan.Reject(gossh.UnknownChannelType, "unsupported channel type")
 			continue
 		}
-
 		channel, reqs, err := newChan.Accept()
 		if err != nil {
 			s.logger.Printf("channel accept error: %v", err)
 			continue
 		}
 
-		go s.handleChannel(sshConn, channel, reqs)
-	}
-}
+		if !si.isAdmin {
+			// Resolve client ID here so each channel goroutine has it already.
+			// On error log and close; the client should never be not-found
+			// at this point because auth already succeeded.
+			clientName := sshConn.Permissions.Extensions["client_name"]
+			client, lookupErr := s.repo.GetClientByName(context.Background(), clientName)
+			if lookupErr != nil {
+				s.logger.Printf("%s: client lookup failed: %v", si.logLabel, lookupErr)
+				_, _ = channel.Stderr().Write([]byte("internal error\r\n"))
+				_ = channel.Close()
+				go gossh.DiscardRequests(reqs)
+				continue
+			}
+			si.clientID = client.ID
+		}
 
-// handleChannel dispatches a session channel to either the admin TUI handler
-// or the client proxy handler based on the role stored during authentication.
-func (s *Server) handleChannel(conn *gossh.ServerConn, channel gossh.Channel, reqs <-chan *gossh.Request) {
-	role := conn.Permissions.Extensions[permRole]
-
-	switch role {
-	case roleAdmin:
-		s.adminHandler(channel, reqs, conn, s.repo)
-	case roleClient:
-		handleClientSession(channel, reqs, conn, s.repo, s.proxier, s.logger)
-	default:
-		s.logger.Printf("unknown role %q for %s", role, conn.User())
-		_, _ = fmt.Fprintf(channel, "access denied\r\n")
-		_ = channel.Close()
+		si := si // capture for goroutine
+		go handleSession(channel, reqs, s.repo, s.proxier, s.discoverer, s.logger, si)
 	}
 }
 
@@ -288,23 +258,18 @@ func (s *Server) loadOrGenerateHostKey() (gossh.Signer, error) {
 	if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("reading host key: %w", err)
 	}
-
-	// Generate a new ED25519 key.
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("generating ed25519 key: %w", err)
 	}
-
 	pemBlock, err := gossh.MarshalPrivateKey(priv, "")
 	if err != nil {
 		return nil, fmt.Errorf("marshaling private key: %w", err)
 	}
-
 	pemBytes := pem.EncodeToMemory(pemBlock)
 	if err := os.WriteFile(s.hostKeyPath, pemBytes, 0600); err != nil {
 		return nil, fmt.Errorf("writing host key: %w", err)
 	}
-
 	s.logger.Printf("generated new ED25519 host key at %s", s.hostKeyPath)
 	return gossh.ParsePrivateKey(pemBytes)
 }

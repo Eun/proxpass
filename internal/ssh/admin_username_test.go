@@ -89,14 +89,12 @@ func setupAdminTest(t *testing.T) (
 	logger := log.New(io.Discard, "", 0)
 	mp = &testenv.MockProxier{}
 
-	adminHandler := proxssh.DefaultAdminHandler(mp, nil, logger)
-
 	srv := proxssh.NewServer(
 		"127.0.0.1:0", // not used; we pass an explicit listener
 		hostKeyPath,
 		env.Repo,
-		adminHandler,
 		mp,
+		nil, // no discoverer needed for proxy-only tests
 		logger,
 	)
 
