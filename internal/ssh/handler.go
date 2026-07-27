@@ -29,14 +29,16 @@ type sessionInfo struct {
 // session channel, regardless of whether the connection is an admin or
 // a regular client.
 //
-// Routing logic (same for both roles, access checks inside):
+// Routing table:
 //
-//  1. No PTY                        -> fail early with clear error
-//  2. help/--help/-h                -> write usage message
-//  3. no command (plain shell)      -> interactive TUI picker
-//  4. single-token command (admin)  -> try direct guest proxy, fall through to CLI on not-found
-//  5. multi-word command (admin)    -> run admin CLI
-//  6. single-token command (client) -> resolve guest + access check + proxy
+//	PTY?  Command              Admin                        Client
+//	yes   help/--help/-h       CLI --help output            usage message + guest list
+//	yes   (none)               interactive TUI picker       interactive TUI picker
+//	yes   single-token         direct proxy or CLI          resolve+access+proxy
+//	yes   multi-word           CLI                          "access denied" error
+//	no    help/--help/-h       CLI --help output            usage message + guest list
+//	no    (none)               text guest list              text guest list (filtered)
+//	no    any other            "need -t" error              "need -t" error
 //
 //nolint:gocognit,funlen // SSH session handling requires sequential branching
 func handleSession(
@@ -85,34 +87,50 @@ func handleSession(
 dispatch:
 	ctx := context.Background()
 
-	// --- phase 2: PTY required for all paths ---
-	if failIfNoPtyRequest(channel.Stderr(), ptyReq) {
-		logger.Printf("%s: no pty-req; refusing", si.logLabel)
-		drainAndDiscard(remaining)
-		return
-	}
-
-	// --- phase 3: help routing ---
+	// --- phase 2: help is allowed with or without a PTY ---
 	if isHelpCommand(execCmd) {
-		writeHelp(ctx, channel, repo, logger, si)
+		writeHelp(ctx, channel, repo, logger, discoverer, si)
 		drainAndDiscard(remaining)
 		return
 	}
 
-	// --- phase 4: no command = interactive picker ---
+	// --- phase 3: no-PTY paths (text output only, no interaction) ---
+	if ptyReq == nil {
+		if execCmd == "" {
+			// Plain shell without PTY: print text guest list and exit.
+			writeTextGuestList(ctx, channel, repo, logger, si)
+		} else {
+			// Any other command without PTY requires -t.
+			logger.Printf("%s: no pty-req for command %q; refusing", si.logLabel, execCmd)
+			_, _ = fmt.Fprintf(newCRLFWriter(channel.Stderr()),
+				"error: a PTY is required for guest access.\r\n"+
+					"Connect with: ssh -t ... or add 'RequestTTY yes' to ~/.ssh/config\r\n")
+		}
+		drainAndDiscard(remaining)
+		return
+	}
+
+	// --- phase 4: PTY present ---
+
+	// No command: interactive TUI picker (clientID==0 means admin: show all).
 	if execCmd == "" {
-		// clientID==0 means admin: show all guests.
 		interactiveGuestPicker(ctx, si.clientID, channel, remaining, repo, proxier, ptyReq, logger)
 		return
 	}
 
-	// --- phase 5: admin-only paths ---
 	if si.isAdmin {
 		runAdminCommand(ctx, execCmd, channel, remaining, repo, proxier, discoverer, ptyReq, logger, si.logLabel)
 		return
 	}
 
-	// --- phase 6: client direct proxy ---
+	// Clients: only single-token guest identifiers are allowed.
+	// Multi-word commands look like CLI commands and are explicitly rejected.
+	if strings.ContainsRune(execCmd, ' ') {
+		logger.Printf("%s: rejected multi-word command %q", si.logLabel, execCmd)
+		writeErr(channel, ptyReq, "access denied: clients may only connect to guests")
+		drainAndDiscard(remaining)
+		return
+	}
 	runClientProxy(ctx, execCmd, channel, remaining, repo, proxier, ptyReq, logger, si)
 }
 
@@ -165,7 +183,7 @@ func runAdminCommand(
 		_, _ = fmt.Fprintf(channel.Stderr(), "Error: %v\r\n", err)
 	}
 
-	// if the CLI requested a guest connection ("guest connect ct100"), proxy now.
+	// If the CLI requested a guest connection ("guest connect ct100"), proxy now.
 	if deps.ConnectRequest != nil {
 		proxyAfterCLI(channel, proxier, ptyReq, logger, logLabel, deps.ConnectRequest)
 	}
@@ -184,7 +202,7 @@ func runClientProxy(
 	logger *log.Logger,
 	si sessionInfo,
 ) {
-	instName, identifier := cli.ParseGuestTarget(execCmd)
+	inName, identifier := cli.ParseGuestTarget(execCmd)
 
 	guests, err := repo.ListGuests(ctx)
 	if err != nil {
@@ -202,7 +220,7 @@ func runClientProxy(
 		return
 	}
 
-	guest, inst, err := cli.ResolveGuestAndInstance(identifier, instName, guests, instances)
+	guest, inst, err := cli.ResolveGuestAndInstance(identifier, inName, guests, instances)
 	if err != nil {
 		logger.Printf("%s: %v", si.logLabel, err)
 		writeErr(channel, ptyReq, err.Error())
@@ -245,7 +263,7 @@ func tryDirectProxy(
 	logger *log.Logger,
 	logLabel string,
 ) (proxied bool, err error) {
-	instName, identifier := cli.ParseGuestTarget(execCmd)
+	inName, identifier := cli.ParseGuestTarget(execCmd)
 
 	guests, err := repo.ListGuests(ctx)
 	if err != nil {
@@ -256,7 +274,7 @@ func tryDirectProxy(
 		return false, fmt.Errorf("listing instances: %w", err)
 	}
 
-	guest, inst, err := cli.ResolveGuestAndInstance(identifier, instName, guests, instances)
+	guest, inst, err := cli.ResolveGuestAndInstance(identifier, inName, guests, instances)
 	if err != nil {
 		return false, err
 	}
@@ -300,22 +318,108 @@ func proxyAfterCLI(
 	}
 }
 
-// writeHelp prints role-aware usage information and a guest list to stderr.
-func writeHelp(ctx context.Context, channel gossh.Channel, repo db.Repository, logger *log.Logger, si sessionInfo) {
+// writeHelp prints usage information to stderr:
+//   - Admins: runs "proxpass --help" through the CLI to get the real output.
+//   - Clients: prints a static guest-connection usage message + filtered guest list.
+//
+// Works with or without a PTY.
+func writeHelp(
+	ctx context.Context,
+	channel gossh.Channel,
+	repo db.Repository,
+	logger *log.Logger,
+	discoverer proxmox.DiscovererFactory,
+	si sessionInfo,
+) {
 	w := newCRLFWriter(channel.Stderr())
 	if si.isAdmin {
-		_, _ = fmt.Fprint(w,
-			"Usage: ssh -t <host> [<guest-identifier>]\r\n\r\n"+
-				"Pass a single guest identifier (e.g. ct100, rome:ct101) to connect directly.\r\n"+
-				"Omit the identifier to see the interactive guest picker.\r\n"+
-				"Pass a CLI command (e.g. 'guest ls', 'instance ls') to manage proxpass.\r\n\r\n")
-	} else {
-		_, _ = fmt.Fprint(w,
-			"Usage: ssh -t <host> [<instance>:]<identifier>\r\n\r\n"+
-				"Identifier can be a VMID (e.g. 100), type+VMID (e.g. ct100), or name (e.g. webserver).\r\n"+
-				"If multiple guests match, prefix with the instance name (e.g. rome:ct101).\r\n\r\n")
+		// Run the real CLI help so it stays in sync with actual commands.
+		deps := &cli.Deps{
+			Repo:       repo,
+			Discoverer: discoverer,
+			Out:        w,
+			ErrOut:     w,
+		}
+		_ = cli.Build(deps).Run(ctx, []string{"proxpass", "--help"})
+		return
 	}
-	writeGuestList(ctx, w, repo, logger, si.logLabel)
+	// Clients: static message + their filtered guest list.
+	_, _ = fmt.Fprint(w,
+		"Usage: ssh -t <host> [<instance>:]<identifier>\r\n\r\n"+
+			"Identifier can be a VMID (e.g. 100), type+VMID (e.g. ct100), or name (e.g. webserver).\r\n"+
+			"If multiple guests match, prefix with the instance name (e.g. rome:ct101).\r\n\r\n")
+	writeFilteredGuestList(ctx, channel, repo, logger, si)
+}
+
+// writeTextGuestList writes a plain-text guest table to stdout (no PTY).
+// Admins see all guests; clients only see guests they have access to.
+func writeTextGuestList(
+	ctx context.Context,
+	channel gossh.Channel,
+	repo db.Repository,
+	logger *log.Logger,
+	si sessionInfo,
+) {
+	writeFilteredGuestList(ctx, channel, repo, logger, si)
+}
+
+// writeFilteredGuestList fetches and prints the guest table, filtered by
+// access for clients. Output goes to w (either stdout or stderr depending
+// on the caller). w must already produce \r\n line endings (pass a crlf writer).
+func writeFilteredGuestList(
+	ctx context.Context,
+	w gossh.Channel,
+	repo db.Repository,
+	logger *log.Logger,
+	si sessionInfo,
+) {
+	crlf := newCRLFWriter(w)
+
+	guests, err := repo.ListGuests(ctx)
+	if err != nil {
+		logger.Printf("%s: list guests for listing: %v", si.logLabel, err)
+		return
+	}
+
+	// Filter for clients.
+	if !si.isAdmin {
+		for i := len(guests) - 1; i >= 0; i-- {
+			ok, accessErr := repo.HasAccess(ctx, si.clientID, guests[i].ID)
+			if accessErr != nil {
+				logger.Printf("%s: access check for listing: %v", si.logLabel, accessErr)
+				return
+			}
+			if !ok {
+				guests = append(guests[:i], guests[i+1:]...)
+			}
+		}
+	}
+
+	if len(guests) == 0 {
+		_, _ = fmt.Fprint(crlf, "No guests available.\r\n")
+		return
+	}
+
+	instances, err := repo.ListProxmoxInstances(ctx)
+	if err != nil {
+		logger.Printf("%s: list instances for listing: %v", si.logLabel, err)
+		return
+	}
+	instMap := make(map[int64]string, len(instances))
+	for _, inst := range instances {
+		instMap[inst.ID] = inst.Name
+	}
+
+	_, _ = fmt.Fprintf(crlf, "%-6s %-6s %-24s %-10s %s\r\n",
+		"TYPE", "VMID", "NAME", "STATUS", "INSTANCE")
+	for _, g := range guests {
+		instName := instMap[g.InstanceID]
+		if instName == "" {
+			instName = fmt.Sprintf("(id:%d)", g.InstanceID)
+		}
+		_, _ = fmt.Fprintf(crlf, "%-6s %-6d %-24s %-10s %s\r\n",
+			g.Type, g.ProxmoxID, g.Name, g.Status, instName)
+	}
 }
 
 // --- small helpers ---

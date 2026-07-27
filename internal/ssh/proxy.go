@@ -335,33 +335,3 @@ func writeErr(channel gossh.Channel, _ *PtyRequest, msg string) {
 	_, _ = fmt.Fprintf(newCRLFWriter(channel.Stderr()), "%s\r\n", msg)
 }
 
-// writeGuestList fetches all guests and prints a formatted table to w.
-func writeGuestList(ctx context.Context, w io.Writer, repo db.Repository, logger *log.Logger, label string) {
-	guests, err := repo.ListGuests(ctx)
-	if err != nil {
-		logger.Printf("%s: list guests for help listing: %v", label, err)
-		return
-	}
-	if len(guests) == 0 {
-		_, _ = fmt.Fprintf(w, "\r\nNo guests discovered.\r\n")
-		return
-	}
-	instances, err := repo.ListProxmoxInstances(ctx)
-	if err != nil {
-		logger.Printf("%s: list instances for listing: %v", label, err)
-		return
-	}
-	instMap := make(map[int64]string, len(instances))
-	for _, inst := range instances {
-		instMap[inst.ID] = inst.Name
-	}
-	_, _ = fmt.Fprintf(w, "\r\nAvailable guests:\r\n")
-	_, _ = fmt.Fprintf(w, "%-6s %-6s %-24s %-10s %s\r\n", "TYPE", "VMID", "NAME", "STATUS", "INSTANCE")
-	for _, g := range guests {
-		instName := instMap[g.InstanceID]
-		if instName == "" {
-			instName = fmt.Sprintf("(id:%d)", g.InstanceID)
-		}
-		_, _ = fmt.Fprintf(w, "%-6s %-6d %-24s %-10s %s\r\n", g.Type, g.ProxmoxID, g.Name, g.Status, instName)
-	}
-}

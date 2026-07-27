@@ -133,22 +133,28 @@ func TestClientNoAccessReturnsError(t *testing.T) {
 	}
 }
 
-// TestClientShellWithoutPTYIsRejected verifies that a plain shell
-// session without a PTY is rejected with a clear error message.
-// A PTY (ssh -t) is always required for interactive access.
-func TestClientShellWithoutPTYIsRejected(t *testing.T) {
+// TestClientShellWithoutPTYShowsGuestList verifies that a plain shell
+// session without a PTY prints a text guest list instead of launching
+// the interactive picker (which requires a PTY).
+func TestClientShellWithoutPTYShowsGuestList(t *testing.T) {
 	addr, clientSigner, mp, cancel := setupClientTest(t)
 	defer cancel()
 
-	// No exec command, no PTY: should receive a "PTY required" error.
+	// No exec command, no PTY: should receive a text guest list.
 	output := sshShellStderrOutput(t, addr, "alice", clientSigner)
 
 	if strings.Contains(output, "[mock proxy]") {
 		t.Errorf("did not expect proxy banner; output: %q", output)
 	}
-	// Server should send the PTY-required error message.
-	if !strings.Contains(output, "PTY") && !strings.Contains(output, "ssh -t") {
-		t.Errorf("expected PTY-required error in output, got: %q", output)
+	// alice has access to webserver and devbox (seeded in testenv).
+	for _, name := range []string{testGuestWebserver, "devbox"} {
+		if !strings.Contains(output, name) {
+			t.Errorf("expected guest %q in text listing, got: %q", name, output)
+		}
+	}
+	// The table header should be present.
+	if !strings.Contains(output, "NAME") {
+		t.Errorf("expected table header in output, got: %q", output)
 	}
 
 	sessions := mp.RecordedSessions()
