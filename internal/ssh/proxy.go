@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"proxpass/internal/cli"
 	"proxpass/internal/db"
 	"proxpass/internal/models"
 	"proxpass/internal/tui"
@@ -45,142 +46,107 @@ func (e *GuestNotFoundError) Is(err error) bool {
 	return ok
 }
 
-// handleClientSession is invoked for every authenticated client channel.
-// The guest target is passed as the SSH exec command:
-//
-//	ssh -p 2222 host ct100
-//	ssh -p 2222 host rome:ct101
-//
-// omitting the command (a plain shell) writes a help message and closes.
-//
-//nolint:gocognit,funlen // SSH session handling requires sequential branching
-func handleClientSession(
-	channel gossh.Channel,
-	reqs <-chan *gossh.Request,
-	conn *gossh.ServerConn,
-	repo db.Repository,
-	proxier GuestProxier,
-	logger *log.Logger,
-) {
-	defer func() { _ = channel.Close() }()
-
-	ctx := context.Background()
-	clientName := conn.Permissions.Extensions["client_name"]
-
-	// Wait for the exec request that carries the guest identifier.
-	var execCmd string
-	var ptyReq *PtyRequest
-	var remaining <-chan *gossh.Request
-	for req := range reqs {
-		switch req.Type {
-		case reqTypePTY:
-			p, err := parsePtyReq(req.Payload)
-			if err != nil {
-				logger.Printf("client %s: bad pty-req: %v", clientName, err)
-				if req.WantReply {
-					_ = req.Reply(false, nil)
-				}
-				continue
-			}
-			ptyReq = p
-			if req.WantReply {
-				_ = req.Reply(true, nil)
-			}
-
-		case reqTypeExec:
-			if req.WantReply {
-				_ = req.Reply(true, nil)
-			}
-			if len(req.Payload) >= 4 {
-				cmdLen := int(req.Payload[0])<<24 | int(req.Payload[1])<<16 | int(req.Payload[2])<<8 | int(req.Payload[3])
-				if len(req.Payload) >= 4+cmdLen {
-					execCmd = string(req.Payload[4 : 4+cmdLen])
-				}
-			}
-			remaining = reqs
-			goto handleGuest
-
-		case reqTypeShell:
-			// Plain shell without an identifier: show an interactive guest picker.
-			if req.WantReply {
-				_ = req.Reply(true, nil)
-			}
-			handleShellPicker(ctx, channel, reqs, repo, proxier, logger, clientName, ptyReq)
-			return
-
-		default:
-			if req.WantReply {
-				_ = req.Reply(false, nil)
-			}
+// isHelpCommand returns true if the exec command should be routed to the help output.
+// This covers 'help', '--help', '-h', and empty (for help on shell login).
+func isHelpCommand(cmd string) bool {
+	for _, v := range []string{"help", "--help", "-h"} {
+		if strings.EqualFold(cmd, v) {
+			return true
 		}
 	}
-	return
+	return false
+}
 
-handleGuest:
-	if failIfNoPtyRequest(channel.Stderr(), ptyReq) {
-		logger.Printf("client %s: no pty-req received; refusing connection", clientName)
-		go gossh.DiscardRequests(remaining)
-		return
+// interactiveGuestPicker shows the TUI guest picker and proxies to the
+// selected guest. It is shared by both the admin and client paths.
+//
+// If clientID == 0, all guests are shown (admin path).
+// If clientID > 0, only guests this client has access to are shown.
+func interactiveGuestPicker(
+	ctx context.Context,
+	clientID int64,
+	channel gossh.Channel,
+	remaining <-chan *gossh.Request,
+	repo db.Repository,
+	proxier GuestProxier,
+	ptyReq *PtyRequest,
+	logger *log.Logger,
+) {
+	label := "admin"
+	if clientID != 0 {
+		label = fmt.Sprintf("client/%d", clientID)
 	}
-
-	// Resolve client and check access.
-	client, err := repo.GetClientByName(ctx, clientName)
-	if err != nil {
-		logger.Printf("client %s: lookup failed: %v", clientName, err)
-		writeErr(channel, ptyReq, "internal error")
-		go gossh.DiscardRequests(remaining)
-		return
-	}
-
-	if execCmd == "" {
-		adminPickerAndProxy(context.Background(), client.ID, channel, remaining, repo, proxier, ptyReq, logger)
-		return
-	}
-
-	// Parse the exec command as the guest identifier.
-	instName, identifier := parseGuestTarget(execCmd)
 
 	guests, err := repo.ListGuests(ctx)
 	if err != nil {
-		logger.Printf("client %s: failed to list guests: %v", clientName, err)
+		logger.Printf("%s: failed to list guests for picker: %v", label, err)
 		writeErr(channel, ptyReq, "internal error")
+		go gossh.DiscardRequests(remaining)
+		return
+	}
+
+	// When a client ID is provided, filter guests to only those the client has access to.
+	if clientID != 0 {
+		for i := len(guests) - 1; i >= 0; i-- {
+			ok, accessErr := repo.HasAccess(ctx, clientID, guests[i].ID)
+			if accessErr != nil {
+				writeErr(channel, ptyReq, fmt.Sprintf("Error: %v", accessErr))
+				go gossh.DiscardRequests(remaining)
+				return
+			}
+			if !ok {
+				guests = append(guests[:i], guests[i+1:]...)
+			}
+		}
+	}
+
+	if len(guests) == 0 {
+		_, _ = fmt.Fprintf(newCRLFWriter(channel.Stderr()), "\r\nNo guests discovered.\r\n")
 		go gossh.DiscardRequests(remaining)
 		return
 	}
 
 	instances, err := repo.ListProxmoxInstances(ctx)
 	if err != nil {
-		logger.Printf("client %s: failed to list instances: %v", clientName, err)
+		logger.Printf("%s: failed to list instances for picker: %v", label, err)
 		writeErr(channel, ptyReq, "internal error")
 		go gossh.DiscardRequests(remaining)
 		return
 	}
 
-	guest, inst, err := resolveGuestAndInstance(identifier, instName, guests, instances)
-	if err != nil {
-		logger.Printf("client %s: %v", clientName, err)
-		writeErr(channel, ptyReq, err.Error())
-		go gossh.DiscardRequests(remaining)
+	instMap := make(map[int64]string, len(instances))
+	instByID := make(map[int64]*models.ProxmoxInstance, len(instances))
+	for _, inst := range instances {
+		instMap[inst.ID] = inst.Name
+		instByID[inst.ID] = inst
+	}
+
+	// Drain remaining SSH requests while the picker runs.
+	go gossh.DiscardRequests(remaining)
+
+	guest, _, pickErr := tui.PickGuest(channel, channel, guests, instMap, ptyReq.Width, ptyReq.Height)
+	if pickErr != nil {
+		logger.Printf("%s: picker error: %v", label, pickErr)
+		return
+	}
+	if guest == nil {
+		// User cancelled.
 		return
 	}
 
-	ok, err := repo.HasAccess(ctx, client.ID, guest.ID)
-	if err != nil {
-		logger.Printf("client %s: access check failed: %v", clientName, err)
-		writeErr(channel, ptyReq, "internal error")
-		go gossh.DiscardRequests(remaining)
-		return
-	}
-	if !ok {
-		logger.Printf("client %s: access denied to guest %s", clientName, guest.Name)
-		writeErr(channel, ptyReq, "access denied")
-		go gossh.DiscardRequests(remaining)
+	inst := instByID[guest.InstanceID]
+	if inst == nil {
+		writeErr(channel, ptyReq, fmt.Sprintf("instance for guest %q not found", guest.Name))
 		return
 	}
 
-	if err := proxier.ProxyToGuest(channel, remaining, guest, inst, ptyReq, logger); err != nil {
-		logger.Printf("client %s: proxy error: %v", clientName, err)
-		writeErr(channel, ptyReq, fmt.Sprintf("proxy error: %v", err))
+	_, _ = fmt.Fprintf(newCRLFWriter(channel), "Connecting to %s (%s %d)...\r\n",
+		guest.Name, guest.Type, guest.ProxmoxID)
+
+	proxyReqs := make(chan *gossh.Request, 4)
+	defer close(proxyReqs)
+	if proxyErr := proxier.ProxyToGuest(channel, proxyReqs, guest, inst, ptyReq, logger); proxyErr != nil {
+		logger.Printf("%s: proxy error: %v", label, proxyErr)
 	}
 }
 
@@ -234,7 +200,7 @@ func proxyToGuest(
 	defer func() { _ = session.Close() }()
 
 	// Both pct enter (CT) and qm terminal (VM) use socat internally and
-	// require a PTY on the Proxmox SSH session unconditionally. Without one,
+	// require a PTY on the Proxmox SSH unconditionally. Without one,
 	// socat's tcgetattr(0, ...) call fails with ENOTTY, causing the console
 	// to hang or immediately exit.
 	//
@@ -285,8 +251,6 @@ func proxyToGuest(
 	var wg sync.WaitGroup
 
 	// Forward window-change requests from the client to the remote session.
-	// Uses select on done so we don't block on clientReqs, which isn't closed
-	// until after proxyToGuest returns (the bridge channel is closed in admin.go).
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -317,10 +281,6 @@ func proxyToGuest(
 	}()
 
 	// client → remote stdin.
-	// NOT in the WaitGroup: clientChan.Read blocks until the admin session
-	// closes the channel, which happens after proxyToGuest returns.
-	// When we close remoteStdin below the goroutine's next Write will fail
-	// and it will exit.
 	go func() {
 		_, _ = io.Copy(remoteStdin, clientChan)
 		_ = remoteStdin.Close()
@@ -341,9 +301,6 @@ func proxyToGuest(
 	}()
 
 	err = session.Wait()
-	// Signal the request-forwarding goroutine and tear down the remote
-	// side.  We do NOT close clientChan so the admin handler can reuse
-	// the channel for the TIU after the proxy session ends.
 	close(done)
 	_ = remoteStdin.Close()
 	_ = session.Close()
@@ -352,270 +309,24 @@ func proxyToGuest(
 	return err
 }
 
-// parseGuestTarget splits an optional "instance:identifier" string.
-// If no colon is present, instanceName is empty.
-func parseGuestTarget(s string) (instanceName, identifier string) {
-	if idx := strings.IndexByte(s, ':'); idx >= 0 {
-		return s[:idx], s[idx+1:]
-	}
-	return "", s
-}
-
-// resolveGuestAndInstance looks up a guest and its Proxmox instance by identifier
-// and an optional instance name filter.
-//
-// Resolution order for identifier:
-//  1. Numeric VMID.
-//  2. Type+VMID (e.g. "ct100", "vm200").
-//  3. Guest name (case-insensitive).
-//
-// If instName is non-empty, only guests on that instance are considered.
-// If multiple guests match, an error is returned hinting to use instance:identifier.
-func resolveGuestAndInstance(
-	identifier string,
-	instName string,
-	guests []*models.Guest,
-	instances []*models.ProxmoxInstance,
-) (*models.Guest, *models.ProxmoxInstance, error) {
-	// Build instance lookup map by ID and by name.
-	instByID := make(map[int64]*models.ProxmoxInstance, len(instances))
-	var instFilterID int64 = -1 // -1 means no filter
-	switch {
-	case instName != "":
-		found := false
-		for _, inst := range instances {
-			instByID[inst.ID] = inst
-			if strings.EqualFold(inst.Name, instName) {
-				instFilterID = inst.ID
-				found = true
-			}
-		}
-		if !found {
-			return nil, nil, fmt.Errorf("instance %q not found", instName)
-		}
-	default:
-		for _, inst := range instances {
-			instByID[inst.ID] = inst
-		}
-	}
-
-	// Filter guests by instance if a filter was given.
-	var pool []*models.Guest
-	if instFilterID >= 0 {
-		for _, g := range guests {
-			if g.InstanceID == instFilterID {
-				pool = append(pool, g)
-			}
-		}
+// writeErr writes a message to the channel's stderr, using \r\n line endings
+// when a PTY is active.
+func writeErr(channel gossh.Channel, ptyReq *PtyRequest, msg string) {
+	var w io.Writer
+	if ptyReq != nil {
+		w = newCRLFWriter(channel.Stderr())
 	} else {
-		pool = guests
+		w = channel.Stderr()
 	}
-
-	guest, err := resolveGuest(identifier, pool, instName == "" /* hintInstance*/)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	inst := instByID[guest.InstanceID]
-	if inst == nil {
-		return nil, nil, fmt.Errorf("proxmox instance for guest %q not found", guest.Name)
-	}
-	return guest, inst, nil
-}
-
-// resolveGuest looks up a guest by the identifier within the given pool.
-// Resolution order: numeric VMID → type+VMID (ct100, vm200) ‒ name.
-//
-// hintInstance controls whether error messages suggest using the
-// instance:identifier format to disambiguate.
-//
-//nolint:gocognit,nestif // sequential resolution tiers require nested checks
-func resolveGuest(
-	identifier string,
-	guests []*models.Guest,
-	hintInstance bool,
-) (*models.Guest, error) {
-	lower := strings.ToLower(identifier)
-
-	// --- 1. Try numeric VMID ---
-	if vmid, err := strconv.Atoi(identifier); err == nil {
-		var matches []*models.Guest
-		for _, g := range guests {
-			if g.ProxmoxID == vmid {
-				matches = append(matches, g)
-			}
-		}
-		if len(matches) == 1 {
-			return matches[0], nil
-		}
-		if len(matches) > 1 {
-			if hintInstance {
-				return nil, fmt.Errorf(
-					"VMID %d matches %d guests; use instance:identifier (see 'guest ls')",
-					vmid, len(matches))
-			}
-			return nil, fmt.Errorf(
-				"VMID %d matches %d guests; use type+id instead (e.g. %s%d)",
-				vmid, len(matches), matches[0].Type, vmid)
-		}
-		// No match by VMID; fall through to other methods.
-	}
-
-	// --- 2. Try type+VMID (e.g. "ct100", "vm200") ---
-	for _, prefix := range []models.GuestType{
-		models.GuestTypeCT, models.GuestTypeVM,
-	} {
-		p := string(prefix)
-		if strings.HasPrefix(lower, p) {
-			if vmid, err := strconv.Atoi(lower[len(p):]); err == nil {
-				for _, g := range guests {
-					if g.Type == prefix && g.ProxmoxID == vmid {
-						return g, nil
-					}
-				}
-			}
-		}
-	}
-
-	// --- 3. Try guest name (case-insensitive) ---
-	var matches []*models.Guest
-	for _, g := range guests {
-		if strings.EqualFold(g.Name, identifier) {
-			matches = append(matches, g)
-		}
-	}
-	if len(matches) == 1 {
-		return matches[0], nil
-	}
-	if len(matches) > 1 {
-		if hintInstance {
-			return nil, fmt.Errorf(
-				"name %q matches %d guests; use instance:identifier (see 'guest ls')",
-				identifier, len(matches))
-		}
-		var hints []string
-		for _, g := range matches {
-			hints = append(hints, fmt.Sprintf("%s%d", g.Type, g.ProxmoxID))
-		}
-		return nil, fmt.Errorf(
-			"name %q matches %d guests; use a unique id: %s",
-			identifier, len(matches), strings.Join(hints, ", "))
-	}
-
-	return nil, &GuestNotFoundError{GuestName: identifier}
-}
-
-// handleShellPicker handles a plain shell request (no exec command) for a normal
-// (non-admin) client. It shows an interactive TUI guest picker over the channel.
-// When the user selects a running guest the connection is proxied immediately.
-// Stopped guests are shown but cannot be selected.
-func handleShellPicker(
-	ctx context.Context,
-	channel gossh.Channel,
-	reqs <-chan *gossh.Request,
-	repo db.Repository,
-	proxier GuestProxier,
-	logger *log.Logger,
-	clientName string,
-	ptyReq *PtyRequest,
-) {
-	if ptyReq == nil {
-		// No PTY – fall back to plain text listing.
-		var w io.Writer = channel.Stderr()
-		_, _ = fmt.Fprintf(w,
-			"Usage: ssh <host> [instance:]<identifier>\r\n\r\n"+
-				"Identifier can be a VMID (e.g. 100), type+VMID (e.g. ct100), or name (e.g. webserver).\r\n"+
-				"If multiple guests match, prefix with the instance name (e.g. rome:ct101).\r\n")
-		writeGuestList(ctx, w, repo, logger, clientName)
-		go gossh.DiscardRequests(reqs)
-		return
-	}
-
-	guests, err := repo.ListGuests(ctx)
-	if err != nil {
-		logger.Printf("client %s: failed to list guests for picker: %v", clientName, err)
-		writeErr(channel, ptyReq, "internal error")
-		go gossh.DiscardRequests(reqs)
-		return
-	}
-
-	if len(guests) == 0 {
-		_, _ = fmt.Fprintf(newCRLFWriter(channel.Stderr()), "\r\nNo guests discovered.\r\n")
-		go gossh.DiscardRequests(reqs)
-		return
-	}
-
-	instances, err := repo.ListProxmoxInstances(ctx)
-	if err != nil {
-		logger.Printf("client %s: failed to list instances for picker: %v", clientName, err)
-		writeErr(channel, ptyReq, "internal error")
-		go gossh.DiscardRequests(reqs)
-		return
-	}
-
-	// Filter to only the guests this client has access to.
-	client, err := repo.GetClientByName(ctx, clientName)
-	if err != nil {
-		logger.Printf("client %s: lookup failed: %v", clientName, err)
-		writeErr(channel, ptyReq, "internal error")
-		go gossh.DiscardRequests(reqs)
-		return
-	}
-
-	var accessible []*models.Guest
-	for _, g := range guests {
-		ok, accessErr := repo.HasAccess(ctx, client.ID, g.ID)
-		if accessErr != nil {
-			continue
-		}
-		if ok {
-			accessible = append(accessible, g)
-		}
-	}
-
-	instMap := make(map[int64]string, len(instances))
-	instByID := make(map[int64]*models.ProxmoxInstance, len(instances))
-	for _, inst := range instances {
-		instMap[inst.ID] = inst.Name
-		instByID[inst.ID] = inst
-	}
-
-	// Drain window-change requests while the picker is running.
-	go gossh.DiscardRequests(reqs)
-
-	guest, _, err := tui.PickGuest(channel, channel, accessible, instMap, ptyReq.Width, ptyReq.Height)
-	if err != nil {
-		logger.Printf("client %s: picker error: %v", clientName, err)
-		return
-	}
-	if guest == nil {
-		// User cancelled.
-		return
-	}
-
-	inst := instByID[guest.InstanceID]
-	if inst == nil {
-		writeErr(channel, ptyReq, fmt.Sprintf("instance for guest %q not found", guest.Name))
-		return
-	}
-
-	_, _ = fmt.Fprintf(newCRLFWriter(channel), "Connecting to %s (%s %d)...\r\n",
-		guest.Name, guest.Type, guest.ProxmoxID)
-
-	proxyReqs := make(chan *gossh.Request, 4)
-	defer close(proxyReqs)
-	if err := proxier.ProxyToGuest(channel, proxyReqs, guest, inst, ptyReq, logger); err != nil {
-		logger.Printf("client %s: proxy error: %v", clientName, err)
-		writeErr(channel, ptyReq, fmt.Sprintf("proxy error: %v", err))
-	}
+	_, _ = fmt.Fprintf(w, "%s\r\n", msg)
 }
 
 // writeGuestList fetches all guests from repo and prints a formatted table to w.
 // Errors are logged but do not interrupt the caller.
-func writeGuestList(ctx context.Context, w io.Writer, repo db.Repository, logger *log.Logger, clientName string) {
+func writeGuestList(ctx context.Context, w io.Writer, repo db.Repository, logger *log.Logger, label string) {
 	guests, err := repo.ListGuests(ctx)
 	if err != nil {
-		logger.Printf("client %s: failed to list guests for shell listing: %v", clientName, err)
+		logger.Printf("%s: failed to list guests for shell listing: %v", label, err)
 		return
 	}
 	if len(guests) == 0 {
@@ -624,7 +335,7 @@ func writeGuestList(ctx context.Context, w io.Writer, repo db.Repository, logger
 	}
 	instances, err := repo.ListProxmoxInstances(ctx)
 	if err != nil {
-		logger.Printf("client %s: failed to list instances for shell listing: %v", clientName, err)
+		logger.Printf("%s: failed to list instances for shell listing: %v", label, err)
 		return
 	}
 	instMap := make(map[int64]string, len(instances))
@@ -643,14 +354,158 @@ func writeGuestList(ctx context.Context, w io.Writer, repo db.Repository, logger
 	}
 }
 
-// writeErr writes a message to the channel's stderr, using \r\n line endings
-// when a PTY is active.
-func writeErr(channel gossh.Channel, ptyReq *PtyRequest, msg string) {
-	var w io.Writer
-	if ptyReq != nil {
-		w = newCRLFWriter(channel.Stderr())
-	} else {
-		w = channel.Stderr()
+// handleClientSession is invoked for every authenticated client channel.
+// The guest target is passed as the SSH exec command:
+//
+//	ssh -t -p 2222 host ct100
+//	ssh -t -p 2222 host rome:ct101
+//
+// Omitting the command (a plain shell with PTY) shows the interactive picker.
+// Passing no PTY at all (ssh without -t) fails early with a clear error.
+// Passing 'help' or '--help' as the command writes usage information.
+//
+//nolint:gocognit,funlen // SSH session handling requires sequential branching
+func handleClientSession(
+	channel gossh.Channel,
+	reqs <-chan *gossh.Request,
+	conn *gossh.ServerConn,
+	repo db.Repository,
+	proxier GuestProxier,
+	logger *log.Logger,
+) {
+	defer func() { _ = channel.Close() }()
+
+	ctx := context.Background()
+	clientName := conn.Permissions.Extensions["client_name"]
+
+	// Wait for the exec request that carries the guest identifier.
+	var execCmd string
+	var ptyReq *PtyRequest
+	var remaining <-chan *gossh.Request
+	for req := range reqs {
+		switch req.Type {
+		case reqTypePTY:
+			p, err := parsePtyReq(req.Payload)
+			if err != nil {
+				logger.Printf("client %s: bad pty-req: %v", clientName, err)
+				if req.WantReply {
+					_ = req.Reply(false, nil)
+				}
+				continue
+			}
+			ptyReq = p
+			if req.WantReply {
+				_ = req.Reply(true, nil)
+			}
+
+		case reqTypeExec:
+			if req.WantReply {
+				_ = req.Reply(true, nil)
+			}
+			if len(req.Payload) >= 4 {
+				cmdLen := int(req.Payload[0])<<24 | int(req.Payload[1])<<16 | int(req.Payload[2])<<8 | int(req.Payload[3])
+				if len(req.Payload) >= 4+cmdLen {
+					execCmd = string(req.Payload[4 : 4+cmdLen])
+				}
+			}
+			remaining = reqs
+			goto handleGuest
+
+		case reqTypeShell:
+			// Plain shell without an identifier.
+			if req.WantReply {
+				_ = req.Reply(true, nil)
+			}
+			remaining = reqs
+			goto handleGuest
+
+		default:
+			if req.WantReply {
+				_ = req.Reply(false, nil)
+			}
+		}
 	}
-	_, _ = fmt.Fprintf(w, "%s\r\n", msg)
+	return
+
+handleGuest:
+	// A PTY is required for all interactive guest access. Fail early with
+	// a clear error so the user knows to add 'ssh -t' or 'RequestTTY no'.
+	if failIfNoPtyRequest(channel.Stderr(), ptyReq) {
+		logger.Printf("client %s: no pty-req received; refusing connection", clientName)
+		go gossh.DiscardRequests(remaining)
+		return
+	}
+
+	// Route 'help', '--help', '-h' to a usage message.
+	if isHelpCommand(execCmd) {
+		w := newCRLFWriter(channel.Stderr())
+		_, _ = fmt.Fprintf(w,
+			"Usage: ssh -t <host> [<instance>:]<identifier>\r\n\r\n"+
+				"Identifier can be a VMID (e.g. 100), type+VMID (e.g. ct100), or name (e.g. webserver).\r\n"+
+				"If multiple guests match, prefix with the instance name (e.g. rome:ct101).\r\n")
+		writeGuestList(ctx, w, repo, logger, clientName)
+		go gossh.DiscardRequests(remaining)
+		return
+	}
+
+	// Resolve client and check access.
+	client, err := repo.GetClientByName(ctx, clientName)
+	if err != nil {
+		logger.Printf("client %s: lookup failed: %v", clientName, err)
+		writeErr(channel, ptyReq, "internal error")
+		go gossh.DiscardRequests(remaining)
+		return
+	}
+
+	// No exec command (plain shell): show the interactive TUI picker.
+	if execCmd == "" {
+		interactiveGuestPicker(ctx, client.ID, channel, remaining, repo, proxier, ptyReq, logger)
+		return
+	}
+
+	// Parse the exec command as the guest identifier.
+	instName, identifier := cli.ParseGuestTarget(execCmd)
+
+	guests, err := repo.ListGuests(ctx)
+	if err != nil {
+		logger.Printf("client %s: failed to list guests: %v", clientName, err)
+		writeErr(channel, ptyReq, "internal error")
+		go gossh.DiscardRequests(remaining)
+		return
+	}
+
+	instances, err := repo.ListProxmoxInstances(ctx)
+	if err != nil {
+		logger.Printf("client %s: failed to list instances: %v", clientName, err)
+		writeErr(channel, ptyReq, "internal error")
+		go gossh.DiscardRequests(remaining)
+		return
+	}
+
+	guest, inst, err := cli.ResolveGuestAndInstance(identifier, instName, guests, instances)
+	if err != nil {
+		logger.Printf("client %s: %v", clientName, err)
+		writeErr(channel, ptyReq, err.Error())
+		go gossh.DiscardRequests(remaining)
+		return
+	}
+
+	ok, err := repo.HasAccess(ctx, client.ID, guest.ID)
+	if err != nil {
+		logger.Printf("client %s: access check failed: %v", clientName, err)
+		writeErr(channel, ptyReq, "internal error")
+		go gossh.DiscardRequests(remaining)
+		return
+	}
+	if !ok {
+		logger.Printf("client %s: access denied to guest %s", clientName, guest.Name)
+		writeErr(channel, ptyReq, "access denied")
+		go gossh.DiscardRequests(remaining)
+		return
+	}
+
+	if err := proxier.ProxyToGuest(channel, remaining, guest, inst, ptyReq, logger); err != nil {
+		logger.Printf("client %s: proxy error: %v", clientName, err)
+		writeErr(channel, ptyReq, fmt.Sprintf("proxy error: %v", err))
+	}
 }
