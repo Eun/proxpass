@@ -10,18 +10,32 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 // ----------------------------------------------------------
-// Styles
+// Per-session styles
 // ----------------------------------------------------------
 
-var (
-	styleRunning = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))  // bright green
-	styleStopped = lipgloss.NewStyle().Foreground(lipgloss.Color("240")) // gray
-	styleTitle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
-	styleHint    = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Italic(true)
-)
+// guestStyles holds lipgloss styles bound to a specific renderer.
+// Using a per-call renderer (backed by the SSH channel writer with the
+// client's TERM) ensures bubbletea and lipgloss detect the remote terminal's
+// color capabilities instead of falling back to the server's os.Stdout.
+type guestStyles struct {
+	running lipgloss.Style
+	stopped lipgloss.Style
+	title   lipgloss.Style
+	hint    lipgloss.Style
+}
+
+func newGuestStyles(r *lipgloss.Renderer) *guestStyles {
+	return &guestStyles{
+		running: r.NewStyle().Foreground(lipgloss.Color("10")),  // bright green
+		stopped: r.NewStyle().Foreground(lipgloss.Color("240")), // gray
+		title:   r.NewStyle().Bold(true).Foreground(lipgloss.Color("205")),
+		hint:    r.NewStyle().Foreground(lipgloss.Color("241")).Italic(true),
+	}
+}
 
 // ----------------------------------------------------------
 // list.Item implementation
@@ -29,20 +43,19 @@ var (
 
 // guestItem wraps a Guest for the bubbles/list component.
 type guestItem struct {
-	guest     *models.Guest
+	guest    *models.Guest
 	instName string
+	styles   *guestStyles
 }
 
 func (i guestItem) FilterValue() string { return i.guest.Name }
 
-// list.DefaultDelegate calls Title() and Description() on items.
 func (i guestItem) Title() string {
-	status := i.guest.Status
 	name := fmt.Sprintf("%s [%s%d]", i.guest.Name, i.guest.Type, i.guest.ProxmoxID)
-	if status == models.StatusRunning {
-		return styleRunning.Render(name)
+	if i.guest.Status == models.StatusRunning {
+		return i.styles.running.Render(name)
 	}
-	return styleStopped.Render(name)
+	return i.styles.stopped.Render(name)
 }
 
 func (i guestItem) Description() string {
@@ -52,19 +65,10 @@ func (i guestItem) Description() string {
 	}
 	s := strings.Join(parts, " • ")
 	if i.guest.Status != models.StatusRunning {
-		return styleStopped.Render(s)
+		return i.styles.stopped.Render(s)
 	}
-	return styleHint.Render(s)
+	return i.styles.hint.Render(s)
 }
-
-// ----------------------------------------------------------
-// Messages
-// ----------------------------------------------------------
-
-type selectedMsg struct { item guestItem }
-type quitMsg struct{}
-
-type stoppedMsg struct { name string }
 
 // ----------------------------------------------------------
 // Model
@@ -75,27 +79,29 @@ type pickerModel struct {
 	selected *guestItem
 	hint     string // temporary message for stopped-guest selection
 	quit     bool
+	styles   *guestStyles
 }
 
 func newPickerModel(
 	guests []*models.Guest,
 	instMap map[int64]string,
 	width, height int,
+	styles *guestStyles,
 ) pickerModel {
 	items := make([]list.Item, 0, len(guests))
 	for _, g := range guests {
-		items = append(items, guestItem{guest: g, instName: instMap[g.InstanceID]})
+		items = append(items, guestItem{guest: g, instName: instMap[g.InstanceID], styles: styles})
 	}
 
 	delegate := list.NewDefaultDelegate()
 
 	l := list.New(items, delegate, width, height)
-	l.Title = styleTitle.Render("Select a guest to connect to")
+	l.Title = styles.title.Render("Select a guest to connect to")
 	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(true)
 	l.SetShowHelp(true)
 
-	return pickerModel{list: l}
+	return pickerModel{list: l, styles: styles}
 }
 
 func (m pickerModel) Init() tea.Cmd { return nil }
@@ -103,7 +109,6 @@ func (m pickerModel) Init() tea.Cmd { return nil }
 func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		// Cancel on q/Esc/Ctrl+C
 		switch msg.String() {
 		case "q", "esc", "ctrl+c":
 			m.quit = true
@@ -114,14 +119,12 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 			if selected.guest.Status != models.StatusRunning {
-				// Show a hint and do not connect
 				m.hint = fmt.Sprintf("%s is stopped — cannot connect.", selected.guest.Name)
 				return m, nil
 			}
 			m.selected = &selected
 			return m, tea.Quit
 		}
-		// Clear hint on any other keypress
 		if m.hint != "" && msg.String() != "enter" {
 			m.hint = ""
 		}
@@ -149,6 +152,34 @@ func (m pickerModel) View() string {
 }
 
 // ----------------------------------------------------------
+// sshEnviron
+// ----------------------------------------------------------
+
+// sshEnviron implements termenv.Environ using only the SSH client's TERM.
+// It intentionally omits all server-side variables so the color profile is
+// determined purely by what the SSH client advertised.
+type sshEnviron struct {
+	termType string
+}
+
+func (e sshEnviron) Environ() []string {
+	return []string{
+		"TERM=" + e.termType,
+		"CLICOLOR_FORCE=1",
+	}
+}
+
+func (e sshEnviron) Getenv(key string) string {
+	switch key {
+	case "TERM":
+		return e.termType
+	case "CLICOLOR_FORCE":
+		return "1"
+	}
+	return ""
+}
+
+// ----------------------------------------------------------
 // Public entry point
 // ----------------------------------------------------------
 
@@ -159,9 +190,20 @@ func (m pickerModel) View() string {
 // or nil, "" if the user cancels without making a selection.
 //
 // width and height are the initial terminal dimensions (columns/rows).
-// term is the TERM value from the SSH pty-req (e.g. "xterm-256color"); it is
-// forwarded to bubbletea via WithEnvironment so that color/capability
-// detection uses the client's terminal type rather than the server's env.
+// termType is the TERM value from the SSH pty-req (e.g. "xterm-256color").
+//
+// Color rendering strategy:
+//
+//   - A per-session lipgloss.Renderer is created backed by the SSH channel
+//     writer with termenv.WithTTY(true) so IsTerminal() is not called on it
+//     (the SSH channel is not an *os.File and has no file descriptor).
+//   - termenv.WithEnvironment(sshEnviron) feeds the SSH client's TERM into
+//     the color-profile detection, giving ANSI256 for xterm-256color etc.
+//   - CLICOLOR_FORCE=1 is also injected so colorprofile.Detect() never falls
+//     back to NoTTY even when os.Stdout has no TTY (daemon/systemd mode).
+//   - All picker styles are created via r.NewStyle() from this per-session
+//     renderer, not from the global lipgloss renderer which is tied to
+//     os.Stdout.
 func PickGuest(
 	reader io.Reader,
 	writer io.Writer,
@@ -186,12 +228,24 @@ func PickGuest(
 		termType = "xterm-256color"
 	}
 
-	m := newPickerModel(guests, instMap, w, h)
+	// Build a per-session lipgloss renderer backed by the SSH channel writer.
+	// WithTTY(true) bypasses the Fd()/IsTerminal check (SSH channel has no fd).
+	// WithEnvironment(sshEnviron) feeds TERM and CLICOLOR_FORCE=1 for correct
+	// color-profile detection independent of the server's os.Environ().
+	sshRenderer := lipgloss.NewRenderer(writer,
+		termenv.WithTTY(true),
+		termenv.WithEnvironment(sshEnviron{termType: termType}),
+	)
+	styles := newGuestStyles(sshRenderer)
+	m := newPickerModel(guests, instMap, w, h, styles)
 
-	// Pass the SSH client's TERM value as the environment so bubbletea and
-	// lipgloss detect color/capability from the remote terminal, not from the
-	// server process environment (which typically has no TERM set).
-	environ := []string{"TERM=" + termType}
+	// Also pass the env to bubbletea (stored for future use; currently
+	// bubbletea v1 doesn't forward it to its internal renderer, but it's
+	// correct to set it for forward-compatibility and documentation).
+	environ := []string{
+		"TERM=" + termType,
+		"CLICOLOR_FORCE=1",
+	}
 
 	p, err := tea.NewProgram(
 		m,
