@@ -213,7 +213,6 @@ func (s *Server) handleConnection(ctx context.Context, tcpConn net.Conn, config 
 	} else {
 		clientName := sshConn.Permissions.Extensions["client_name"]
 		si.logLabel = "client/" + clientName
-
 	}
 
 	for newChan := range chans {

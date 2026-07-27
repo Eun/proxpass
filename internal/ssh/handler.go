@@ -94,7 +94,7 @@ dispatch:
 
 	// --- phase 3: help routing ---
 	if isHelpCommand(execCmd) {
-		writeHelp(channel, ctx, repo, logger, si)
+		writeHelp(ctx, channel, repo, logger, si)
 		drainAndDiscard(remaining)
 		return
 	}
@@ -134,7 +134,7 @@ func runAdminCommand(
 	logger *log.Logger,
 	logLabel string,
 ) {
-// Try direct proxy for single-token commands (no spaces); multi-word goes straight to CLI.
+	// Try direct proxy for single-token commands (no spaces); multi-word goes straight to CLI.
 	if !strings.ContainsRune(execCmd, ' ') {
 		proxied, err := tryDirectProxy(ctx, execCmd, channel, remaining, repo, proxier, ptyReq, logger, logLabel)
 		if proxied {
@@ -147,7 +147,7 @@ func runAdminCommand(
 			return
 		}
 		// Not-found: fall through to CLI so "ssh host zzz999" produces
-		// "Error: unknown command in stead of silence.
+		// "Error: unknown command" instead of silence.
 	}
 
 	// Run the admin CLI.
@@ -301,7 +301,7 @@ func proxyAfterCLI(
 }
 
 // writeHelp prints role-aware usage information and a guest list to stderr.
-func writeHelp(channel gossh.Channel, ctx context.Context, repo db.Repository, logger *log.Logger, si sessionInfo) {
+func writeHelp(ctx context.Context, channel gossh.Channel, repo db.Repository, logger *log.Logger, si sessionInfo) {
 	w := newCRLFWriter(channel.Stderr())
 	if si.isAdmin {
 		_, _ = fmt.Fprint(w,
