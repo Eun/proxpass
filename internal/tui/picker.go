@@ -159,12 +159,16 @@ func (m pickerModel) View() string {
 // or nil, "" if the user cancels without making a selection.
 //
 // width and height are the initial terminal dimensions (columns/rows).
+// term is the TERM value from the SSH pty-req (e.g. "xterm-256color"); it is
+// forwarded to bubbletea via WithEnvironment so that color/capability
+// detection uses the client's terminal type rather than the server's env.
 func PickGuest(
 	reader io.Reader,
 	writer io.Writer,
 	guests []*models.Guest,
 	instMap map[int64]string,
 	width, height uint32,
+	termType string,
 ) (*models.Guest, string, error) {
 	if len(guests) == 0 {
 		return nil, "", nil
@@ -178,13 +182,22 @@ func PickGuest(
 	if h == 0 {
 		h = 24
 	}
+	if termType == "" {
+		termType = "xterm-256color"
+	}
 
 	m := newPickerModel(guests, instMap, w, h)
+
+	// Pass the SSH client's TERM value as the environment so bubbletea and
+	// lipgloss detect color/capability from the remote terminal, not from the
+	// server process environment (which typically has no TERM set).
+	environ := []string{"TERM=" + termType}
 
 	p, err := tea.NewProgram(
 		m,
 		tea.WithInput(reader),
 		tea.WithOutput(writer),
+		tea.WithEnvironment(environ),
 		tea.WithoutCatchPanics(),
 	).Run()
 	if err != nil {

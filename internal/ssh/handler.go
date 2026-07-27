@@ -31,14 +31,12 @@ type sessionInfo struct {
 //
 // Routing table:
 //
-//	PTY?  Command              Admin                        Client
-//	yes   help/--help/-h       CLI --help output            usage message + guest list
-//	yes   (none)               interactive TUI picker       interactive TUI picker
-//	yes   single-token         direct proxy or CLI          resolve+access+proxy
-//	yes   multi-word           CLI                          "access denied" error
-//	no    help/--help/-h       CLI --help output            usage message + guest list
-//	no    (none)               text guest list              text guest list (filtered)
-//	no    any other            "need -t" error              "need -t" error
+//	Command              Admin                        Client
+//	help/--help/-h       CLI --help output            usage message + guest list
+//	(none/no PTY)        "need -t" error              "need -t" error
+//	(none/PTY)           interactive TUI picker       interactive TUI picker
+//	single-token+PTY     direct proxy or CLI          resolve+access+proxy
+//	multi-word+PTY       CLI                          "access denied" error
 //
 //nolint:gocognit,funlen // SSH session handling requires sequential branching
 func handleSession(
@@ -94,18 +92,9 @@ dispatch:
 		return
 	}
 
-	// --- phase 3: no-PTY paths (text output only, no interaction) ---
-	if ptyReq == nil {
-		if execCmd == "" {
-			// Plain shell without PTY: print text guest list and exit.
-			writeTextGuestList(ctx, channel, repo, logger, si)
-		} else {
-			// Any other command without PTY requires -t.
-			logger.Printf("%s: no pty-req for command %q; refusing", si.logLabel, execCmd)
-			_, _ = fmt.Fprintf(newCRLFWriter(channel.Stderr()),
-				"error: a PTY is required for guest access.\r\n"+
-					"Connect with: ssh -t ... or add 'RequestTTY yes' to ~/.ssh/config\r\n")
-		}
+	// --- phase 3: PTY required for all interactive paths ---
+	if failIfNoPtyRequest(channel.Stderr(), ptyReq) {
+		logger.Printf("%s: no pty-req; refusing", si.logLabel)
 		drainAndDiscard(remaining)
 		return
 	}
@@ -351,17 +340,6 @@ func writeHelp(
 	writeFilteredGuestList(ctx, channel, repo, logger, si)
 }
 
-// writeTextGuestList writes a plain-text guest table to stdout (no PTY).
-// Admins see all guests; clients only see guests they have access to.
-func writeTextGuestList(
-	ctx context.Context,
-	channel gossh.Channel,
-	repo db.Repository,
-	logger *log.Logger,
-	si sessionInfo,
-) {
-	writeFilteredGuestList(ctx, channel, repo, logger, si)
-}
 
 // writeFilteredGuestList fetches and prints the guest table, filtered by
 // access for clients. Output goes to w (either stdout or stderr depending

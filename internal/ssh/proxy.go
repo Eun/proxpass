@@ -128,7 +128,7 @@ func interactiveGuestPicker(
 
 	drainAndDiscard(remaining)
 
-	guest, _, pickErr := tui.PickGuest(channel, channel, guests, instMap, ptyReq.Width, ptyReq.Height)
+	guest, _, pickErr := tui.PickGuest(channel, channel, guests, instMap, ptyReq.Width, ptyReq.Height, ptyReq.Term)
 	if pickErr != nil {
 		logger.Printf("%s: picker error: %v", label, pickErr)
 		return
