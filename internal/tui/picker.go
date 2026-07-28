@@ -144,6 +144,42 @@ func (i guestItem) Description() string {
 	return strings.Join(parts, " • ")
 }
 
+// isStopped returns true when the item is a stopped guest.
+func (i guestItem) isStopped() bool {
+	return i.guest.Status != models.StatusRunning
+}
+
+// ----------------------------------------------------------
+// Custom delegate
+// ----------------------------------------------------------
+
+// guestDelegate wraps list.DefaultDelegate and overrides Render so that
+// stopped guests always use the DimmedTitle/DimmedDesc styles regardless of
+// selection state. The DefaultDelegate.Render pipeline (truncation, filter-match
+// highlighting via lipgloss.StyleRunes) is reused for the normal/selected paths.
+type guestDelegate struct {
+	list.DefaultDelegate
+}
+
+func (d guestDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
+	gi, ok := item.(guestItem)
+	if !ok || !gi.isStopped() {
+		// Running guest or unknown type: default rendering handles everything.
+		d.DefaultDelegate.Render(w, m, index, item)
+		return
+	}
+
+	// Stopped guest: force DimmedTitle/DimmedDesc for all states
+	// (normal, selected, and filtered) by temporarily swapping the styles.
+	orig := d.DefaultDelegate.Styles
+	d.DefaultDelegate.Styles.NormalTitle = orig.DimmedTitle
+	d.DefaultDelegate.Styles.NormalDesc = orig.DimmedDesc
+	d.DefaultDelegate.Styles.SelectedTitle = orig.DimmedTitle
+	d.DefaultDelegate.Styles.SelectedDesc = orig.DimmedDesc
+	d.DefaultDelegate.Render(w, m, index, item)
+	d.DefaultDelegate.Styles = orig
+}
+
 // ----------------------------------------------------------
 // Model
 // ----------------------------------------------------------
@@ -169,7 +205,7 @@ func newPickerModel(
 		items = append(items, guestItem{guest: g, instName: instMap[g.InstanceID]})
 	}
 
-	delegate := list.NewDefaultDelegate()
+	delegate := guestDelegate{list.NewDefaultDelegate()}
 	delegate.Styles = styles.delegate
 
 	l := list.New(items, delegate, width, height)
