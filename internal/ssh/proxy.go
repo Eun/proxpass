@@ -25,6 +25,7 @@ const (
 	reqTypeShell     = "shell"
 	reqTypeExec      = "exec"
 	reqTypeWinChange = "window-change"
+	reqTypeEnv       = "env"
 )
 
 const (
@@ -129,7 +130,7 @@ func interactiveGuestPicker(
 
 	drainAndDiscard(remaining)
 
-	guest, _, pickErr := tui.PickGuest(channel, channel, guests, instMap, ptyReq.Width, ptyReq.Height, ptyReq.Term)
+	guest, _, pickErr := tui.PickGuest(channel, channel, guests, instMap, ptyReq.Width, ptyReq.Height, ptyReq.Term, ptyReq.ColorTerm, ptyReq.NoColor)
 	if pickErr != nil {
 		logger.Printf("%s: picker error: %v", label, pickErr)
 		return
@@ -257,13 +258,19 @@ func proxyToGuest(
 	// Proxmox host that is one row shorter so that the guest's full-screen
 	// applications never draw into the status bar row.
 	effTerm, effH, effW, effModes := effectivePty(ptyReq)
+	// Extract color env vars safely (ptyReq may be nil in tests).
+	var colorTerm, noColor string
+	if ptyReq != nil {
+		colorTerm = ptyReq.ColorTerm
+		noColor = ptyReq.NoColor
+	}
 	// Create the status bar. Setup() returns the guest height (effH-1) which
 	// we pass to the remote PTY so the guest never draws into the bar row.
 	sb := statusbar.New(clientChan,
 		statusbar.WithText("proxpass", fmt.Sprintf("%s (%s%d) @ %s",
 			guest.Name, guest.Type, guest.ProxmoxID, inst.Name)),
 		statusbar.WithHint("Ctrl+A X: disconnect"),
-		statusbar.WithTermType(effTerm, "", ""),
+		statusbar.WithTermType(effTerm, colorTerm, noColor),
 	)
 	guestH := sb.Setup(effW, effH)
 	if err := session.RequestPty(effTerm, guestH, effW, effModes); err != nil {
@@ -386,7 +393,13 @@ func effectivePty(ptyReq *PtyRequest) (term string, h int, w int, modes gossh.Te
 	if p == nil {
 		p = &PtyRequest{Term: termXterm256Color, Width: 80, Height: 24}
 	}
-	return p.Term, int(p.Height), int(p.Width), parseModes(p.Modes)
+	t := p.Term
+	if t == "" {
+		// pty-req sent no TERM and no "env" request set it either.
+		// Fall back to a sane default so color detection works correctly.
+		t = termXterm256Color
+	}
+	return t, int(p.Height), int(p.Width), parseModes(p.Modes)
 }
 
 // guestConsoleCmd returns the correct Proxmox shell command for the guest type.

@@ -50,13 +50,30 @@ func handleSession(
 ) {
 	defer func() { _ = channel.Close() }()
 
-	// --- phase 1: negotiate pty-req / shell / exec ---
+	// --- phase 1: negotiate env / pty-req / shell / exec ---
 	var execCmd string
 	var ptyReq *PtyRequest
 	var remaining <-chan *gossh.Request
+	// clientEnv holds a small allowlist of SSH env variables sent by the
+	// client via "env" channel requests (e.g. OpenSSH SetEnv in ssh_config).
+	// We only retain the keys relevant to color-profile detection.
+	clientEnv := make(map[string]string)
 
 	for req := range reqs {
 		switch req.Type {
+		case reqTypeEnv:
+			name, value, err := parseEnvRequest(req.Payload)
+			if err != nil {
+				logger.Printf("%s: bad env req: %v", si.logLabel, err)
+				replyReq(req, false)
+				continue
+			}
+			switch name {
+			case "TERM", "COLORTERM", "NO_COLOR":
+				clientEnv[name] = value
+			}
+			replyReq(req, true)
+
 		case reqTypePTY:
 			p, err := parsePtyReq(req.Payload)
 			if err != nil {
@@ -65,6 +82,15 @@ func handleSession(
 				continue
 			}
 			ptyReq = p
+			// An env request arriving before pty-req (which is the normal
+			// OpenSSH order) may have already set TERM. Prefer pty-req TERM
+			// when non-empty (it is the authoritative terminal type); fall
+			// back to the env value otherwise.
+			if ptyReq.Term == "" {
+				ptyReq.Term = clientEnv["TERM"]
+			}
+			ptyReq.ColorTerm = clientEnv["COLORTERM"]
+			ptyReq.NoColor = clientEnv["NO_COLOR"]
 			replyReq(req, true)
 
 		case reqTypeExec:

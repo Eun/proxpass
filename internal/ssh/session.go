@@ -12,12 +12,17 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
-// PtyRequest holds the parsed fields of an SSH "pty-req" request.
+// PtyRequest holds the parsed fields of an SSH "pty-req" request plus any
+// color-relevant env vars received via SSH "env" channel requests (RFC 4254
+// §6.4). TERM from pty-req takes priority; env vars are stored separately so
+// callers can build a complete color-profile picture.
 type PtyRequest struct {
-	Term   string
-	Width  uint32
-	Height uint32
-	Modes  []byte
+	Term      string
+	Width     uint32
+	Height    uint32
+	Modes     []byte
+	ColorTerm string // from SSH env "COLORTERM" (e.g. "truecolor", "24bit")
+	NoColor   string // from SSH env "NO_COLOR"   (non-empty → no color)
 }
 
 // parsePtyReq parses the payload of an SSH "pty-req" channel request.
@@ -85,6 +90,31 @@ func parseWindowChange(data []byte) (width, height uint32, err error) {
 	width = binary.BigEndian.Uint32(data[0:4])
 	height = binary.BigEndian.Uint32(data[4:8])
 	return width, height, nil
+}
+
+// parseEnvRequest parses the payload of an SSH "env" channel request.
+// Wire format (RFC 4254 §6.4): string name, string value.
+func parseEnvRequest(data []byte) (name, value string, err error) {
+	if len(data) < 4 {
+		return "", "", fmt.Errorf("env payload too short")
+	}
+	nl := binary.BigEndian.Uint32(data[0:4])
+	data = data[4:]
+	if uint32(len(data)) < nl {
+		return "", "", fmt.Errorf("env: name length exceeds payload")
+	}
+	name = string(data[:nl])
+	data = data[nl:]
+	if len(data) < 4 {
+		return "", "", fmt.Errorf("env: missing value length")
+	}
+	vl := binary.BigEndian.Uint32(data[0:4])
+	data = data[4:]
+	if uint32(len(data)) < vl {
+		return "", "", fmt.Errorf("env: value length exceeds payload")
+	}
+	value = string(data[:vl])
+	return name, value, nil
 }
 
 // findClientByKey searches every client in the database for one whose stored

@@ -401,22 +401,36 @@ type sshEnviron struct {
 	hasColor bool // true when the client supports at least ANSI colors
 }
 
-func newSSHEnviron(termType string) sshEnviron {
-	// Use termenv to detect the color profile from TERM alone.
-	// We pass an empty NO_COLOR/COLORTERM so that only TERM drives the decision.
-	detect := &singleColorEnv{term: termType}
+func newSSHEnviron(termType, colorTerm, noColor string) sshEnviron {
+	// Use termenv to detect the color profile from the client's env vars.
+	detect := &singleColorEnv{term: termType, colorTerm: colorTerm, noColor: noColor}
 	out := termenv.NewOutput(nil, termenv.WithEnvironment(detect))
-	p := out.ColorProfile()
+	p := out.EnvColorProfile() // respects NO_COLOR / CLICOLOR via EnvColorProfile
 	return sshEnviron{termType: termType, hasColor: p != termenv.Ascii}
 }
 
 // singleColorEnv is a minimal termenv.Environ for color-profile detection.
-type singleColorEnv struct{ term string }
+type singleColorEnv struct {
+	term      string
+	colorTerm string
+	noColor   string
+}
 
-func (e *singleColorEnv) Environ() []string    { return []string{"TERM=" + e.term} }
+func (e *singleColorEnv) Environ() []string {
+	return []string{
+		"TERM=" + e.term,
+		"COLORTERM=" + e.colorTerm,
+		"NO_COLOR=" + e.noColor,
+	}
+}
 func (e *singleColorEnv) Getenv(key string) string {
-	if key == "TERM" {
+	switch key {
+	case "TERM":
 		return e.term
+	case "COLORTERM":
+		return e.colorTerm
+	case "NO_COLOR":
+		return e.noColor
 	}
 	return ""
 }
@@ -452,14 +466,16 @@ func (e sshEnviron) Getenv(key string) string {
 // Returns the selected Guest and the name of its instance,
 // or nil, "" if the user cancels without making a selection.
 //
-// termType is the TERM value from the SSH pty-req (e.g. "xterm-256color").
+// termType is the TERM value (e.g. "xterm-256color") — from pty-req or SSH env.
+// colorTerm is the COLORTERM value (e.g. "truecolor") — from SSH env, may be empty.
+// noColor is the NO_COLOR value — non-empty disables all color output.
 func PickGuest(
 	reader io.Reader,
 	writer io.Writer,
 	guests []*models.Guest,
 	instMap map[int64]string,
 	width, height uint32,
-	termType string,
+	termType, colorTerm, noColor string,
 ) (*models.Guest, string, error) {
 	if len(guests) == 0 {
 		return nil, "", nil
@@ -483,7 +499,7 @@ func PickGuest(
 	// independent of whether os.Stdout is a TTY on the server side.
 	// CLICOLOR_FORCE is only set when the client actually supports colors;
 	// dumb/Ascii-profile clients get a plain no-color rendering.
-	env := newSSHEnviron(termType)
+	env := newSSHEnviron(termType, colorTerm, noColor)
 	sshRenderer := lipgloss.NewRenderer(writer,
 		termenv.WithTTY(true),
 		termenv.WithEnvironment(env),
