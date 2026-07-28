@@ -17,110 +17,81 @@ import (
 // Per-session styles
 // ----------------------------------------------------------
 
-// guestStyles holds lipgloss styles bound to a specific renderer.
-type guestStyles struct {
+// pickerStyles holds all lipgloss styles for the picker, bound to the
+// per-session renderer so they work regardless of whether os.Stdout is a TTY.
+type pickerStyles struct {
+	// item colours used by guestItem.Title / Description
 	running lipgloss.Style
 	stopped lipgloss.Style
-	title   lipgloss.Style
 	hint    lipgloss.Style
+	// hint bar shown when a stopped guest is selected
+	stoppedHint lipgloss.Style
+	// list-component styles (set on l.Styles and delegate.Styles)
+	list     list.Styles
+	delegate list.DefaultItemStyles
 }
 
-func newGuestStyles(r *lipgloss.Renderer) *guestStyles {
-	return &guestStyles{
-		running: r.NewStyle().Foreground(lipgloss.Color("10")),  // bright green
-		stopped: r.NewStyle().Foreground(lipgloss.Color("240")), // gray
-		title:   r.NewStyle().Bold(true).Padding(0).Foreground(lipgloss.Color("205")),
-		hint:    r.NewStyle().Foreground(lipgloss.Color("241")).Italic(true),
+func newPickerStyles(r *lipgloss.Renderer) *pickerStyles {
+	verySubdued := lipgloss.AdaptiveColor{Light: "#DDDADA", Dark: "#3C3C3C"}
+	subdued := lipgloss.AdaptiveColor{Light: "#9B9B9B", Dark: "#5C5C5C"}
+
+	s := &pickerStyles{
+		running:     r.NewStyle().Foreground(lipgloss.Color("10")),
+		stopped:     r.NewStyle().Foreground(lipgloss.Color("240")),
+		hint:        r.NewStyle().Foreground(lipgloss.Color("241")).Italic(true),
+		stoppedHint: r.NewStyle().Foreground(lipgloss.Color("209")).Bold(true),
 	}
-}
 
-// defaultListStyles mirrors bubbles/list.DefaultStyles() but uses r.NewStyle()
-// so every style is evaluated against our per-session renderer rather than
-// the global lipgloss renderer (which is tied to os.Stdout).
-func defaultListStyles(r *lipgloss.Renderer) list.Styles { //nolint:revive // mirrors upstream signature
-	verySubduedColor := lipgloss.AdaptiveColor{Light: "#DDDADA", Dark: "#3C3C3C"}
-	subduedColor := lipgloss.AdaptiveColor{Light: "#9B9B9B", Dark: "#5C5C5C"}
-
-	var s list.Styles
-	s.TitleBar = r.NewStyle().Padding(0, 0, 1, 1) //nolint:mnd
-
-	s.Title = r.NewStyle().Foreground(lipgloss.Color("205"))
-
-	s.Spinner = r.NewStyle().
+	// list.Styles — mirrors bubbles/list.DefaultStyles() using r.NewStyle().
+	s.list.TitleBar = r.NewStyle().Padding(0, 0, 1, 1) //nolint:mnd
+	s.list.Title = r.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("205"))
+	s.list.Spinner = r.NewStyle().
 		Foreground(lipgloss.AdaptiveColor{Light: "#8E8E8E", Dark: "#747373"})
-
-	s.FilterPrompt = r.NewStyle().
+	s.list.FilterPrompt = r.NewStyle().
 		Foreground(lipgloss.AdaptiveColor{Light: "#04B575", Dark: "#ECFD65"})
-
-	s.FilterCursor = r.NewStyle().
+	s.list.FilterCursor = r.NewStyle().
 		Foreground(lipgloss.AdaptiveColor{Light: "#EE6FF8", Dark: "#EE6FF8"})
-
-	s.DefaultFilterCharacterMatch = r.NewStyle().Underline(true)
-
-	s.StatusBar = r.NewStyle().
+	s.list.DefaultFilterCharacterMatch = r.NewStyle().Underline(true)
+	s.list.StatusBar = r.NewStyle().
 		Foreground(lipgloss.AdaptiveColor{Light: "#A49FA5", Dark: "#777777"}).
 		Padding(0, 0, 1, 2) //nolint:mnd
-
-	s.StatusEmpty = r.NewStyle().Foreground(subduedColor)
-
-	s.StatusBarActiveFilter = r.NewStyle().
+	s.list.StatusEmpty = r.NewStyle().Foreground(subdued)
+	s.list.StatusBarActiveFilter = r.NewStyle().
 		Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#dddddd"})
-
-	s.StatusBarFilterCount = r.NewStyle().Foreground(verySubduedColor)
-
-	s.NoItems = r.NewStyle().
+	s.list.StatusBarFilterCount = r.NewStyle().Foreground(verySubdued)
+	s.list.NoItems = r.NewStyle().
 		Foreground(lipgloss.AdaptiveColor{Light: "#909090", Dark: "#626262"})
-
-	s.ArabicPagination = r.NewStyle().Foreground(subduedColor)
-
-	s.PaginationStyle = r.NewStyle().PaddingLeft(2) //nolint:mnd
-
-	s.HelpStyle = r.NewStyle().Padding(1, 0, 0, 2) //nolint:mnd
-
-	s.ActivePaginationDot = r.NewStyle().
+	s.list.ArabicPagination = r.NewStyle().Foreground(subdued)
+	s.list.PaginationStyle = r.NewStyle().PaddingLeft(2) //nolint:mnd
+	s.list.HelpStyle = r.NewStyle().Padding(1, 0, 0, 2)  //nolint:mnd
+	s.list.ActivePaginationDot = r.NewStyle().
 		Foreground(lipgloss.AdaptiveColor{Light: "#847A85", Dark: "#979797"}).
 		SetString("•")
+	s.list.InactivePaginationDot = r.NewStyle().Foreground(verySubdued).SetString("•")
+	s.list.DividerDot = r.NewStyle().Foreground(verySubdued).SetString(" • ")
 
-	s.InactivePaginationDot = r.NewStyle().
-		Foreground(verySubduedColor).
-		SetString("•")
-
-	s.DividerDot = r.NewStyle().
-		Foreground(verySubduedColor).
-		SetString(" • ")
-
-	return s
-}
-
-// defaultItemStyles mirrors bubbles/list.NewDefaultItemStyles() using r.NewStyle().
-func defaultItemStyles(r *lipgloss.Renderer) list.DefaultItemStyles {
-	var s list.DefaultItemStyles
-
-	s.NormalTitle = r.NewStyle().
+	// list.DefaultItemStyles — mirrors list.NewDefaultItemStyles() using r.NewStyle().
+	s.delegate.NormalTitle = r.NewStyle().
 		PaddingLeft(1).
 		Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#dddddd"})
-
-	s.NormalDesc = r.NewStyle().
+	s.delegate.NormalDesc = r.NewStyle().
 		PaddingLeft(1).
 		Foreground(lipgloss.AdaptiveColor{Light: "#A49FA5", Dark: "#777777"})
-
-	s.SelectedTitle = r.NewStyle().
+	s.delegate.SelectedTitle = r.NewStyle().
 		Border(lipgloss.NormalBorder(), false, false, false, true).
 		BorderForeground(lipgloss.AdaptiveColor{Light: "#F793FF", Dark: "#AD58B4"}).
 		Foreground(lipgloss.AdaptiveColor{Light: "#EE6FF8", Dark: "#EE6FF8"})
-
-	s.SelectedDesc = r.NewStyle().
+	s.delegate.SelectedDesc = r.NewStyle().
 		Border(lipgloss.NormalBorder(), false, false, false, true).
 		BorderForeground(lipgloss.AdaptiveColor{Light: "#F793FF", Dark: "#AD58B4"}).
 		Foreground(lipgloss.AdaptiveColor{Light: "#F793FF", Dark: "#AD58B4"})
-
-	s.DimmedTitle = r.NewStyle().
+	s.delegate.DimmedTitle = r.NewStyle().
 		Foreground(lipgloss.AdaptiveColor{Light: "#A49FA5", Dark: "#777777"})
-
-	s.DimmedDesc = r.NewStyle().
+	s.delegate.DimmedDesc = r.NewStyle().
 		Foreground(lipgloss.AdaptiveColor{Light: "#C2B8C2", Dark: "#4D4D4D"})
-
-	s.FilterMatch = r.NewStyle().Underline(true)
+	s.delegate.FilterMatch = r.NewStyle().Underline(true)
 
 	return s
 }
@@ -133,7 +104,7 @@ func defaultItemStyles(r *lipgloss.Renderer) list.DefaultItemStyles {
 type guestItem struct {
 	guest    *models.Guest
 	instName string
-	styles   *guestStyles
+	styles   *pickerStyles
 }
 
 func (i guestItem) FilterValue() string { return i.guest.Name }
@@ -166,10 +137,10 @@ func (i guestItem) Description() string {
 
 type pickerModel struct {
 	list     list.Model
+	styles   *pickerStyles
 	selected *guestItem
-	hint     string
+	hint     string // message shown when a stopped guest is selected
 	quit     bool
-	styles   *guestStyles
 }
 
 func newPickerModel(
@@ -178,23 +149,19 @@ func newPickerModel(
 	width, height int,
 	r *lipgloss.Renderer,
 ) pickerModel {
-	styles := newGuestStyles(r)
+	styles := newPickerStyles(r)
 
 	items := make([]list.Item, 0, len(guests))
 	for _, g := range guests {
 		items = append(items, guestItem{guest: g, instName: instMap[g.InstanceID], styles: styles})
 	}
 
-	// Build delegate with renderer-aware styles so the selected/normal item
-	// border and text colors also use our per-session renderer.
 	delegate := list.NewDefaultDelegate()
-	delegate.Styles = defaultItemStyles(r)
+	delegate.Styles = styles.delegate
 
 	l := list.New(items, delegate, width, height)
-	l.Title = styles.title.Render("Select a guest to connect to")
-	// Override ALL list styles with renderer-aware versions so nothing falls
-	// back to the global lipgloss renderer (which is tied to os.Stdout).
-	l.Styles = defaultListStyles(r)
+	l.Title = "Select a guest to connect to" // plain string; l.Styles.Title does the styling
+	l.Styles = styles.list
 	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(true)
 	l.SetShowHelp(true)
@@ -241,10 +208,7 @@ func (m pickerModel) View() string {
 	}
 	view := m.list.View()
 	if m.hint != "" {
-		view += "\r\n" + lipgloss.NewStyle().
-			Foreground(lipgloss.Color("209")).
-			Bold(true).
-			Render(m.hint)
+		view += "\r\n" + m.styles.stoppedHint.Render(m.hint)
 	}
 	return view
 }
@@ -283,11 +247,6 @@ func (e sshEnviron) Getenv(key string) string {
 // or nil, "" if the user cancels without making a selection.
 //
 // termType is the TERM value from the SSH pty-req (e.g. "xterm-256color").
-//
-// Color strategy: a per-session lipgloss.Renderer backed by the SSH channel
-// writer is created with termenv.WithTTY(true) and the SSH TERM. ALL styles
-// — including bubbles/list internal ones — are rebuilt from this renderer so
-// colors work regardless of whether os.Stdout is a TTY on the server side.
 func PickGuest(
 	reader io.Reader,
 	writer io.Writer,
@@ -314,7 +273,8 @@ func PickGuest(
 
 	// Per-session renderer: WithTTY(true) skips the Fd()/IsTerminal() check
 	// (SSH channel has no file descriptor). WithEnvironment feeds TERM and
-	// CLICOLOR_FORCE=1 for correct color-profile detection.
+	// CLICOLOR_FORCE=1 for correct color-profile detection independent of
+	// whether os.Stdout is a TTY on the server side.
 	sshRenderer := lipgloss.NewRenderer(writer,
 		termenv.WithTTY(true),
 		termenv.WithEnvironment(sshEnviron{termType: termType}),
@@ -322,13 +282,11 @@ func PickGuest(
 
 	m := newPickerModel(guests, instMap, w, h, sshRenderer)
 
-	environ := []string{"TERM=" + termType, "CLICOLOR_FORCE=1"}
-
 	p, err := tea.NewProgram(
 		m,
 		tea.WithInput(reader),
 		tea.WithOutput(writer),
-		tea.WithEnvironment(environ),
+		tea.WithEnvironment([]string{"TERM=" + termType, "CLICOLOR_FORCE=1"}),
 		tea.WithoutCatchPanics(),
 	).Run()
 	if err != nil {
