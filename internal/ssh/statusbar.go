@@ -11,18 +11,22 @@ import (
 // statusBar reserves the bottom row of the terminal for a persistent info line
 // and constrains the guest console to the remaining rows via DECSTBM.
 //
-// Key insight: the guest's terminal output (clear screen, cursor movement, etc.)
-// will overwrite anything we draw. We therefore redraw the bar after every
-// chunk of output we forward from the guest. A writerWithBar wraps the
-// destination writer and calls sb.draw() after each Write so the bar survives
-// even a full clear-screen from the guest application.
+// Design:
+//
+//   - setup() / resize() emit DECSTBM once to restrict the scroll region.
+//     DECSTBM must NOT be re-emitted on every write because many terminals
+//     move the cursor to (1,1) when they receive it, which breaks the guest.
+//
+//   - writerWithBar.Write() redraws the bar after every chunk of guest output
+//     using only: save-cursor → move-to-bar → erase → write → restore-cursor.
+//     No DECSTBM here, so the guest's cursor position is preserved correctly.
 //
 // Terminal sequences:
 //
-//	CSI Ps;Ps r  (DECSTBM) – scroll region top..bottom
-//	CSI row;col H (CUP)    – move cursor to absolute position
-//	ESC 7 / ESC 8          – DEC save/restore cursor (more portable than CSI s/u)
-//	CSI ?25l/h             – hide/show cursor
+//	CSI Ps;Ps r  (DECSTBM) – scroll region (emitted only on setup/resize)
+//	CSI row;col H (CUP)    – move cursor to absolute row/col
+//	ESC 7 / ESC 8          – DEC save/restore cursor position
+//	CSI ?25l/h             – hide/show cursor (reduce flicker)
 //	CSI K  (EL)            – erase to end of line
 const (
 	seqSaveCursor    = "\x1b7"
@@ -43,36 +47,38 @@ func seqMoveTo(row, col int) string {
 
 // statusBar manages the reserved bottom row.
 type statusBar struct {
-	w     io.Writer // raw SSH channel stdout
+	w     io.Writer
 	guest *models.Guest
 	inst  *models.ProxmoxInstance
 	mu    sync.Mutex
-	h     int // total terminal height
-	cols  int // terminal width
+	h     int
+	cols  int
 }
 
 func newStatusBar(w io.Writer, guest *models.Guest, inst *models.ProxmoxInstance) *statusBar {
 	return &statusBar{w: w, guest: guest, inst: inst}
 }
 
-// setup sets the initial dimensions, restricts the scroll region, and draws
-// the bar for the first time. Must be called before the guest session starts
-// so the scroll region is in place before the guest's first output.
+// setup sets the scroll region and draws the bar for the first time.
+// Must be called before the guest session starts.
 func (sb *statusBar) setup(cols, totalHeight int) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 	sb.cols = cols
 	sb.h = totalHeight
-	sb.draw()
+	sb.applyScrollRegion()
+	sb.drawBar()
 }
 
-// resize updates dimensions and redraws. Returns the adjusted guest height.
+// resize updates scroll region + redraws on terminal resize.
+// Returns the effective guest height (totalHeight - 1).
 func (sb *statusBar) resize(cols, totalHeight int) int {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 	sb.cols = cols
 	sb.h = totalHeight
-	sb.draw()
+	sb.applyScrollRegion()
+	sb.drawBar()
 	return sb.guestHeight()
 }
 
@@ -89,6 +95,14 @@ func (sb *statusBar) teardown() {
 	)
 }
 
+// redraw repaints the bar without touching the scroll region.
+// Safe to call after every guest write — no DECSTBM, no cursor teleport.
+func (sb *statusBar) redraw() {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	sb.drawBar()
+}
+
 // guestHeight is totalHeight - 1 (minimum 1).
 func (sb *statusBar) guestHeight() int {
 	h := sb.h - 1
@@ -98,22 +112,23 @@ func (sb *statusBar) guestHeight() int {
 	return h
 }
 
-// draw writes the scroll region restriction + bar text.
+// applyScrollRegion emits DECSTBM to restrict scrolling to rows 1..h-1.
 // Caller must hold sb.mu.
-func (sb *statusBar) draw() {
+func (sb *statusBar) applyScrollRegion() {
 	if sb.h < 2 || sb.cols < 1 { //nolint:mnd
 		return
 	}
-	// We use ESC 7/8 (DEC save/restore) which is more portable than
-	// CSI s/u (SCOSC/SCORC). The sequence order matters:
-	//  1. Hide cursor to avoid flicker.
-	//  2. Set scroll region so the guest is confined to rows 1..h-1.
-	//  3. Save cursor (we'll restore to wherever the guest left it).
-	//  4. Move to bar row, erase line, write bar.
-	//  5. Restore cursor, show cursor.
-	_, _ = fmt.Fprintf(sb.w, "%s%s%s%s%s%s%s%s",
+	_, _ = fmt.Fprint(sb.w, seqScrollRegion(1, sb.guestHeight()))
+}
+
+// drawBar paints the status bar at the last row without emitting DECSTBM.
+// Caller must hold sb.mu.
+func (sb *statusBar) drawBar() {
+	if sb.h < 2 || sb.cols < 1 { //nolint:mnd
+		return
+	}
+	_, _ = fmt.Fprintf(sb.w, "%s%s%s%s%s%s%s",
 		seqHideCursor,
-		seqScrollRegion(1, sb.guestHeight()),
 		seqSaveCursor,
 		seqMoveTo(sb.h, 1),
 		seqEraseToEOL,
@@ -142,9 +157,9 @@ func (sb *statusBar) barText() string {
 	return "\x1b[7m" + string(runes) + "\x1b[m"
 }
 
-// writerWithBar wraps an io.Writer so that after every Write it redraws the
-// status bar. This ensures the bar survives any clear-screen or cursor-home
-// sequences sent by the guest application.
+// writerWithBar wraps an io.Writer so the status bar is redrawn after every
+// Write, surviving clear-screen sequences from the guest. DECSTBM is NOT
+// re-emitted here — only the bar repaint (save/move/draw/restore).
 type writerWithBar struct {
 	w  io.Writer
 	sb *statusBar
@@ -153,9 +168,7 @@ type writerWithBar struct {
 func (wb *writerWithBar) Write(p []byte) (int, error) {
 	n, err := wb.w.Write(p)
 	if n > 0 {
-		wb.sb.mu.Lock()
-		wb.sb.draw()
-		wb.sb.mu.Unlock()
+		wb.sb.redraw()
 	}
 	return n, err
 }
