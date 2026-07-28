@@ -261,6 +261,7 @@ func proxyViaTermProxy(
 		}
 	}
 	close(done)
+	sb.Clear()
 	sb.Teardown()
 	return nil
 }

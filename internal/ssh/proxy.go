@@ -352,6 +352,10 @@ func proxyToGuest(
 	close(done)
 	_ = remoteStdin.Close()
 	wg.Wait()
+	// Clear the guest viewport so content from the session doesn't linger
+	// when the session exits without clearing the screen itself (e.g. top
+	// killed with Ctrl+C).
+	sb.Clear()
 	sb.Teardown()
 	// If the session ended due to Ctrl+A X, that is a clean exit.
 	if ctrlCtx.Err() != nil {
