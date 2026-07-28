@@ -151,23 +151,22 @@ func (sb *StatusBar) Resize(cols, totalRows int) int {
 // Clear erases the guest viewport (rows 1..guestRows) without touching the
 // status bar row. Call this when the guest exits without clearing the screen
 // itself (e.g. when a full-screen program is killed with Ctrl+C).
-// The scroll region must already be in place (i.e. after Setup or Resize).
 func (sb *StatusBar) Clear() {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 	if sb.rows < 2 || sb.cols < 1 { //nolint:mnd
 		return
 	}
-	// Move to top-left of scroll region and erase to the bottom of the region.
-	// \x1b[J (ED without argument = 0) erases from cursor to end of display,
-	// which is confined to the scroll region by DECSTBM.
-	_, _ = io.WriteString(sb.w,
-		seqHideCursor+
-			seqMoveTo(1, 1)+ // top of scroll region
-			"\x1b[J"+ // erase to bottom of scroll region
-			seqMoveTo(1, 1)+ // leave cursor at home
-			seqShowCursor,
-	)
+	// Erase each guest row individually with EL (erase to end of line).
+	// We cannot use ED (\x1b[J) because many terminal emulators — including
+	// vt10x — extend it to the full physical screen height rather than
+	// stopping at the DECSTBM bottom margin.
+	out := seqHideCursor
+	for r := 1; r <= sb.guestRows(); r++ {
+		out += seqMoveTo(r, 1) + seqEraseToEOL
+	}
+	out += seqMoveTo(1, 1) + seqShowCursor
+	_, _ = io.WriteString(sb.w, out)
 }
 
 // Teardown clears the status bar row and restores the full scroll region.
