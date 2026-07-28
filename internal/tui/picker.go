@@ -20,7 +20,9 @@ import (
 // pickerStyles holds all lipgloss styles for the picker, bound to the
 // per-session renderer so they work regardless of whether os.Stdout is a TTY.
 type pickerStyles struct {
-	stoppedHint lipgloss.Style
+	stoppedHint           lipgloss.Style
+	stoppedSelectedTitle  lipgloss.Style
+	stoppedSelectedDesc   lipgloss.Style
 	// list-component styles (set on l.Styles and delegate.Styles)
 	list     list.Styles
 	delegate list.DefaultItemStyles
@@ -104,6 +106,16 @@ func newPickerStyles(r *lipgloss.Renderer) *pickerStyles {
 		Foreground(lipgloss.AdaptiveColor{Light: "#C2B8C2", Dark: "#4D4D4D"})
 	s.delegate.FilterMatch = r.NewStyle().Underline(true)
 
+	// stoppedSelectedTitle/Desc: dimmed border + dimmed text for selected stopped guests.
+	s.stoppedSelectedTitle = r.NewStyle().
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(stoppedColor).
+		Foreground(stoppedColor)
+	s.stoppedSelectedDesc = r.NewStyle().
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(stoppedColor).
+		Foreground(lipgloss.AdaptiveColor{Light: "#C2B8C2", Dark: "#4D4D4D"})
+
 	return s
 }
 
@@ -159,6 +171,7 @@ func (i guestItem) isStopped() bool {
 // highlighting via lipgloss.StyleRunes) is reused for the normal/selected paths.
 type guestDelegate struct {
 	list.DefaultDelegate
+	styles *pickerStyles
 }
 
 func (d guestDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
@@ -169,13 +182,14 @@ func (d guestDelegate) Render(w io.Writer, m list.Model, index int, item list.It
 		return
 	}
 
-	// Stopped guest: force DimmedTitle/DimmedDesc for all states
-	// (normal, selected, and filtered) by temporarily swapping the styles.
+	// Stopped guest: swap styles to dimmed variants before delegating.
+	// NormalTitle/Desc → plain dimmed (no border).
+	// SelectedTitle/Desc → dimmed border + dimmed text.
 	orig := d.DefaultDelegate.Styles
 	d.DefaultDelegate.Styles.NormalTitle = orig.DimmedTitle
 	d.DefaultDelegate.Styles.NormalDesc = orig.DimmedDesc
-	d.DefaultDelegate.Styles.SelectedTitle = orig.DimmedTitle
-	d.DefaultDelegate.Styles.SelectedDesc = orig.DimmedDesc
+	d.DefaultDelegate.Styles.SelectedTitle = d.styles.stoppedSelectedTitle
+	d.DefaultDelegate.Styles.SelectedDesc = d.styles.stoppedSelectedDesc
 	d.DefaultDelegate.Render(w, m, index, item)
 	d.DefaultDelegate.Styles = orig
 }
@@ -205,7 +219,7 @@ func newPickerModel(
 		items = append(items, guestItem{guest: g, instName: instMap[g.InstanceID]})
 	}
 
-	delegate := guestDelegate{list.NewDefaultDelegate()}
+	delegate := guestDelegate{DefaultDelegate: list.NewDefaultDelegate(), styles: styles}
 	delegate.Styles = styles.delegate
 
 	l := list.New(items, delegate, width, height)
