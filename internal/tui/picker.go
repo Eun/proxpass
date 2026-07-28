@@ -18,9 +18,6 @@ import (
 // ----------------------------------------------------------
 
 // guestStyles holds lipgloss styles bound to a specific renderer.
-// Using a per-call renderer (backed by the SSH channel writer with the
-// client's TERM) ensures bubbletea and lipgloss detect the remote terminal's
-// color capabilities instead of falling back to the server's os.Stdout.
 type guestStyles struct {
 	running lipgloss.Style
 	stopped lipgloss.Style
@@ -35,6 +32,96 @@ func newGuestStyles(r *lipgloss.Renderer) *guestStyles {
 		title:   r.NewStyle().Bold(true).Foreground(lipgloss.Color("205")),
 		hint:    r.NewStyle().Foreground(lipgloss.Color("241")).Italic(true),
 	}
+}
+
+// defaultListStyles mirrors bubbles/list.DefaultStyles() but uses r.NewStyle()
+// so every style is evaluated against our per-session renderer rather than
+// the global lipgloss renderer (which is tied to os.Stdout).
+func defaultListStyles(r *lipgloss.Renderer) list.Styles { //nolint:revive // mirrors upstream signature
+	verySubduedColor := lipgloss.AdaptiveColor{Light: "#DDDADA", Dark: "#3C3C3C"}
+	subduedColor := lipgloss.AdaptiveColor{Light: "#9B9B9B", Dark: "#5C5C5C"}
+
+	var s list.Styles
+	s.TitleBar = r.NewStyle().Padding(0, 0, 1, 2) //nolint:mnd
+
+	s.Title = r.NewStyle().
+		Background(lipgloss.Color("62")).
+		Foreground(lipgloss.Color("230")).
+		Padding(0, 1)
+
+	s.Spinner = r.NewStyle().
+		Foreground(lipgloss.AdaptiveColor{Light: "#8E8E8E", Dark: "#747373"})
+
+	s.FilterPrompt = r.NewStyle().
+		Foreground(lipgloss.AdaptiveColor{Light: "#04B575", Dark: "#ECFD65"})
+
+	s.FilterCursor = r.NewStyle().
+		Foreground(lipgloss.AdaptiveColor{Light: "#EE6FF8", Dark: "#EE6FF8"})
+
+	s.DefaultFilterCharacterMatch = r.NewStyle().Underline(true)
+
+	s.StatusBar = r.NewStyle().
+		Foreground(lipgloss.AdaptiveColor{Light: "#A49FA5", Dark: "#777777"}).
+		Padding(0, 0, 1, 2) //nolint:mnd
+
+	s.StatusEmpty = r.NewStyle().Foreground(subduedColor)
+
+	s.StatusBarActiveFilter = r.NewStyle().
+		Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#dddddd"})
+
+	s.StatusBarFilterCount = r.NewStyle().Foreground(verySubduedColor)
+
+	s.NoItems = r.NewStyle().
+		Foreground(lipgloss.AdaptiveColor{Light: "#909090", Dark: "#626262"})
+
+	s.ArabicPagination = r.NewStyle().Foreground(subduedColor)
+
+	s.PaginationStyle = r.NewStyle().PaddingLeft(2) //nolint:mnd
+
+	s.HelpStyle = r.NewStyle().Padding(1, 0, 0, 2) //nolint:mnd
+
+	s.ActivePaginationDot = r.NewStyle().
+		Foreground(lipgloss.AdaptiveColor{Light: "#847A85", Dark: "#979797"}).
+		SetString("•")
+
+	s.InactivePaginationDot = r.NewStyle().
+		Foreground(verySubduedColor).
+		SetString("•")
+
+	s.DividerDot = r.NewStyle().
+		Foreground(verySubduedColor).
+		SetString(" • ")
+
+	return s
+}
+
+// defaultItemStyles mirrors bubbles/list.NewDefaultItemStyles() using r.NewStyle().
+func defaultItemStyles(r *lipgloss.Renderer) list.DefaultItemStyles {
+	var s list.DefaultItemStyles
+
+	s.NormalTitle = r.NewStyle().
+		Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#dddddd"})
+
+	s.NormalDesc = r.NewStyle().
+		Foreground(lipgloss.AdaptiveColor{Light: "#A49FA5", Dark: "#777777"})
+
+	s.SelectedTitle = r.NewStyle().
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(lipgloss.AdaptiveColor{Light: "#F793FF", Dark: "#AD58B4"}).
+		Foreground(lipgloss.AdaptiveColor{Light: "#EE6FF8", Dark: "#EE6FF8"})
+
+	s.SelectedDesc = r.NewStyle().
+		Foreground(lipgloss.AdaptiveColor{Light: "#F793FF", Dark: "#AD58B4"})
+
+	s.DimmedTitle = r.NewStyle().
+		Foreground(lipgloss.AdaptiveColor{Light: "#A49FA5", Dark: "#777777"})
+
+	s.DimmedDesc = r.NewStyle().
+		Foreground(lipgloss.AdaptiveColor{Light: "#C2B8C2", Dark: "#4D4D4D"})
+
+	s.FilterMatch = r.NewStyle().Underline(true)
+
+	return s
 }
 
 // ----------------------------------------------------------
@@ -77,7 +164,7 @@ func (i guestItem) Description() string {
 type pickerModel struct {
 	list     list.Model
 	selected *guestItem
-	hint     string // temporary message for stopped-guest selection
+	hint     string
 	quit     bool
 	styles   *guestStyles
 }
@@ -86,17 +173,25 @@ func newPickerModel(
 	guests []*models.Guest,
 	instMap map[int64]string,
 	width, height int,
-	styles *guestStyles,
+	r *lipgloss.Renderer,
 ) pickerModel {
+	styles := newGuestStyles(r)
+
 	items := make([]list.Item, 0, len(guests))
 	for _, g := range guests {
 		items = append(items, guestItem{guest: g, instName: instMap[g.InstanceID], styles: styles})
 	}
 
+	// Build delegate with renderer-aware styles so the selected/normal item
+	// border and text colors also use our per-session renderer.
 	delegate := list.NewDefaultDelegate()
+	delegate.Styles = defaultItemStyles(r)
 
 	l := list.New(items, delegate, width, height)
 	l.Title = styles.title.Render("Select a guest to connect to")
+	// Override ALL list styles with renderer-aware versions so nothing falls
+	// back to the global lipgloss renderer (which is tied to os.Stdout).
+	l.Styles = defaultListStyles(r)
 	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(true)
 	l.SetShowHelp(true)
@@ -156,17 +251,12 @@ func (m pickerModel) View() string {
 // ----------------------------------------------------------
 
 // sshEnviron implements termenv.Environ using only the SSH client's TERM.
-// It intentionally omits all server-side variables so the color profile is
-// determined purely by what the SSH client advertised.
 type sshEnviron struct {
 	termType string
 }
 
 func (e sshEnviron) Environ() []string {
-	return []string{
-		"TERM=" + e.termType,
-		"CLICOLOR_FORCE=1",
-	}
+	return []string{"TERM=" + e.termType, "CLICOLOR_FORCE=1"}
 }
 
 func (e sshEnviron) Getenv(key string) string {
@@ -189,21 +279,12 @@ func (e sshEnviron) Getenv(key string) string {
 // Returns the selected Guest and the name of its instance,
 // or nil, "" if the user cancels without making a selection.
 //
-// width and height are the initial terminal dimensions (columns/rows).
 // termType is the TERM value from the SSH pty-req (e.g. "xterm-256color").
 //
-// Color rendering strategy:
-//
-//   - A per-session lipgloss.Renderer is created backed by the SSH channel
-//     writer with termenv.WithTTY(true) so IsTerminal() is not called on it
-//     (the SSH channel is not an *os.File and has no file descriptor).
-//   - termenv.WithEnvironment(sshEnviron) feeds the SSH client's TERM into
-//     the color-profile detection, giving ANSI256 for xterm-256color etc.
-//   - CLICOLOR_FORCE=1 is also injected so colorprofile.Detect() never falls
-//     back to NoTTY even when os.Stdout has no TTY (daemon/systemd mode).
-//   - All picker styles are created via r.NewStyle() from this per-session
-//     renderer, not from the global lipgloss renderer which is tied to
-//     os.Stdout.
+// Color strategy: a per-session lipgloss.Renderer backed by the SSH channel
+// writer is created with termenv.WithTTY(true) and the SSH TERM. ALL styles
+// — including bubbles/list internal ones — are rebuilt from this renderer so
+// colors work regardless of whether os.Stdout is a TTY on the server side.
 func PickGuest(
 	reader io.Reader,
 	writer io.Writer,
@@ -228,24 +309,17 @@ func PickGuest(
 		termType = "xterm-256color"
 	}
 
-	// Build a per-session lipgloss renderer backed by the SSH channel writer.
-	// WithTTY(true) bypasses the Fd()/IsTerminal check (SSH channel has no fd).
-	// WithEnvironment(sshEnviron) feeds TERM and CLICOLOR_FORCE=1 for correct
-	// color-profile detection independent of the server's os.Environ().
+	// Per-session renderer: WithTTY(true) skips the Fd()/IsTerminal() check
+	// (SSH channel has no file descriptor). WithEnvironment feeds TERM and
+	// CLICOLOR_FORCE=1 for correct color-profile detection.
 	sshRenderer := lipgloss.NewRenderer(writer,
 		termenv.WithTTY(true),
 		termenv.WithEnvironment(sshEnviron{termType: termType}),
 	)
-	styles := newGuestStyles(sshRenderer)
-	m := newPickerModel(guests, instMap, w, h, styles)
 
-	// Also pass the env to bubbletea (stored for future use; currently
-	// bubbletea v1 doesn't forward it to its internal renderer, but it's
-	// correct to set it for forward-compatibility and documentation).
-	environ := []string{
-		"TERM=" + termType,
-		"CLICOLOR_FORCE=1",
-	}
+	m := newPickerModel(guests, instMap, w, h, sshRenderer)
+
+	environ := []string{"TERM=" + termType, "CLICOLOR_FORCE=1"}
 
 	p, err := tea.NewProgram(
 		m,
