@@ -195,20 +195,23 @@ func proxyViaTermProxy(
 		}
 	}()
 
-	// SSH client → WebSocket: "0:<len>:<data>" binary frames.
+	// SSH client → WebSocket: "0:<len>:<data>" binary frames, with Ctrl+A X intercept.
 	// MSG_TYPE_DATA = 0. Build header and data separately to avoid %s
 	// converting the byte slice through a UTF-8 string, which would corrupt
 	// non-ASCII bytes (arrow keys, escape sequences) and invalidate the
 	// declared length for multi-byte input.
 	// Mirrors the approach in luthermonson/go-proxmox TermWebSocket.
+	ctrlCtx, ctrlCancel := context.WithCancel(ctx)
+	defer ctrlCancel()
 	go func() {
+		src := &ctrlAXReader{r: clientChan, cancel: ctrlCancel}
 		buf := make([]byte, 4096)
 		for {
-			n, readErr := clientChan.Read(buf)
+			n, readErr := src.Read(buf)
 			if n > 0 {
 				header := fmt.Sprintf("0:%d:", n)
 				msg := append([]byte(header), buf[:n]...)
-				if writeErr := conn.Write(ctx, websocket.MessageBinary, msg); writeErr != nil {
+				if writeErr := conn.Write(ctrlCtx, websocket.MessageBinary, msg); writeErr != nil {
 					return
 				}
 			}

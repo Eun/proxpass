@@ -142,7 +142,7 @@ func interactiveGuestPicker(
 		writeErr(channel, ptyReq, fmt.Sprintf("instance for guest %q not found", guest.Name))
 		return
 	}
-	_, _ = fmt.Fprintf(newCRLFWriter(channel), "Connecting to %s (%s %d)...\r\n", guest.Name, guest.Type, guest.ProxmoxID)
+	printConnectionBanner(channel, guest, inst)
 
 	proxyReqs := make(chan *gossh.Request, 4)
 	defer close(proxyReqs)
@@ -184,6 +184,40 @@ func labelFromClientID(clientID int64) string {
 	return fmt.Sprintf("client/%d", clientID)
 }
 
+// ctrlAXReader wraps an io.Reader and cancels the provided cancel function
+// when the byte sequence Ctrl+A (0x01) followed by X is detected in the stream.
+// This gives users a reliable escape hatch to terminate a guest console session
+// without killing the SSH connection itself.
+type ctrlAXReader struct {
+	r      io.Reader
+	cancel context.CancelFunc
+	pending bool // true when we have seen 0x01 and are waiting for the next byte
+}
+
+func (c *ctrlAXReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	for i := 0; i < n; i++ {
+		switch {
+		case c.pending:
+			c.pending = false
+			if p[i] == 'X' || p[i] == 'x' {
+				// Remove the two-byte escape sequence from the buffer
+				// so it is not forwarded to the guest, then signal termination.
+				copy(p[i-1:n-1], p[i+1:n])
+				n -= 2 //nolint:mnd
+				if n < 0 {
+					n = 0
+				}
+				c.cancel()
+				return n, io.EOF
+			}
+		case p[i] == 0x01: // Ctrl+A
+			c.pending = true
+		}
+	}
+	return n, err
+}
+
 // proxyToGuest connects to the Proxmox host via SSH and bidirectionally
 // forwards data between the SSH channel and the guest console.
 //
@@ -194,7 +228,7 @@ func proxyToGuest(
 	guest *models.Guest,
 	inst *models.ProxmoxInstance,
 	ptyReq *PtyRequest,
-	_ *log.Logger,
+	logger *log.Logger,
 ) error {
 	keyBytes, err := loadInstanceKey(inst)
 	if err != nil {
@@ -247,6 +281,9 @@ func proxyToGuest(
 		return fmt.Errorf("starting command %q: %w", cmd, err)
 	}
 
+	ctrlCtx, ctrlCancel := context.WithCancel(context.Background())
+	defer ctrlCancel()
+
 	done := make(chan struct{})
 	var wg sync.WaitGroup
 
@@ -272,8 +309,10 @@ func proxyToGuest(
 		}
 	}()
 
+	// client → remote stdin, with Ctrl+A X hotkey interception.
 	go func() {
-		_, _ = io.Copy(remoteStdin, clientChan)
+		src := &ctrlAXReader{r: clientChan, cancel: ctrlCancel}
+		_, _ = io.Copy(remoteStdin, src)
 		_ = remoteStdin.Close()
 	}()
 	wg.Add(1)
@@ -287,10 +326,24 @@ func proxyToGuest(
 		_, _ = io.Copy(clientChan.Stderr(), remoteStderr)
 	}()
 
+	// Wait for either the remote session to finish or Ctrl+A X to be pressed.
+	go func() {
+		<-ctrlCtx.Done()
+		if logger != nil {
+			logger.Print("proxyToGuest: Ctrl+A X received; terminating session")
+		}
+		_ = session.Signal(gossh.SIGTERM)
+		_ = session.Close()
+	}()
+
 	err = session.Wait()
 	close(done)
 	_ = remoteStdin.Close()
 	wg.Wait()
+	// If the session ended due to Ctrl+A X, that is a clean exit.
+	if ctrlCtx.Err() != nil {
+		return nil
+	}
 	return err
 }
 
@@ -328,6 +381,17 @@ func guestConsoleCmd(guest *models.Guest) (string, error) {
 	default:
 		return "", fmt.Errorf("unknown guest type %q", guest.Type)
 	}
+}
+
+// printConnectionBanner writes the pre-connection info banner to the channel.
+// It is called by every code path that is about to proxy to a guest so the
+// user always sees the same message regardless of how they initiated the
+// connection (interactive picker, direct identifier, CLI 'guest connect', etc.).
+func printConnectionBanner(channel gossh.Channel, guest *models.Guest, inst *models.ProxmoxInstance) {
+	w := newCRLFWriter(channel)
+	_, _ = fmt.Fprintf(w, "Connecting to %s (%s %d) on %s...\r\n",
+		guest.Name, guest.Type, guest.ProxmoxID, inst.Name)
+	_, _ = fmt.Fprint(w, "Press Ctrl+A X to terminate the connection.\r\n")
 }
 
 // writeErr writes msg to stderr, always with \r\n line endings.
