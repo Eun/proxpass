@@ -144,15 +144,28 @@ func proxyViaTermProxy(
 		}
 	}
 
-	// --- Step 6: Send initial terminal size ---
+	// --- Step 6: Send initial terminal size (height - 1 for status bar) ---
 	// Format: "1:<cols>:<rows>:" — derived from termproxy Rust source
 	// (MSG_TYPE_RESIZE = 1, remove_number reads cols then rows).
+	// We reserve the bottom row for the persistent status bar, so we tell
+	// the guest it has height-1 rows and draw the bar in the last row.
+	sb := newStatusBar(clientChan, guest, inst)
+	initCols, initRows := 80, 24
 	if ptyReq != nil {
-		resizeMsg := fmt.Sprintf("1:%d:%d:", ptyReq.Width, ptyReq.Height)
-		if err := conn.Write(ctx, websocket.MessageBinary, []byte(resizeMsg)); err != nil {
-			return fmt.Errorf("send initial resize: %w", err)
-		}
+		initCols = int(ptyReq.Width)
+		initRows = int(ptyReq.Height)
 	}
+	guestH := initRows - 1
+	if guestH < 1 {
+		guestH = 1
+	}
+	initResizeMsg := fmt.Sprintf("1:%d:%d:", initCols, guestH)
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte(initResizeMsg)); err != nil {
+		return fmt.Errorf("send initial resize: %w", err)
+	}
+
+	// Draw the status bar and set the scroll region on the SSH client terminal.
+	sb.setup(initCols, initRows)
 
 	// --- Step 7: Bidirectional bridge ---
 	done := make(chan struct{})
@@ -177,10 +190,11 @@ func proxyViaTermProxy(
 				}
 				switch req.Type {
 				case "window-change":
-					// Format: "1:<cols>:<rows>:" matching termproxy MSG_TYPE_RESIZE.
+					// Update status bar + send adjusted size to guest.
 					w, h, parseErr := parseWindowChange(req.Payload)
 					if parseErr == nil {
-						msg := fmt.Sprintf("1:%d:%d:", w, h)
+						newGuestH := sb.resize(int(w), int(h))
+						msg := fmt.Sprintf("1:%d:%d:", w, newGuestH)
 						_ = conn.Write(ctx, websocket.MessageBinary, []byte(msg))
 					}
 					if req.WantReply {
@@ -240,6 +254,7 @@ func proxyViaTermProxy(
 		}
 	}
 	close(done)
+	sb.teardown()
 	return nil
 }
 

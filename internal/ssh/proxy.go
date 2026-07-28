@@ -142,8 +142,6 @@ func interactiveGuestPicker(
 		writeErr(channel, ptyReq, fmt.Sprintf("instance for guest %q not found", guest.Name))
 		return
 	}
-	printConnectionBanner(channel, guest, inst)
-
 	proxyReqs := make(chan *gossh.Request, 4)
 	defer close(proxyReqs)
 	if err := proxier.ProxyToGuest(channel, proxyReqs, guest, inst, ptyReq, logger); err != nil {
@@ -254,7 +252,16 @@ func proxyToGuest(
 	}
 	defer func() { _ = session.Close() }()
 
-	if err := session.RequestPty(effectivePty(ptyReq)); err != nil {
+	// Reserve the bottom row for the status bar. We request a PTY from the
+	// Proxmox host that is one row shorter so that the guest's full-screen
+	// applications never draw into the status bar row.
+	sb := newStatusBar(clientChan, guest, inst)
+	effTerm, effH, effW, effModes := effectivePty(ptyReq)
+	guestH := effH - 1
+	if guestH < 1 {
+		guestH = 1
+	}
+	if err := session.RequestPty(effTerm, guestH, effW, effModes); err != nil {
 		return fmt.Errorf("requesting remote pty: %w", err)
 	}
 
@@ -279,6 +286,9 @@ func proxyToGuest(
 		return fmt.Errorf("starting command %q: %w", cmd, err)
 	}
 
+	// Draw the status bar and restrict the scroll region.
+	sb.setup(effW, effH)
+
 	ctrlCtx, ctrlCancel := context.WithCancel(context.Background())
 	defer ctrlCancel()
 
@@ -286,6 +296,8 @@ func proxyToGuest(
 	var wg sync.WaitGroup
 
 	// Forward window-change requests from the client to the remote session.
+	// On resize we update the status bar and tell the guest about the
+	// adjusted height (totalHeight - 1).
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -298,8 +310,9 @@ func proxyToGuest(
 					return
 				}
 				if req.Type == reqTypeWinChange {
-					if w, h, pErr := parseWindowChange(req.Payload); pErr == nil {
-						_ = session.WindowChange(int(h), int(w))
+					if cols, rows, pErr := parseWindowChange(req.Payload); pErr == nil {
+						newGuestH := sb.resize(int(cols), int(rows))
+						_ = session.WindowChange(newGuestH, int(cols))
 					}
 				}
 				replyReq(req, false)
@@ -338,6 +351,7 @@ func proxyToGuest(
 	close(done)
 	_ = remoteStdin.Close()
 	wg.Wait()
+	sb.teardown()
 	// If the session ended due to Ctrl+A X, that is a clean exit.
 	if ctrlCtx.Err() != nil {
 		return nil
@@ -381,17 +395,7 @@ func guestConsoleCmd(guest *models.Guest) (string, error) {
 	}
 }
 
-// printConnectionBanner writes the pre-connection info banner to the channel.
-// It is called by every code path that is about to proxy to a guest so the
-// user always sees the same message regardless of how they initiated the
-// connection (interactive picker, direct identifier, CLI 'guest connect', etc.).
-// We write directly to channel with explicit \r\n — the channel is in raw PTY
-// mode, so bare \n alone would not advance the cursor to column 0.
-func printConnectionBanner(channel gossh.Channel, guest *models.Guest, inst *models.ProxmoxInstance) {
-	_, _ = fmt.Fprintf(channel, "Connecting to %s (%s %d) on %s...\r\n",
-		guest.Name, guest.Type, guest.ProxmoxID, inst.Name)
-	_, _ = fmt.Fprint(channel, "Press Ctrl+A X to terminate the connection.\r\n")
-}
+
 
 // writeErr writes msg to stderr, always with \r\n line endings.
 func writeErr(channel gossh.Channel, _ *PtyRequest, msg string) {

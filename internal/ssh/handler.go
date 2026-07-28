@@ -231,7 +231,6 @@ func runClientProxy(
 		return
 	}
 
-	printConnectionBanner(channel, guest, inst)
 	if err := proxier.ProxyToGuest(channel, remaining, guest, inst, ptyReq, logger); err != nil {
 		logger.Printf("%s: proxy error: %v", si.logLabel, err)
 		writeErr(channel, ptyReq, fmt.Sprintf("proxy error: %v", err))
@@ -283,7 +282,6 @@ func tryDirectProxy(
 		close(proxyReqs)
 	}()
 
-	printConnectionBanner(channel, guest, inst)
 	if proxyErr := proxier.ProxyToGuest(channel, proxyReqs, guest, inst, ptyReq, logger); proxyErr != nil {
 		logger.Printf("%s: proxy to guest %q error: %v", logLabel, guest.Name, proxyErr)
 	}
@@ -300,7 +298,6 @@ func proxyAfterCLI(
 	logLabel string,
 	req *cli.ConnectRequest,
 ) {
-	printConnectionBanner(channel, req.Guest, req.Instance)
 	proxyReqs := make(chan *gossh.Request, 4)
 	defer close(proxyReqs)
 	if err := proxier.ProxyToGuest(channel, proxyReqs, req.Guest, req.Instance, ptyReq, logger); err != nil {
