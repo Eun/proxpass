@@ -12,6 +12,7 @@ import (
 
 	"proxpass/internal/models"
 	"proxpass/internal/proxmox"
+	"proxpass/pkg/statusbar"
 
 	"github.com/coder/websocket"
 	gossh "golang.org/x/crypto/ssh"
@@ -149,7 +150,6 @@ func proxyViaTermProxy(
 	// (MSG_TYPE_RESIZE = 1, remove_number reads cols then rows).
 	// We reserve the bottom row for the persistent status bar, so we tell
 	// the guest it has height-1 rows and draw the bar in the last row.
-	sb := newStatusBar(clientChan, guest, inst)
 	initCols, initRows := 80, 24
 	if ptyReq != nil {
 		initCols = int(ptyReq.Width)
@@ -159,10 +159,14 @@ func proxyViaTermProxy(
 	if guestH < 1 {
 		guestH = 1
 	}
-	// Set up the status bar and scroll region BEFORE sending the resize
-	// and BEFORE the bridge loop starts so it is in place before the first
-	// guest output arrives on the SSH channel.
-	sb.setup(initCols, initRows)
+	sb := statusbar.New(clientChan,
+		statusbar.WithText("proxpass", fmt.Sprintf("%s (%s%d) @ %s",
+			guest.Name, guest.Type, guest.ProxmoxID, inst.Name)),
+		statusbar.WithHint("Ctrl+A X: disconnect"),
+	)
+	// Setup() sets the scroll region and draws the bar before the WS bridge
+	// starts, so it is in place before the first byte of guest output arrives.
+	_ = sb.Setup(initCols, initRows) // guestH already computed above
 
 	initResizeMsg := fmt.Sprintf("1:%d:%d:", initCols, guestH)
 	if err := conn.Write(ctx, websocket.MessageBinary, []byte(initResizeMsg)); err != nil {
@@ -195,7 +199,7 @@ func proxyViaTermProxy(
 					// Update status bar + send adjusted size to guest.
 					w, h, parseErr := parseWindowChange(req.Payload)
 					if parseErr == nil {
-						newGuestH := sb.resize(int(w), int(h))
+						newGuestH := sb.Resize(int(w), int(h))
 						msg := fmt.Sprintf("1:%d:%d:", w, newGuestH)
 						_ = conn.Write(ctx, websocket.MessageBinary, []byte(msg))
 					}
@@ -244,22 +248,20 @@ func proxyViaTermProxy(
 	// WebSocket → SSH client: raw PTY output, no framing.
 	// The termproxy binary writes PTY bytes directly to the TCP socket;
 	// the vncwebsocket tunnel forwards them verbatim as binary WS frames.
-	// We write through writerWithBar so the status bar is redrawn after
-	// every chunk, surviving any clear-screen from the guest application.
-	// When the WS reader exits (connection closed by either side), signal
-	// done to stop the control goroutine.
-	barWriter := &writerWithBar{w: clientChan, sb: sb}
+	// Write all WS→client data through the status bar writer so the bar
+	// is redrawn after every chunk and DECSTBM-destroying sequences are handled.
+	sbWriter := sb.Writer()
 	for {
 		_, data, readErr := conn.Read(ctx)
 		if readErr != nil {
 			break
 		}
-		if _, writeErr := barWriter.Write(data); writeErr != nil {
+		if _, writeErr := sbWriter.Write(data); writeErr != nil {
 			break
 		}
 	}
 	close(done)
-	sb.teardown()
+	sb.Teardown()
 	return nil
 }
 

@@ -14,6 +14,7 @@ import (
 	"proxpass/internal/db"
 	"proxpass/internal/models"
 	"proxpass/internal/tui"
+	"proxpass/pkg/statusbar"
 
 	gossh "golang.org/x/crypto/ssh"
 )
@@ -255,12 +256,15 @@ func proxyToGuest(
 	// Reserve the bottom row for the status bar. We request a PTY from the
 	// Proxmox host that is one row shorter so that the guest's full-screen
 	// applications never draw into the status bar row.
-	sb := newStatusBar(clientChan, guest, inst)
 	effTerm, effH, effW, effModes := effectivePty(ptyReq)
-	guestH := effH - 1
-	if guestH < 1 {
-		guestH = 1
-	}
+	// Create the status bar. Setup() returns the guest height (effH-1) which
+	// we pass to the remote PTY so the guest never draws into the bar row.
+	sb := statusbar.New(clientChan,
+		statusbar.WithText("proxpass", fmt.Sprintf("%s (%s%d) @ %s",
+			guest.Name, guest.Type, guest.ProxmoxID, inst.Name)),
+		statusbar.WithHint("Ctrl+A X: disconnect"),
+	)
+	guestH := sb.Setup(effW, effH)
 	if err := session.RequestPty(effTerm, guestH, effW, effModes); err != nil {
 		return fmt.Errorf("requesting remote pty: %w", err)
 	}
@@ -282,10 +286,6 @@ func proxyToGuest(
 	if err != nil {
 		return fmt.Errorf("stderr pipe: %w", err)
 	}
-	// Set up the status bar BEFORE starting the guest so the scroll region
-	// is in place before the first byte of guest output arrives.
-	sb.setup(effW, effH)
-
 	if err := session.Start(cmd); err != nil {
 		return fmt.Errorf("starting command %q: %w", cmd, err)
 	}
@@ -312,8 +312,8 @@ func proxyToGuest(
 				}
 				if req.Type == reqTypeWinChange {
 					if cols, rows, pErr := parseWindowChange(req.Payload); pErr == nil {
-						newGuestH := sb.resize(int(cols), int(rows))
-						_ = session.WindowChange(newGuestH, int(cols))
+						guestH := sb.Resize(int(cols), int(rows))
+						_ = session.WindowChange(guestH, int(cols))
 					}
 				}
 				replyReq(req, false)
@@ -327,13 +327,10 @@ func proxyToGuest(
 		_, _ = io.Copy(remoteStdin, src)
 		_ = remoteStdin.Close()
 	}()
-	// Wrap clientChan with writerWithBar so every chunk of guest output is
-	// followed by a bar redraw — surviving clear-screen from the guest.
-	barWriter := &writerWithBar{w: clientChan, sb: sb}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(barWriter, remoteStdout)
+		_, _ = io.Copy(sb.Writer(), remoteStdout)
 	}()
 	wg.Add(1)
 	go func() {
@@ -355,7 +352,7 @@ func proxyToGuest(
 	close(done)
 	_ = remoteStdin.Close()
 	wg.Wait()
-	sb.teardown()
+	sb.Teardown()
 	// If the session ended due to Ctrl+A X, that is a clean exit.
 	if ctrlCtx.Err() != nil {
 		return nil
