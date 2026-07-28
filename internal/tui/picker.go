@@ -15,9 +15,14 @@ import (
 	"github.com/muesli/termenv"
 )
 
-// filterSep separates the title and description inside FilterValue().
-// NUL is never present in real guest names or descriptions.
-const filterSep = "\x00"
+// filterSep separates the name and description inside FilterValue() so the
+// fuzzy filter searches both fields. We use a space so the combined string is
+// natural text; the separator itself can never be a match target because fuzzy
+// scoring skips the separator position when we split indices at nameLen.
+// We cannot use NUL (\x00) because the fuzzy library treats nextc==0 as
+// end-of-string and panics when it tries to access runes[patternIndex+1]
+// after prematurely committing a match at the NUL byte.
+const filterSep = " "
 
 // ----------------------------------------------------------
 // Per-session styles
