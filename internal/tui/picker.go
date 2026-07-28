@@ -20,11 +20,6 @@ import (
 // pickerStyles holds all lipgloss styles for the picker, bound to the
 // per-session renderer so they work regardless of whether os.Stdout is a TTY.
 type pickerStyles struct {
-	// item colours used by guestItem.Title / Description
-	running lipgloss.Style
-	stopped lipgloss.Style
-	hint    lipgloss.Style
-	// hint bar shown when a stopped guest is selected
 	stoppedHint lipgloss.Style
 	// list-component styles (set on l.Styles and delegate.Styles)
 	list     list.Styles
@@ -35,10 +30,16 @@ func newPickerStyles(r *lipgloss.Renderer) *pickerStyles {
 	verySubdued := lipgloss.AdaptiveColor{Light: "#DDDADA", Dark: "#3C3C3C"}
 	subdued := lipgloss.AdaptiveColor{Light: "#9B9B9B", Dark: "#5C5C5C"}
 
+	// Running guests get bright-green titles; stopped guests get gray.
+	// These colours are placed on the NormalTitle / DimmedTitle styles so
+	// that bubbles/list handles truncation, padding and filter-match
+	// highlighting correctly (it calls .Inline(true) on these styles before
+	// running lipgloss.StyleRunes — pre-rendering ANSI codes in Title() would
+	// corrupt the rune-index mapping and produce raw escape codes in the output).
+	runningColor := lipgloss.AdaptiveColor{Light: "#007700", Dark: "#00dd00"}
+	stoppedColor := lipgloss.AdaptiveColor{Light: "#999999", Dark: "#666666"}
+
 	s := &pickerStyles{
-		running:     r.NewStyle().Foreground(lipgloss.Color("10")),
-		stopped:     r.NewStyle().Foreground(lipgloss.Color("240")),
-		hint:        r.NewStyle().Foreground(lipgloss.Color("241")).Italic(true),
 		stoppedHint: r.NewStyle().Foreground(lipgloss.Color("209")).Bold(true),
 	}
 
@@ -64,18 +65,21 @@ func newPickerStyles(r *lipgloss.Renderer) *pickerStyles {
 	s.list.NoItems = r.NewStyle().
 		Foreground(lipgloss.AdaptiveColor{Light: "#909090", Dark: "#626262"})
 	s.list.ArabicPagination = r.NewStyle().Foreground(subdued)
-	s.list.PaginationStyle = r.NewStyle().PaddingLeft(2) //nolint:mnd
-	s.list.HelpStyle = r.NewStyle().Padding(1, 0, 0, 2)  //nolint:mnd
+	s.list.PaginationStyle = r.NewStyle().PaddingLeft(2)  //nolint:mnd
+	s.list.HelpStyle = r.NewStyle().Padding(1, 0, 0, 2)   //nolint:mnd
 	s.list.ActivePaginationDot = r.NewStyle().
 		Foreground(lipgloss.AdaptiveColor{Light: "#847A85", Dark: "#979797"}).
 		SetString("•")
 	s.list.InactivePaginationDot = r.NewStyle().Foreground(verySubdued).SetString("•")
 	s.list.DividerDot = r.NewStyle().Foreground(verySubdued).SetString(" • ")
 
-	// list.DefaultItemStyles — mirrors list.NewDefaultItemStyles() using r.NewStyle().
+	// list.DefaultItemStyles — the delegate applies these styles to the plain
+	// strings returned by guestItem.Title() / Description().  Do NOT pre-render
+	// ANSI codes in those methods; let the delegate do all colouring here so
+	// that filter-match highlighting (lipgloss.StyleRunes) works correctly.
 	s.delegate.NormalTitle = r.NewStyle().
 		PaddingLeft(1).
-		Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#dddddd"})
+		Foreground(runningColor)
 	s.delegate.NormalDesc = r.NewStyle().
 		PaddingLeft(1).
 		Foreground(lipgloss.AdaptiveColor{Light: "#A49FA5", Dark: "#777777"})
@@ -88,8 +92,10 @@ func newPickerStyles(r *lipgloss.Renderer) *pickerStyles {
 		BorderForeground(lipgloss.AdaptiveColor{Light: "#F793FF", Dark: "#AD58B4"}).
 		Foreground(lipgloss.AdaptiveColor{Light: "#F793FF", Dark: "#AD58B4"})
 	s.delegate.DimmedTitle = r.NewStyle().
-		Foreground(lipgloss.AdaptiveColor{Light: "#A49FA5", Dark: "#777777"})
+		PaddingLeft(1).
+		Foreground(stoppedColor)
 	s.delegate.DimmedDesc = r.NewStyle().
+		PaddingLeft(1).
 		Foreground(lipgloss.AdaptiveColor{Light: "#C2B8C2", Dark: "#4D4D4D"})
 	s.delegate.FilterMatch = r.NewStyle().Underline(true)
 
@@ -101,21 +107,27 @@ func newPickerStyles(r *lipgloss.Renderer) *pickerStyles {
 // ----------------------------------------------------------
 
 // guestItem wraps a Guest for the bubbles/list component.
+//
+// IMPORTANT: Title() and Description() must return PLAIN TEXT with no ANSI
+// escape codes.  The delegate's Render() method applies styles itself and also
+// calls lipgloss.StyleRunes() for filter-match highlighting.  StyleRunes maps
+// rune indices from FilterValue() (plain text) onto the Title() string — if
+// that string already contains escape codes the indices are wrong and raw codes
+// appear in the output.
 type guestItem struct {
 	guest    *models.Guest
 	instName string
-	styles   *pickerStyles
 }
 
 func (i guestItem) FilterValue() string { return i.guest.Name }
 
+// Title returns the plain guest name.  Colour is applied by the delegate via
+// NormalTitle / DimmedTitle / SelectedTitle styles.
 func (i guestItem) Title() string {
-	if i.guest.Status == models.StatusRunning {
-		return i.styles.running.Render(i.guest.Name)
-	}
-	return i.styles.stopped.Render(i.guest.Name)
+	return i.guest.Name
 }
 
+// Description returns plain metadata.  Colour is applied by the delegate.
 func (i guestItem) Description() string {
 	parts := []string{
 		fmt.Sprintf("%s%d", i.guest.Type, i.guest.ProxmoxID),
@@ -124,11 +136,7 @@ func (i guestItem) Description() string {
 	if i.guest.Status != models.StatusRunning {
 		parts = append(parts, string(i.guest.Status))
 	}
-	s := strings.Join(parts, " • ")
-	if i.guest.Status != models.StatusRunning {
-		return i.styles.stopped.Render(s)
-	}
-	return i.styles.hint.Render(s)
+	return strings.Join(parts, " • ")
 }
 
 // ----------------------------------------------------------
@@ -153,14 +161,14 @@ func newPickerModel(
 
 	items := make([]list.Item, 0, len(guests))
 	for _, g := range guests {
-		items = append(items, guestItem{guest: g, instName: instMap[g.InstanceID], styles: styles})
+		items = append(items, guestItem{guest: g, instName: instMap[g.InstanceID]})
 	}
 
 	delegate := list.NewDefaultDelegate()
 	delegate.Styles = styles.delegate
 
 	l := list.New(items, delegate, width, height)
-	l.Title = "Select a guest to connect to" // plain string; l.Styles.Title does the styling
+	l.Title = "Select a guest to connect to"
 	l.Styles = styles.list
 	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(true)
