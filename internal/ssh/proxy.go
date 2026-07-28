@@ -263,6 +263,7 @@ func proxyToGuest(
 		statusbar.WithText("proxpass", fmt.Sprintf("%s (%s%d) @ %s",
 			guest.Name, guest.Type, guest.ProxmoxID, inst.Name)),
 		statusbar.WithHint("Ctrl+A X: disconnect"),
+		statusbar.WithTermType(effTerm, "", ""),
 	)
 	guestH := sb.Setup(effW, effH)
 	if err := session.RequestPty(effTerm, guestH, effW, effModes); err != nil {

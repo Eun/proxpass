@@ -13,6 +13,19 @@ import (
 	"sync"
 
 	vt10x "github.com/hinshun/vt10x"
+	"github.com/muesli/termenv"
+)
+
+// vt10x stores these glyph attribute bits in Glyph.Mode (int16).
+// The constants are unexported in vt10x, so we mirror them here.
+// Values must stay in sync with github.com/hinshun/vt10x state.go.
+const (
+	vtAttrReverse   = int16(1 << 0) // 1  – already baked into FG/BG by vt10x; kept for completeness
+	vtAttrUnderline = int16(1 << 1) // 2
+	vtAttrBold      = int16(1 << 2) // 4
+	// attrGfx         = int16(1 << 3) // 8  – graphics character set; not an SGR attribute
+	vtAttrItalic = int16(1 << 4) // 16
+	vtAttrBlink  = int16(1 << 5) // 32
 )
 
 // ---- options ----
@@ -43,26 +56,72 @@ func WithHint(hint string) Option {
 // WithColors sets the colour mode. Currently only ColorReverse is supported.
 func WithColors(_ ColorMode) Option { return func(_ *StatusBar) {} }
 
+// WithTermType detects the SSH client's color capability from its TERM,
+// COLORTERM, and NO_COLOR values and configures the status bar renderer
+// accordingly. Pass the values from the SSH pty-req and any SSH env requests.
+// termType is the TERM value (e.g. "xterm-256color", "dumb").
+// colorTerm is the COLORTERM value (e.g. "truecolor", "24bit", or "").
+// noColor is the NO_COLOR value (non-empty means no color).
+func WithTermType(termType, colorTerm, noColor string) Option {
+	return func(sb *StatusBar) {
+		env := &singleEnv{term: termType, colorTerm: colorTerm, noColor: noColor}
+		out := termenv.NewOutput(nil, termenv.WithEnvironment(env))
+		p := out.EnvColorProfile()
+		sb.colorProfile = p
+	}
+}
+
+// singleEnv implements termenv.Environ for color-profile detection only.
+type singleEnv struct {
+	term      string
+	colorTerm string
+	noColor   string
+}
+
+func (e *singleEnv) Environ() []string {
+	return []string{
+		"TERM=" + e.term,
+		"COLORTERM=" + e.colorTerm,
+		"NO_COLOR=" + e.noColor,
+	}
+}
+
+func (e *singleEnv) Getenv(key string) string {
+	switch key {
+	case "TERM":
+		return e.term
+	case "COLORTERM":
+		return e.colorTerm
+	case "NO_COLOR":
+		return e.noColor
+	}
+	return ""
+}
+
 // ---- StatusBar ----
 
 // StatusBar wraps a vt10x terminal emulator and renders its cell grid plus a
 // one-line status bar to the SSH client on every guest write.
 type StatusBar struct {
-	client  io.Writer   // raw SSH channel stdout
-	term    vt10x.Terminal
-	mu      sync.Mutex
-	rows    int
-	cols    int
-	prefix  string
-	content string
-	hint    string
+	client       io.Writer // raw SSH channel stdout
+	term         vt10x.Terminal
+	mu           sync.Mutex
+	rows         int
+	cols         int
+	prefix       string
+	content      string
+	hint         string
+	colorProfile termenv.Profile // TrueColor (default), ANSI256, ANSI, or Ascii
 	// last rendered frame for differential updates
 	lastFrame string
 }
 
 // New creates a new StatusBar that writes to client.
 func New(client io.Writer, opts ...Option) *StatusBar {
-	sb := &StatusBar{client: client}
+	sb := &StatusBar{
+		client:       client,
+		colorProfile: termenv.TrueColor, // default: full color until told otherwise
+	}
 	for _, o := range opts {
 		o(sb)
 	}
@@ -148,7 +207,7 @@ func (sb *StatusBar) render() {
 	// Render guest rows.
 	for y := 0; y < guestH; y++ {
 		out.WriteString(fmt.Sprintf("\x1b[%d;1H", y+1)) // move to row y+1, col 1
-		renderRow(&out, sb.term, y, sb.cols)
+		renderRow(&out, sb.term, y, sb.cols, sb.colorProfile)
 	}
 
 	// Cursor position from the terminal state.
@@ -174,7 +233,7 @@ func (sb *StatusBar) render() {
 
 // renderRow writes one row of the vt10x cell grid as SGR-escaped characters.
 // It resets attributes after the row to avoid bleed.
-func renderRow(out *strings.Builder, t vt10x.Terminal, y, cols int) {
+func renderRow(out *strings.Builder, t vt10x.Terminal, y, cols int, p termenv.Profile) {
 	var lastFG, lastBG vt10x.Color = vt10x.DefaultFG, vt10x.DefaultBG
 	lastMode := int16(0)
 	attrSet := false
@@ -184,7 +243,7 @@ func renderRow(out *strings.Builder, t vt10x.Terminal, y, cols int) {
 		// Emit SGR only when attributes change.
 		if g.FG != lastFG || g.BG != lastBG || g.Mode != lastMode || !attrSet {
 			out.WriteString("\x1b[0m") // reset
-			writeSGR(out, g)
+			writeSGR(out, g, p)
 			lastFG, lastBG, lastMode = g.FG, g.BG, g.Mode
 			attrSet = true
 		}
@@ -197,16 +256,41 @@ func renderRow(out *strings.Builder, t vt10x.Terminal, y, cols int) {
 	out.WriteString("\x1b[0m") // reset at end of row
 }
 
-// writeSGR emits SGR sequences for a glyph's foreground color.
-// We write FG/BG colors; attribute bits (bold, reverse, etc.) are not exported
-// by vt10x so we rely on the reset + color approach for correctness.
-func writeSGR(out *strings.Builder, g vt10x.Glyph) {
-	writeColor(out, g.FG, false)
-	writeColor(out, g.BG, true)
+// writeSGR emits SGR sequences for a glyph's colors and text attributes.
+//
+// vt10x already bakes the reverse-video swap into FG/BG during setChar, so we
+// do NOT re-emit SGR 7 (reverse). We do emit the remaining attribute bits:
+// bold (SGR 1), italic (SGR 3), underline (SGR 4), blink (SGR 5).
+func writeSGR(out *strings.Builder, g vt10x.Glyph, p termenv.Profile) {
+	// Text attributes (independent of color profile).
+	if g.Mode&vtAttrBold != 0 {
+		out.WriteString("\x1b[1m")
+	}
+	if g.Mode&vtAttrItalic != 0 {
+		out.WriteString("\x1b[3m")
+	}
+	if g.Mode&vtAttrUnderline != 0 {
+		out.WriteString("\x1b[4m")
+	}
+	if g.Mode&vtAttrBlink != 0 {
+		out.WriteString("\x1b[5m")
+	}
+	// Colors: only emit when the client supports them.
+	if p == termenv.Ascii {
+		return
+	}
+	writeColor(out, g.FG, false, p)
+	writeColor(out, g.BG, true, p)
 }
 
-// writeColor emits the SGR color sequence for a vt10x.Color.
-func writeColor(out *strings.Builder, c vt10x.Color, bg bool) {
+// writeColor emits the SGR color sequence for a vt10x.Color, downgrading to
+// the capabilities expressed by p.
+//
+// p == Ascii: caller must not call this function (no colors).
+// p == ANSI:  only 16-color ANSI codes; 256/24-bit colors are quantised.
+// p == ANSI256: 256-color palette; 24-bit colors are quantised.
+// p == TrueColor: full 24-bit support.
+func writeColor(out *strings.Builder, c vt10x.Color, bg bool, p termenv.Profile) { //nolint:cyclop
 	if c == vt10x.DefaultFG || c == vt10x.DefaultBG || c == vt10x.DefaultCursor {
 		return // leave as terminal default
 	}
@@ -214,31 +298,130 @@ func writeColor(out *strings.Builder, c vt10x.Color, bg bool) {
 	if bg {
 		base = 40
 	}
-	if c < 8 { //nolint:mnd
+	// Determine what level of color this vt10x.Color value represents.
+	switch {
+	case c < 8: //nolint:mnd // standard ANSI (0-7)
 		out.WriteString(fmt.Sprintf("\x1b[%dm", int(c)+base))
-	} else if c < 16 { //nolint:mnd
+	case c < 16: //nolint:mnd // bright ANSI (8-15)
 		out.WriteString(fmt.Sprintf("\x1b[%dm", int(c)-8+base+60)) //nolint:mnd
-	} else if c < 256 { //nolint:mnd
-		// 256-color
-		if bg {
-			out.WriteString(fmt.Sprintf("\x1b[48;5;%dm", c))
+	case c < 256: //nolint:mnd // 256-color index
+		if p == termenv.ANSI {
+			// Quantise 256-color to nearest ANSI-16 index.
+			idx := ansi256ToANSI(int(c))
+			if idx < 8 { //nolint:mnd
+				out.WriteString(fmt.Sprintf("\x1b[%dm", idx+base))
+			} else {
+				out.WriteString(fmt.Sprintf("\x1b[%dm", idx-8+base+60)) //nolint:mnd
+			}
 		} else {
-			out.WriteString(fmt.Sprintf("\x1b[38;5;%dm", c))
+			// ANSI256 or TrueColor: emit as 256-color.
+			if bg {
+				out.WriteString(fmt.Sprintf("\x1b[48;5;%dm", c))
+			} else {
+				out.WriteString(fmt.Sprintf("\x1b[38;5;%dm", c))
+			}
 		}
-	} else if c < 1<<24 { //nolint:mnd
-		// 24-bit color stored as RGB in bits 0-23
+	default: // 24-bit color stored as RGB in bits 0-23 (vt10x encodes this way)
 		r := (c >> 16) & 0xff //nolint:mnd
 		g := (c >> 8) & 0xff  //nolint:mnd
 		b := c & 0xff
-		if bg {
-			out.WriteString(fmt.Sprintf("\x1b[48;2;%d;%d;%dm", r, g, b))
-		} else {
-			out.WriteString(fmt.Sprintf("\x1b[38;2;%d;%d;%dm", r, g, b))
+		switch p {
+		case termenv.TrueColor:
+			if bg {
+				out.WriteString(fmt.Sprintf("\x1b[48;2;%d;%d;%dm", r, g, b))
+			} else {
+				out.WriteString(fmt.Sprintf("\x1b[38;2;%d;%d;%dm", r, g, b))
+			}
+		case termenv.ANSI256:
+			// Quantise to 256-color.
+			idx := rgbToANSI256(int(r), int(g), int(b))
+			if bg {
+				out.WriteString(fmt.Sprintf("\x1b[48;5;%dm", idx))
+			} else {
+				out.WriteString(fmt.Sprintf("\x1b[38;5;%dm", idx))
+			}
+		case termenv.ANSI:
+			// Quantise to ANSI-16.
+			idx256 := rgbToANSI256(int(r), int(g), int(b))
+			idx := ansi256ToANSI(idx256)
+			if idx < 8 { //nolint:mnd
+				out.WriteString(fmt.Sprintf("\x1b[%dm", idx+base))
+			} else {
+				out.WriteString(fmt.Sprintf("\x1b[%dm", idx-8+base+60)) //nolint:mnd
+			}
 		}
 	}
 }
 
-// barText builds the status bar string in reverse video, padded to sb.cols.
+// ansi256ToANSI maps an ANSI-256 palette index to the nearest ANSI-16 index.
+// The first 16 entries map directly; entries 16-231 (the 6×6×6 colour cube)
+// are rounded to the closest standard colour; entries 232-255 (greyscale ramp)
+// map to black or white depending on luminance.
+func ansi256ToANSI(idx int) int {
+	if idx < 16 { //nolint:mnd
+		return idx
+	}
+	if idx > 231 { //nolint:mnd // greyscale ramp (232-255)
+		if idx >= 244 { //nolint:mnd
+			return 15 // bright white
+		}
+		return 0 // black
+	}
+	// 6×6×6 colour cube: index 16 = (0,0,0), step = 40 per channel.
+	i := idx - 16 //nolint:mnd
+	b := i % 6    //nolint:mnd
+	g := (i / 6) % 6 //nolint:mnd
+	r := i / 36      //nolint:mnd
+	// Map each channel: 0→0, 1-2→0 (dark), 3-5→1 (bright).
+	ansiR, ansiG, ansiB := 0, 0, 0
+	if r >= 3 { //nolint:mnd
+		ansiR = 1
+	}
+	if g >= 3 { //nolint:mnd
+		ansiG = 1
+	}
+	if b >= 3 { //nolint:mnd
+		ansiB = 1
+	}
+	ansiIdx := ansiR*4 + ansiG*2 + ansiB //nolint:mnd // maps to 0-7
+	// Use bright variant when at least two channels are strong.
+	if r+g+b >= 9 { //nolint:mnd
+		ansiIdx += 8 //nolint:mnd
+	}
+	return ansiIdx
+}
+
+// rgbToANSI256 returns the nearest ANSI-256 palette index for an RGB triplet.
+func rgbToANSI256(r, g, b int) int {
+	// Check greyscale ramp first (232-255): steps of ~10 from 8 to 238.
+	if r == g && g == b {
+		if r < 8 { //nolint:mnd
+			return 16 // use colour-cube black
+		}
+		if r > 248 { //nolint:mnd
+			return 231 // use colour-cube white
+		}
+		return 232 + (r-8)/10 //nolint:mnd
+	}
+	// 6×6×6 colour cube: index = 16 + 36*r6 + 6*g6 + b6 where x6 = (x*6-1)/256.
+	r6 := (r*6 - 1) / 256 //nolint:mnd
+	g6 := (g*6 - 1) / 256 //nolint:mnd
+	b6 := (b*6 - 1) / 256 //nolint:mnd
+	if r6 < 0 {
+		r6 = 0
+	}
+	if g6 < 0 {
+		g6 = 0
+	}
+	if b6 < 0 {
+		b6 = 0
+	}
+	return 16 + 36*r6 + 6*g6 + b6 //nolint:mnd
+}
+
+// barText builds the status bar string, padded to sb.cols.
+// When the client supports at least ANSI colors, the bar is rendered in reverse
+// video (SGR 7). On Ascii-profile clients the bar text is emitted plain.
 // Caller must hold sb.mu.
 func (sb *StatusBar) barText() string {
 	left := fmt.Sprintf(" [%s] %s ", sb.prefix, sb.content)
@@ -255,6 +438,9 @@ func (sb *StatusBar) barText() string {
 	runes := []rune(full)
 	if len(runes) > sb.cols {
 		runes = runes[:sb.cols]
+	}
+	if sb.colorProfile == termenv.Ascii {
+		return string(runes)
 	}
 	return "\x1b[7m" + string(runes) + "\x1b[0m"
 }

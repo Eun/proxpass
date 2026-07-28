@@ -392,13 +392,41 @@ func (m pickerModel) View() string {
 // sshEnviron
 // ----------------------------------------------------------
 
-// sshEnviron implements termenv.Environ using only the SSH client's TERM.
+// sshEnviron implements termenv.Environ using the SSH client's TERM.
+// CLICOLOR_FORCE is set only when the client's terminal actually supports
+// colors; on dumb/Ascii-profile clients we do not force colors so that
+// lipgloss detects the Ascii profile and suppresses all ANSI codes.
 type sshEnviron struct {
 	termType string
+	hasColor bool // true when the client supports at least ANSI colors
+}
+
+func newSSHEnviron(termType string) sshEnviron {
+	// Use termenv to detect the color profile from TERM alone.
+	// We pass an empty NO_COLOR/COLORTERM so that only TERM drives the decision.
+	detect := &singleColorEnv{term: termType}
+	out := termenv.NewOutput(nil, termenv.WithEnvironment(detect))
+	p := out.ColorProfile()
+	return sshEnviron{termType: termType, hasColor: p != termenv.Ascii}
+}
+
+// singleColorEnv is a minimal termenv.Environ for color-profile detection.
+type singleColorEnv struct{ term string }
+
+func (e *singleColorEnv) Environ() []string    { return []string{"TERM=" + e.term} }
+func (e *singleColorEnv) Getenv(key string) string {
+	if key == "TERM" {
+		return e.term
+	}
+	return ""
 }
 
 func (e sshEnviron) Environ() []string {
-	return []string{"TERM=" + e.termType, "CLICOLOR_FORCE=1"}
+	env := []string{"TERM=" + e.termType}
+	if e.hasColor {
+		env = append(env, "CLICOLOR_FORCE=1")
+	}
+	return env
 }
 
 func (e sshEnviron) Getenv(key string) string {
@@ -406,7 +434,10 @@ func (e sshEnviron) Getenv(key string) string {
 	case "TERM":
 		return e.termType
 	case "CLICOLOR_FORCE":
-		return "1"
+		if e.hasColor {
+			return "1"
+		}
+		return ""
 	}
 	return ""
 }
@@ -448,11 +479,14 @@ func PickGuest(
 
 	// Per-session renderer: WithTTY(true) skips the Fd()/IsTerminal() check
 	// (SSH channel has no file descriptor). WithEnvironment feeds TERM and
-	// CLICOLOR_FORCE=1 for correct color-profile detection independent of
-	// whether os.Stdout is a TTY on the server side.
+	// optionally CLICOLOR_FORCE=1 for correct color-profile detection,
+	// independent of whether os.Stdout is a TTY on the server side.
+	// CLICOLOR_FORCE is only set when the client actually supports colors;
+	// dumb/Ascii-profile clients get a plain no-color rendering.
+	env := newSSHEnviron(termType)
 	sshRenderer := lipgloss.NewRenderer(writer,
 		termenv.WithTTY(true),
-		termenv.WithEnvironment(sshEnviron{termType: termType}),
+		termenv.WithEnvironment(env),
 	)
 
 	m := newPickerModel(guests, instMap, w, h, sshRenderer)
@@ -461,7 +495,7 @@ func PickGuest(
 		m,
 		tea.WithInput(reader),
 		tea.WithOutput(writer),
-		tea.WithEnvironment([]string{"TERM=" + termType, "CLICOLOR_FORCE=1"}),
+		tea.WithEnvironment(env.Environ()),
 		tea.WithoutCatchPanics(),
 	).Run()
 	if err != nil {

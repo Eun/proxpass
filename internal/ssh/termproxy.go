@@ -159,10 +159,15 @@ func proxyViaTermProxy(
 	if guestH < 1 {
 		guestH = 1
 	}
+	termType := ""
+	if ptyReq != nil {
+		termType = ptyReq.Term
+	}
 	sb := statusbar.New(clientChan,
 		statusbar.WithText("proxpass", fmt.Sprintf("%s (%s%d) @ %s",
 			guest.Name, guest.Type, guest.ProxmoxID, inst.Name)),
 		statusbar.WithHint("Ctrl+A X: disconnect"),
+		statusbar.WithTermType(termType, "", ""),
 	)
 	// Setup() sets the scroll region and draws the bar before the WS bridge
 	// starts, so it is in place before the first byte of guest output arrives.
