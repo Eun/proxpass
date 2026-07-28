@@ -169,7 +169,13 @@ func newPickerModel(
 
 	l := list.New(items, delegate, width, height)
 	l.Title = "Select a guest to connect to"
+	// Apply our renderer-aware styles first, then call SetSize again so that
+	// FilterInput.Width is recalculated using the correct Title style width.
+	// list.New() computes FilterInput.Width with the default Title style;
+	// if our style changes the rendered prompt width the filter input would
+	// be mis-sized, leaving residual title characters visible during filtering.
 	l.Styles = styles.list
+	l.SetSize(width, height)
 	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(true)
 	l.SetShowHelp(true)
@@ -182,21 +188,26 @@ func (m pickerModel) Init() tea.Cmd { return nil }
 func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "q", "esc", "ctrl+c":
-			m.quit = true
-			return m, tea.Quit
-		case "enter":
-			selected, ok := m.list.SelectedItem().(guestItem)
-			if !ok {
-				break
+		// While the filter input is active the list handles esc/q itself
+		// (esc cancels filtering, q is typed into the filter). Only intercept
+		// these keys when we are NOT actively filtering.
+		if m.list.FilterState() != list.Filtering {
+			switch msg.String() {
+			case "q", "esc", "ctrl+c":
+				m.quit = true
+				return m, tea.Quit
+			case "enter":
+				selected, ok := m.list.SelectedItem().(guestItem)
+				if !ok {
+					break
+				}
+				if selected.guest.Status != models.StatusRunning {
+					m.hint = fmt.Sprintf("%s is stopped — cannot connect.", selected.guest.Name)
+					return m, nil
+				}
+				m.selected = &selected
+				return m, tea.Quit
 			}
-			if selected.guest.Status != models.StatusRunning {
-				m.hint = fmt.Sprintf("%s is stopped — cannot connect.", selected.guest.Name)
-				return m, nil
-			}
-			m.selected = &selected
-			return m, tea.Quit
 		}
 		if m.hint != "" && msg.String() != "enter" {
 			m.hint = ""
