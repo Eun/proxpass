@@ -316,6 +316,19 @@ func (m pickerModel) Init() tea.Cmd {
 func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// While the stopped-guest dialog is visible, enter and esc dismiss it;
+		// ctrl+c still quits. No keys are forwarded to the list in this state.
+		if m.hint != "" {
+			switch msg.String() {
+			case "ctrl+c":
+				m.quit = true
+				return m, tea.Quit
+			default:
+				m.hint = ""
+			}
+			return m, nil
+		}
+
 		// While the filter input is active the list handles esc/q itself
 		// (esc cancels filtering, q is typed into the filter). Only intercept
 		// these keys when we are NOT actively filtering.
@@ -336,9 +349,6 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.selected = &selected
 				return m, tea.Quit
 			}
-		}
-		if m.hint != "" && msg.String() != "enter" {
-			m.hint = ""
 		}
 	case tea.WindowSizeMsg:
 		m.list.SetSize(msg.Width, msg.Height)
