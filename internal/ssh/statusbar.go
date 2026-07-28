@@ -11,80 +11,76 @@ import (
 // statusBar reserves the bottom row of the terminal for a persistent info line
 // and constrains the guest console to the remaining rows via DECSTBM.
 //
-// Terminal control sequences used:
-//   - CSI Ps ; Ps r  (DECSTBM) — set top/bottom scroll margin
-//   - CSI s          (SCOSC)   — save cursor position (used before writing bar)
-//   - CSI u          (SCORC)   — restore cursor position
-//   - CSI H          (CUP)     — move cursor to absolute position
-//   - CSI 2J         (ED)      — erase screen (used only during teardown)
-//   - CSI K          (EL)      — erase to end of line
-//   - CSI ?25l/h              — hide/show cursor
+// Key insight: the guest's terminal output (clear screen, cursor movement, etc.)
+// will overwrite anything we draw. We therefore redraw the bar after every
+// chunk of output we forward from the guest. A writerWithBar wraps the
+// destination writer and calls sb.draw() after each Write so the bar survives
+// even a full clear-screen from the guest application.
+//
+// Terminal sequences:
+//
+//	CSI Ps;Ps r  (DECSTBM) – scroll region top..bottom
+//	CSI row;col H (CUP)    – move cursor to absolute position
+//	ESC 7 / ESC 8          – DEC save/restore cursor (more portable than CSI s/u)
+//	CSI ?25l/h             – hide/show cursor
+//	CSI K  (EL)            – erase to end of line
 const (
-	seqSaveCursor    = "\x1b[s"
-	seqRestoreCursor = "\x1b[u"
+	seqSaveCursor    = "\x1b7"
+	seqRestoreCursor = "\x1b8"
 	seqHideCursor    = "\x1b[?25l"
 	seqShowCursor    = "\x1b[?25h"
-	seqResetScroll   = "\x1b[r"      // reset scroll region to full screen
-	seqEraseToEOL    = "\x1b[K"      // erase from cursor to end of line
+	seqResetScroll   = "\x1b[r"
+	seqEraseToEOL    = "\x1b[K"
 )
 
-// seqScrollRegion returns the DECSTBM sequence to set the scroll region
-// to rows top..bottom (1-based).
 func seqScrollRegion(top, bottom int) string {
 	return fmt.Sprintf("\x1b[%d;%dr", top, bottom)
 }
 
-// seqMoveTo returns the CUP sequence to move the cursor to row,col (1-based).
 func seqMoveTo(row, col int) string {
 	return fmt.Sprintf("\x1b[%d;%dH", row, col)
 }
 
-// statusBar manages the reserved bottom row of the terminal.
+// statusBar manages the reserved bottom row.
 type statusBar struct {
-	w     io.Writer // the SSH channel stdout
+	w     io.Writer // raw SSH channel stdout
 	guest *models.Guest
 	inst  *models.ProxmoxInstance
 	mu    sync.Mutex
-	h     int // current total terminal height
-	cols  int // current terminal width
+	h     int // total terminal height
+	cols  int // terminal width
 }
 
 func newStatusBar(w io.Writer, guest *models.Guest, inst *models.ProxmoxInstance) *statusBar {
 	return &statusBar{w: w, guest: guest, inst: inst}
 }
 
-// setup initialises the scroll region and draws the initial status bar.
-// guestHeight = totalHeight - 1 must be used as the PTY height forwarded
-// to the guest so it never draws into the reserved row.
+// setup sets the initial dimensions, restricts the scroll region, and draws
+// the bar for the first time. Must be called before the guest session starts
+// so the scroll region is in place before the guest's first output.
 func (sb *statusBar) setup(cols, totalHeight int) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 	sb.cols = cols
 	sb.h = totalHeight
-	sb.apply()
+	sb.draw()
 }
 
-// resize updates the scroll region and redraws the bar after a terminal resize.
-// Returns the effective guest height (totalHeight - 1).
+// resize updates dimensions and redraws. Returns the adjusted guest height.
 func (sb *statusBar) resize(cols, totalHeight int) int {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 	sb.cols = cols
 	sb.h = totalHeight
-	sb.apply()
+	sb.draw()
 	return sb.guestHeight()
 }
 
-// teardown restores the full scroll region and clears the status bar row.
+// teardown clears the bar and restores the full scroll region.
 func (sb *statusBar) teardown() {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
-	_, _ = fmt.Fprintf(sb.w,
-		"%s"+ // hide cursor while we tidy up
-			"%s"+ // move to the bar row
-			"%s"+ // erase the bar line
-			"%s"+ // reset scroll region to full screen
-			"%s", // show cursor
+	_, _ = fmt.Fprintf(sb.w, "%s%s%s%s%s",
 		seqHideCursor,
 		seqMoveTo(sb.h, 1),
 		seqEraseToEOL,
@@ -93,8 +89,7 @@ func (sb *statusBar) teardown() {
 	)
 }
 
-// guestHeight returns the terminal height available to the guest
-// (total height minus the one row reserved for the status bar).
+// guestHeight is totalHeight - 1 (minimum 1).
 func (sb *statusBar) guestHeight() int {
 	h := sb.h - 1
 	if h < 1 {
@@ -103,49 +98,64 @@ func (sb *statusBar) guestHeight() int {
 	return h
 }
 
-// apply writes the scroll region + bar. Caller must hold sb.mu.
-func (sb *statusBar) apply() {
+// draw writes the scroll region restriction + bar text.
+// Caller must hold sb.mu.
+func (sb *statusBar) draw() {
 	if sb.h < 2 || sb.cols < 1 { //nolint:mnd
 		return
 	}
-	barText := sb.barText()
-	_, _ = fmt.Fprintf(sb.w,
-		"%s"+ // hide cursor
-			"%s"+ // restrict scroll to rows 1..h-1
-			"%s"+ // move to bar row
-			"%s"+ // erase bar row
-			"%s"+ // write bar text
-			"%s"+ // restore cursor to wherever the guest left it
-			"%s", // show cursor
+	// We use ESC 7/8 (DEC save/restore) which is more portable than
+	// CSI s/u (SCOSC/SCORC). The sequence order matters:
+	//  1. Hide cursor to avoid flicker.
+	//  2. Set scroll region so the guest is confined to rows 1..h-1.
+	//  3. Save cursor (we'll restore to wherever the guest left it).
+	//  4. Move to bar row, erase line, write bar.
+	//  5. Restore cursor, show cursor.
+	_, _ = fmt.Fprintf(sb.w, "%s%s%s%s%s%s%s%s",
 		seqHideCursor,
 		seqScrollRegion(1, sb.guestHeight()),
+		seqSaveCursor,
 		seqMoveTo(sb.h, 1),
 		seqEraseToEOL,
-		barText,
+		sb.barText(),
 		seqRestoreCursor,
 		seqShowCursor,
 	)
 }
 
-// barText builds the status bar string, truncated to fit the terminal width.
+// barText returns the bar string rendered in reverse video, padded to sb.cols.
 func (sb *statusBar) barText() string {
 	left := fmt.Sprintf(" [proxpass] %s (%s%d) @ %s ",
 		sb.guest.Name, sb.guest.Type, sb.guest.ProxmoxID, sb.inst.Name)
 	right := " Ctrl+A X: disconnect "
 
-	// Pad or truncate to fit cols exactly.
-	available := sb.cols - len(left) - len(right)
-	var mid string
-	if available > 0 {
-		mid = fmt.Sprintf("%*s", available, "") // spaces
+	avail := sb.cols - len(left) - len(right)
+	mid := ""
+	if avail > 0 {
+		mid = fmt.Sprintf("%*s", avail, "")
 	}
-
 	full := left + mid + right
-	// Safety truncation if terminal is very narrow.
 	runes := []rune(full)
 	if len(runes) > sb.cols {
 		runes = runes[:sb.cols]
 	}
-	// Render with reverse video (swap fg/bg) for a visible bar.
 	return "\x1b[7m" + string(runes) + "\x1b[m"
+}
+
+// writerWithBar wraps an io.Writer so that after every Write it redraws the
+// status bar. This ensures the bar survives any clear-screen or cursor-home
+// sequences sent by the guest application.
+type writerWithBar struct {
+	w  io.Writer
+	sb *statusBar
+}
+
+func (wb *writerWithBar) Write(p []byte) (int, error) {
+	n, err := wb.w.Write(p)
+	if n > 0 {
+		wb.sb.mu.Lock()
+		wb.sb.draw()
+		wb.sb.mu.Unlock()
+	}
+	return n, err
 }

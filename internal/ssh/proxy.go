@@ -282,12 +282,13 @@ func proxyToGuest(
 	if err != nil {
 		return fmt.Errorf("stderr pipe: %w", err)
 	}
+	// Set up the status bar BEFORE starting the guest so the scroll region
+	// is in place before the first byte of guest output arrives.
+	sb.setup(effW, effH)
+
 	if err := session.Start(cmd); err != nil {
 		return fmt.Errorf("starting command %q: %w", cmd, err)
 	}
-
-	// Draw the status bar and restrict the scroll region.
-	sb.setup(effW, effH)
 
 	ctrlCtx, ctrlCancel := context.WithCancel(context.Background())
 	defer ctrlCancel()
@@ -326,10 +327,13 @@ func proxyToGuest(
 		_, _ = io.Copy(remoteStdin, src)
 		_ = remoteStdin.Close()
 	}()
+	// Wrap clientChan with writerWithBar so every chunk of guest output is
+	// followed by a bar redraw — surviving clear-screen from the guest.
+	barWriter := &writerWithBar{w: clientChan, sb: sb}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(clientChan, remoteStdout)
+		_, _ = io.Copy(barWriter, remoteStdout)
 	}()
 	wg.Add(1)
 	go func() {

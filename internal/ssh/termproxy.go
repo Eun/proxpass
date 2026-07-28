@@ -159,13 +159,15 @@ func proxyViaTermProxy(
 	if guestH < 1 {
 		guestH = 1
 	}
+	// Set up the status bar and scroll region BEFORE sending the resize
+	// and BEFORE the bridge loop starts so it is in place before the first
+	// guest output arrives on the SSH channel.
+	sb.setup(initCols, initRows)
+
 	initResizeMsg := fmt.Sprintf("1:%d:%d:", initCols, guestH)
 	if err := conn.Write(ctx, websocket.MessageBinary, []byte(initResizeMsg)); err != nil {
 		return fmt.Errorf("send initial resize: %w", err)
 	}
-
-	// Draw the status bar and set the scroll region on the SSH client terminal.
-	sb.setup(initCols, initRows)
 
 	// --- Step 7: Bidirectional bridge ---
 	done := make(chan struct{})
@@ -242,14 +244,17 @@ func proxyViaTermProxy(
 	// WebSocket → SSH client: raw PTY output, no framing.
 	// The termproxy binary writes PTY bytes directly to the TCP socket;
 	// the vncwebsocket tunnel forwards them verbatim as binary WS frames.
+	// We write through writerWithBar so the status bar is redrawn after
+	// every chunk, surviving any clear-screen from the guest application.
 	// When the WS reader exits (connection closed by either side), signal
 	// done to stop the control goroutine.
+	barWriter := &writerWithBar{w: clientChan, sb: sb}
 	for {
 		_, data, readErr := conn.Read(ctx)
 		if readErr != nil {
 			break
 		}
-		if _, writeErr := clientChan.Write(data); writeErr != nil {
+		if _, writeErr := barWriter.Write(data); writeErr != nil {
 			break
 		}
 	}
