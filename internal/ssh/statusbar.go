@@ -157,9 +157,19 @@ func (sb *statusBar) barText() string {
 	return "\x1b[7m" + string(runes) + "\x1b[m"
 }
 
+// altScreenExit is the sequence a guest sends when exiting the alternate
+// screen buffer (e.g. when top, vim, htop exit). The client terminal responds
+// by restoring its pre-alt-screen state, which discards our DECSTBM scroll
+// region. We must detect this and re-apply our scroll region + bar.
+const altScreenExit = "\x1b[?1049l"
+
 // writerWithBar wraps an io.Writer so the status bar is redrawn after every
-// Write, surviving clear-screen sequences from the guest. DECSTBM is NOT
-// re-emitted here — only the bar repaint (save/move/draw/restore).
+// Write, surviving clear-screen sequences from the guest.
+//
+// It also watches for \x1b[?1049l (exit alternate screen) in the guest
+// output. When the client terminal receives that sequence it restores its
+// pre-alt-screen state, which discards our DECSTBM scroll region. We
+// re-apply the scroll region immediately after forwarding such a chunk.
 type writerWithBar struct {
 	w  io.Writer
 	sb *statusBar
@@ -168,7 +178,30 @@ type writerWithBar struct {
 func (wb *writerWithBar) Write(p []byte) (int, error) {
 	n, err := wb.w.Write(p)
 	if n > 0 {
-		wb.sb.redraw()
+		// If the guest exited the alternate screen the client terminal
+		// restored its saved state, wiping our scroll region. Re-apply it.
+		if contains(p[:n], altScreenExit) {
+			wb.sb.mu.Lock()
+			wb.sb.applyScrollRegion()
+			wb.sb.drawBar()
+			wb.sb.mu.Unlock()
+		} else {
+			wb.sb.redraw()
+		}
 	}
 	return n, err
+}
+
+// contains reports whether haystack contains needle as a byte sequence.
+func contains(haystack []byte, needle string) bool {
+	n := []byte(needle)
+	if len(n) == 0 || len(haystack) < len(n) {
+		return false
+	}
+	for i := range haystack[:len(haystack)-len(n)+1] {
+		if string(haystack[i:i+len(n)]) == needle {
+			return true
+		}
+	}
+	return false
 }
