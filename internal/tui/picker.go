@@ -44,7 +44,12 @@ func newPickerStyles(r *lipgloss.Renderer) *pickerStyles {
 	}
 
 	// list.Styles — mirrors bubbles/list.DefaultStyles() using r.NewStyle().
-	s.list.TitleBar = r.NewStyle().Padding(0, 0, 1, 1) //nolint:mnd
+	// TitleBar must have zero horizontal padding: the filter input is sized
+	// to fill the full terminal width (FilterInput.Width = termWidth - promptWidth),
+	// so any left padding here would push the rendered line beyond the terminal
+	// width, leaving stale title characters visible when the filter activates.
+	// Keep only bottom padding for the blank line between title and items.
+	s.list.TitleBar = r.NewStyle().Padding(0, 0, 1, 0) //nolint:mnd
 	s.list.Title = r.NewStyle().
 		Bold(true).
 		Foreground(lipgloss.Color("205"))
@@ -169,13 +174,7 @@ func newPickerModel(
 
 	l := list.New(items, delegate, width, height)
 	l.Title = "Select a guest to connect to"
-	// Apply our renderer-aware styles first, then call SetSize again so that
-	// FilterInput.Width is recalculated using the correct Title style width.
-	// list.New() computes FilterInput.Width with the default Title style;
-	// if our style changes the rendered prompt width the filter input would
-	// be mis-sized, leaving residual title characters visible during filtering.
 	l.Styles = styles.list
-	l.SetSize(width, height)
 	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(true)
 	l.SetShowHelp(true)
