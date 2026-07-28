@@ -180,7 +180,7 @@ func (wb *writerWithBar) Write(p []byte) (int, error) {
 	if n > 0 {
 		// If the guest exited the alternate screen the client terminal
 		// restored its saved state, wiping our scroll region. Re-apply it.
-		if contains(p[:n], altScreenExit) {
+		if containsBytes(p[:n], altScreenExit) {
 			wb.sb.mu.Lock()
 			wb.sb.applyScrollRegion()
 			wb.sb.drawBar()
@@ -192,8 +192,8 @@ func (wb *writerWithBar) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// contains reports whether haystack contains needle as a byte sequence.
-func contains(haystack []byte, needle string) bool {
+// containsBytes reports whether haystack contains needle as a byte sequence.
+func containsBytes(haystack []byte, needle string) bool {
 	n := []byte(needle)
 	if len(n) == 0 || len(haystack) < len(n) {
 		return false
