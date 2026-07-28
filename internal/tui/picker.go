@@ -182,7 +182,15 @@ func newPickerModel(
 	return pickerModel{list: l, styles: styles}
 }
 
-func (m pickerModel) Init() tea.Cmd { return nil }
+func (m pickerModel) Init() tea.Cmd {
+	// Send a WindowSizeMsg on startup so the bubbletea renderer learns the
+	// terminal width. Without this, p.ttyOutput is nil (SSH channel has no
+	// file descriptor), r.width stays 0, and EraseLineRight is never emitted
+	// — leaving stale characters when a shorter line replaces a longer one.
+	return func() tea.Msg {
+		return tea.WindowSizeMsg{Width: m.list.Width(), Height: m.list.Height()}
+	}
+}
 
 func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
