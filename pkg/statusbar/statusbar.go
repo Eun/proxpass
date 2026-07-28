@@ -64,38 +64,50 @@ func WithColors(_ ColorMode) Option { return func(_ *StatusBar) {} }
 // noColor is the NO_COLOR value (non-empty means no color).
 func WithTermType(termType, colorTerm, noColor string) Option {
 	return func(sb *StatusBar) {
-		env := &singleEnv{term: termType, colorTerm: colorTerm, noColor: noColor}
-		out := termenv.NewOutput(nil, termenv.WithEnvironment(env))
-		p := out.EnvColorProfile()
-		sb.colorProfile = p
+		sb.colorProfile = ColorProfileFromEnv(termType, colorTerm, noColor)
 	}
 }
 
-// singleEnv implements termenv.Environ for color-profile detection only.
-type singleEnv struct {
-	term      string
-	colorTerm string
-	noColor   string
-}
-
-func (e *singleEnv) Environ() []string {
-	return []string{
-		"TERM=" + e.term,
-		"COLORTERM=" + e.colorTerm,
-		"NO_COLOR=" + e.noColor,
+// ColorProfileFromEnv determines a termenv.Profile from TERM / COLORTERM /
+// NO_COLOR without requiring a real TTY file descriptor. This is needed for
+// SSH sessions where we know the client's terminal type from the protocol
+// negotiation but have no fd to call isatty(3) on.
+//
+// The logic mirrors termenv's own ColorProfile() on Unix, minus the
+// isTTY() guard that would always return Ascii for non-fd writers.
+func ColorProfileFromEnv(term, colorTerm, noColor string) termenv.Profile { //nolint:cyclop
+	// NO_COLOR / CLICOLOR=0 disables all color output.
+	if noColor != "" {
+		return termenv.Ascii
 	}
-}
 
-func (e *singleEnv) Getenv(key string) string {
-	switch key {
-	case "TERM":
-		return e.term
-	case "COLORTERM":
-		return e.colorTerm
-	case "NO_COLOR":
-		return e.noColor
+	// COLORTERM overrides TERM-based detection.
+	switch strings.ToLower(colorTerm) {
+	case "24bit", "truecolor":
+		if strings.HasPrefix(term, "screen") {
+			return termenv.ANSI256 // screen only supports 256 colors
+		}
+		return termenv.TrueColor
+	case "yes", "true":
+		return termenv.ANSI256
 	}
-	return ""
+
+	// TERM-based detection (mirrors termenv logic).
+	switch term {
+	case "alacritty", "contour", "rio", "wezterm", "xterm-ghostty", "xterm-kitty":
+		return termenv.TrueColor
+	case "linux", "xterm":
+		return termenv.ANSI
+	case "dumb", "":
+		return termenv.Ascii
+	}
+	if strings.Contains(term, "256color") {
+		return termenv.ANSI256
+	}
+	if strings.Contains(term, "color") || strings.Contains(term, "ansi") {
+		return termenv.ANSI
+	}
+	return termenv.Ascii
 }
 
 // ---- StatusBar ----

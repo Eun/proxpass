@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"proxpass/internal/models"
+	"proxpass/pkg/statusbar"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -402,37 +403,12 @@ type sshEnviron struct {
 }
 
 func newSSHEnviron(termType, colorTerm, noColor string) sshEnviron {
-	// Use termenv to detect the color profile from the client's env vars.
-	detect := &singleColorEnv{term: termType, colorTerm: colorTerm, noColor: noColor}
-	out := termenv.NewOutput(nil, termenv.WithEnvironment(detect))
-	p := out.EnvColorProfile() // respects NO_COLOR / CLICOLOR via EnvColorProfile
+	// Use statusbar.ColorProfileFromEnv instead of termenv.NewOutput(nil, ...)
+	// because termenv's ColorProfile() always returns Ascii when there is no
+	// real TTY fd (isTTY() == false). Our helper replicates the same TERM /
+	// COLORTERM / NO_COLOR logic without the fd check.
+	p := statusbar.ColorProfileFromEnv(termType, colorTerm, noColor)
 	return sshEnviron{termType: termType, hasColor: p != termenv.Ascii}
-}
-
-// singleColorEnv is a minimal termenv.Environ for color-profile detection.
-type singleColorEnv struct {
-	term      string
-	colorTerm string
-	noColor   string
-}
-
-func (e *singleColorEnv) Environ() []string {
-	return []string{
-		"TERM=" + e.term,
-		"COLORTERM=" + e.colorTerm,
-		"NO_COLOR=" + e.noColor,
-	}
-}
-func (e *singleColorEnv) Getenv(key string) string {
-	switch key {
-	case "TERM":
-		return e.term
-	case "COLORTERM":
-		return e.colorTerm
-	case "NO_COLOR":
-		return e.noColor
-	}
-	return ""
 }
 
 func (e sshEnviron) Environ() []string {
