@@ -29,7 +29,7 @@ func newGuestStyles(r *lipgloss.Renderer) *guestStyles {
 	return &guestStyles{
 		running: r.NewStyle().Foreground(lipgloss.Color("10")),  // bright green
 		stopped: r.NewStyle().Foreground(lipgloss.Color("240")), // gray
-		title:   r.NewStyle().Bold(true).Foreground(lipgloss.Color("205")),
+		title:   r.NewStyle().Bold(true).Padding(0).Foreground(lipgloss.Color("205")),
 		hint:    r.NewStyle().Foreground(lipgloss.Color("241")).Italic(true),
 	}
 }
@@ -42,12 +42,9 @@ func defaultListStyles(r *lipgloss.Renderer) list.Styles { //nolint:revive // mi
 	subduedColor := lipgloss.AdaptiveColor{Light: "#9B9B9B", Dark: "#5C5C5C"}
 
 	var s list.Styles
-	s.TitleBar = r.NewStyle().Padding(0, 0, 1, 2) //nolint:mnd
+	s.TitleBar = r.NewStyle().Padding(0, 0, 1, 1) //nolint:mnd
 
-	s.Title = r.NewStyle().
-		Background(lipgloss.Color("62")).
-		Foreground(lipgloss.Color("230")).
-		Padding(0, 1)
+	s.Title = r.NewStyle().Foreground(lipgloss.Color("205"))
 
 	s.Spinner = r.NewStyle().
 		Foreground(lipgloss.AdaptiveColor{Light: "#8E8E8E", Dark: "#747373"})
