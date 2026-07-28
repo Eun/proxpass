@@ -26,7 +26,8 @@ const filterSep = "\x00"
 // pickerStyles holds all lipgloss styles for the picker, bound to the
 // per-session renderer so they work regardless of whether os.Stdout is a TTY.
 type pickerStyles struct {
-	stoppedHint          lipgloss.Style
+	stoppedDialog        lipgloss.Style // outer dialog box
+	stoppedDialogText    lipgloss.Style // text inside the dialog
 	stoppedSelectedTitle lipgloss.Style
 	stoppedSelectedDesc  lipgloss.Style
 	// list-component styles (set on l.Styles and delegate.Styles)
@@ -41,7 +42,14 @@ func newPickerStyles(r *lipgloss.Renderer) *pickerStyles {
 	stoppedColor := lipgloss.AdaptiveColor{Light: "#999999", Dark: "#666666"}
 
 	s := &pickerStyles{
-		stoppedHint: r.NewStyle().Foreground(lipgloss.Color("209")).Bold(true),
+		stoppedDialog: r.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("209")).
+			Padding(1, 3). //nolint:mnd
+			Align(lipgloss.Center),
+		stoppedDialogText: r.NewStyle().
+			Foreground(lipgloss.Color("209")).
+			Bold(true),
 	}
 
 	// list.Styles — mirrors bubbles/list.DefaultStyles() using r.NewStyle().
@@ -345,11 +353,24 @@ func (m pickerModel) View() string {
 	if m.quit {
 		return ""
 	}
-	view := m.list.View()
-	if m.hint != "" {
-		view += "\r\n" + m.styles.stoppedHint.Render(m.hint)
+	listView := m.list.View()
+	if m.hint == "" {
+		return listView
 	}
-	return view
+
+	// A stopped guest was selected: show a centered dialog over the list.
+	// lipgloss.Place centers the dialog within the terminal dimensions and
+	// fills the surrounding space with spaces, effectively replacing the list
+	// background. The list is still visible in the terminal's scroll buffer but
+	// the focused view is the dialog — the user dismisses it with any key.
+	dialog := m.styles.stoppedDialog.Render(
+		m.styles.stoppedDialogText.Render(m.hint),
+	)
+	return lipgloss.Place(
+		m.list.Width(), m.list.Height(),
+		lipgloss.Center, lipgloss.Center,
+		dialog,
+	)
 }
 
 // ----------------------------------------------------------
