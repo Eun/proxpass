@@ -4,14 +4,20 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	"proxpass/internal/models"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 )
+
+// filterSep separates the title and description inside FilterValue().
+// NUL is never present in real guest names or descriptions.
+const filterSep = "\x00"
 
 // ----------------------------------------------------------
 // Per-session styles
@@ -20,9 +26,9 @@ import (
 // pickerStyles holds all lipgloss styles for the picker, bound to the
 // per-session renderer so they work regardless of whether os.Stdout is a TTY.
 type pickerStyles struct {
-	stoppedHint           lipgloss.Style
-	stoppedSelectedTitle  lipgloss.Style
-	stoppedSelectedDesc   lipgloss.Style
+	stoppedHint          lipgloss.Style
+	stoppedSelectedTitle lipgloss.Style
+	stoppedSelectedDesc  lipgloss.Style
 	// list-component styles (set on l.Styles and delegate.Styles)
 	list     list.Styles
 	delegate list.DefaultItemStyles
@@ -32,13 +38,6 @@ func newPickerStyles(r *lipgloss.Renderer) *pickerStyles {
 	verySubdued := lipgloss.AdaptiveColor{Light: "#DDDADA", Dark: "#3C3C3C"}
 	subdued := lipgloss.AdaptiveColor{Light: "#9B9B9B", Dark: "#5C5C5C"}
 
-	// Running guests get bright-green titles; stopped guests get gray.
-	// These colours are placed on the NormalTitle / DimmedTitle styles so
-	// that bubbles/list handles truncation, padding and filter-match
-	// highlighting correctly (it calls .Inline(true) on these styles before
-	// running lipgloss.StyleRunes — pre-rendering ANSI codes in Title() would
-	// corrupt the rune-index mapping and produce raw escape codes in the output).
-	runningColor := lipgloss.AdaptiveColor{Light: "#007700", Dark: "#00dd00"}
 	stoppedColor := lipgloss.AdaptiveColor{Light: "#999999", Dark: "#666666"}
 
 	s := &pickerStyles{
@@ -72,8 +71,8 @@ func newPickerStyles(r *lipgloss.Renderer) *pickerStyles {
 	s.list.NoItems = r.NewStyle().
 		Foreground(lipgloss.AdaptiveColor{Light: "#909090", Dark: "#626262"})
 	s.list.ArabicPagination = r.NewStyle().Foreground(subdued)
-	s.list.PaginationStyle = r.NewStyle().PaddingLeft(2)  //nolint:mnd
-	s.list.HelpStyle = r.NewStyle().Padding(1, 0, 0, 2)   //nolint:mnd
+	s.list.PaginationStyle = r.NewStyle().PaddingLeft(2) //nolint:mnd
+	s.list.HelpStyle = r.NewStyle().Padding(1, 0, 0, 2)  //nolint:mnd
 	s.list.ActivePaginationDot = r.NewStyle().
 		Foreground(lipgloss.AdaptiveColor{Light: "#847A85", Dark: "#979797"}).
 		SetString("•")
@@ -84,6 +83,7 @@ func newPickerStyles(r *lipgloss.Renderer) *pickerStyles {
 	// strings returned by guestItem.Title() / Description().  Do NOT pre-render
 	// ANSI codes in those methods; let the delegate do all colouring here so
 	// that filter-match highlighting (lipgloss.StyleRunes) works correctly.
+	runningColor := lipgloss.AdaptiveColor{Light: "#007700", Dark: "#00dd00"}
 	s.delegate.NormalTitle = r.NewStyle().
 		PaddingLeft(1).
 		Foreground(runningColor)
@@ -125,27 +125,29 @@ func newPickerStyles(r *lipgloss.Renderer) *pickerStyles {
 
 // guestItem wraps a Guest for the bubbles/list component.
 //
-// IMPORTANT: Title() and Description() must return PLAIN TEXT with no ANSI
-// escape codes.  The delegate's Render() method applies styles itself and also
-// calls lipgloss.StyleRunes() for filter-match highlighting.  StyleRunes maps
-// rune indices from FilterValue() (plain text) onto the Title() string — if
-// that string already contains escape codes the indices are wrong and raw codes
-// appear in the output.
+// FilterValue() returns "name\x00description" so the filter searches both
+// fields. The NUL separator is never present in real text, making it safe to
+// split match indices at the name-boundary rune offset.
+//
+// Title() and Description() return PLAIN TEXT — no ANSI codes. All styling is
+// applied by guestDelegate.Render so that lipgloss.StyleRunes can operate on
+// clean strings and rune indices are correct.
 type guestItem struct {
 	guest    *models.Guest
 	instName string
 }
 
-func (i guestItem) FilterValue() string { return i.guest.Name }
-
-// Title returns the plain guest name.  Colour is applied by the delegate via
-// NormalTitle / DimmedTitle / SelectedTitle styles.
-func (i guestItem) Title() string {
-	return i.guest.Name
+// FilterValue combines name and description with a NUL separator so the fuzzy
+// filter searches both fields with a single pass.
+func (i guestItem) FilterValue() string {
+	return i.guest.Name + filterSep + i.description()
 }
 
-// Description returns plain metadata.  Colour is applied by the delegate.
-func (i guestItem) Description() string {
+func (i guestItem) Title() string { return i.guest.Name }
+
+func (i guestItem) Description() string { return i.description() }
+
+func (i guestItem) description() string {
 	parts := []string{
 		fmt.Sprintf("%s%d", i.guest.Type, i.guest.ProxmoxID),
 		i.instName,
@@ -156,7 +158,6 @@ func (i guestItem) Description() string {
 	return strings.Join(parts, " • ")
 }
 
-// isStopped returns true when the item is a stopped guest.
 func (i guestItem) isStopped() bool {
 	return i.guest.Status != models.StatusRunning
 }
@@ -165,10 +166,9 @@ func (i guestItem) isStopped() bool {
 // Custom delegate
 // ----------------------------------------------------------
 
-// guestDelegate wraps list.DefaultDelegate and overrides Render so that
-// stopped guests always use the DimmedTitle/DimmedDesc styles regardless of
-// selection state. The DefaultDelegate.Render pipeline (truncation, filter-match
-// highlighting via lipgloss.StyleRunes) is reused for the normal/selected paths.
+// guestDelegate wraps list.DefaultDelegate and overrides Render to:
+//   - dim stopped guests (normal or selected)
+//   - highlight filter matches in both title AND description
 type guestDelegate struct {
 	list.DefaultDelegate
 	styles *pickerStyles
@@ -176,22 +176,85 @@ type guestDelegate struct {
 
 func (d guestDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
 	gi, ok := item.(guestItem)
-	if !ok || !gi.isStopped() {
-		// Running guest or unknown type: default rendering handles everything.
+	if !ok {
 		d.DefaultDelegate.Render(w, m, index, item)
 		return
 	}
 
-	// Stopped guest: swap styles to dimmed variants before delegating.
-	// NormalTitle/Desc → plain dimmed (no border).
-	// SelectedTitle/Desc → dimmed border + dimmed text.
-	orig := d.DefaultDelegate.Styles
-	d.DefaultDelegate.Styles.NormalTitle = orig.DimmedTitle
-	d.DefaultDelegate.Styles.NormalDesc = orig.DimmedDesc
-	d.DefaultDelegate.Styles.SelectedTitle = d.styles.stoppedSelectedTitle
-	d.DefaultDelegate.Styles.SelectedDesc = d.styles.stoppedSelectedDesc
-	d.DefaultDelegate.Render(w, m, index, item)
-	d.DefaultDelegate.Styles = orig
+	isSelected := index == m.Index()
+	isFiltering := m.FilterState() == list.Filtering
+	isFiltered := m.FilterState() == list.Filtering || m.FilterState() == list.FilterApplied
+	emptyFilter := isFiltering && m.FilterValue() == ""
+
+	title := gi.Title()
+	desc := gi.Description()
+
+	s := &d.DefaultDelegate.Styles
+
+	// Width available for text (excluding padding and border).
+	textWidth := m.Width() - s.NormalTitle.GetPaddingLeft() - s.NormalTitle.GetPaddingRight()
+	title = ansi.Truncate(title, textWidth, "…")
+	desc = ansi.Truncate(desc, textWidth, "…")
+
+	// Determine title and desc styles based on item state.
+	var titleStyle, descStyle lipgloss.Style
+	switch {
+	case emptyFilter:
+		titleStyle = s.DimmedTitle
+		descStyle = s.DimmedDesc
+	case gi.isStopped() && isSelected && !isFiltering:
+		titleStyle = d.styles.stoppedSelectedTitle
+		descStyle = d.styles.stoppedSelectedDesc
+	case gi.isStopped():
+		titleStyle = s.DimmedTitle
+		descStyle = s.DimmedDesc
+	case isSelected && !isFiltering:
+		titleStyle = s.SelectedTitle
+		descStyle = s.SelectedDesc
+	default:
+		titleStyle = s.NormalTitle
+		descStyle = s.NormalDesc
+	}
+
+	// Apply filter-match highlighting when there are matches.
+	if isFiltered && !emptyFilter {
+		rawMatches := m.MatchesForItem(index)
+		if len(rawMatches) > 0 {
+			titleRunes := utf8.RuneCountInString(gi.Title())
+			// +1 for the NUL separator in FilterValue().
+			descOffset := titleRunes + 1
+
+			var titleMatches, descMatches []int
+			for _, idx := range rawMatches {
+				switch {
+				case idx < titleRunes:
+					titleMatches = append(titleMatches, idx)
+				case idx >= descOffset:
+					descMatches = append(descMatches, idx-descOffset)
+				}
+			}
+
+			if len(titleMatches) > 0 {
+				unmatched := titleStyle.Inline(true)
+				matched := unmatched.Inherit(s.FilterMatch)
+				title = lipgloss.StyleRunes(title, titleMatches, matched, unmatched)
+			}
+			if len(descMatches) > 0 {
+				unmatched := descStyle.Inline(true)
+				matched := unmatched.Inherit(s.FilterMatch)
+				desc = lipgloss.StyleRunes(desc, descMatches, matched, unmatched)
+			}
+		}
+	}
+
+	title = titleStyle.Render(title)
+	desc = descStyle.Render(desc)
+
+	if d.ShowDescription {
+		fmt.Fprintf(w, "%s\n%s", title, desc) //nolint:errcheck
+	} else {
+		fmt.Fprintf(w, "%s", title) //nolint:errcheck
+	}
 }
 
 // ----------------------------------------------------------
