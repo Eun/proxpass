@@ -201,15 +201,13 @@ func (c *ctrlAXReader) Read(p []byte) (int, error) {
 		case c.pending:
 			c.pending = false
 			if p[i] == 'X' || p[i] == 'x' {
-				// Remove the two-byte escape sequence from the buffer
-				// so it is not forwarded to the guest, then signal termination.
-				copy(p[i-1:n-1], p[i+1:n])
-				n -= 2 //nolint:mnd
-				if n < 0 {
-					n = 0
-				}
+				// Signal termination and return EOF with zero bytes so that
+				// neither the 0x01 nor the X reaches the guest. We do not
+				// attempt to splice the bytes out of p because 0x01 may have
+				// been at index 0 of this call (making p[i-1] invalid) or
+				// even arrived in a previous Read call (already returned).
 				c.cancel()
-				return n, io.EOF
+				return 0, io.EOF
 			}
 		case p[i] == 0x01: // Ctrl+A
 			c.pending = true
@@ -387,11 +385,16 @@ func guestConsoleCmd(guest *models.Guest) (string, error) {
 // It is called by every code path that is about to proxy to a guest so the
 // user always sees the same message regardless of how they initiated the
 // connection (interactive picker, direct identifier, CLI 'guest connect', etc.).
+// printConnectionBanner writes the pre-connection info banner to the channel.
+// It is called by every code path that is about to proxy to a guest so the
+// user always sees the same message regardless of how they initiated the
+// connection (interactive picker, direct identifier, CLI 'guest connect', etc.).
+// We write directly to channel with explicit \r\n — the channel is in raw PTY
+// mode, so bare \n alone would not advance the cursor to column 0.
 func printConnectionBanner(channel gossh.Channel, guest *models.Guest, inst *models.ProxmoxInstance) {
-	w := newCRLFWriter(channel)
-	_, _ = fmt.Fprintf(w, "Connecting to %s (%s %d) on %s...\r\n",
+	_, _ = fmt.Fprintf(channel, "Connecting to %s (%s %d) on %s...\r\n",
 		guest.Name, guest.Type, guest.ProxmoxID, inst.Name)
-	_, _ = fmt.Fprint(w, "Press Ctrl+A X to terminate the connection.\r\n")
+	_, _ = fmt.Fprint(channel, "Press Ctrl+A X to terminate the connection.\r\n")
 }
 
 // writeErr writes msg to stderr, always with \r\n line endings.
