@@ -7,7 +7,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/coder/websocket v1.8.15
-	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51
+	github.com/muesli/termenv v0.16.0
 	github.com/pressly/goose/v3 v3.27.3
 	github.com/urfave/cli/v3 v3.10.1
 	golang.org/x/crypto v0.54.0
@@ -35,7 +35,6 @@ require (
 	github.com/mfridman/interpolate v0.0.2 // indirect
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
-	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect

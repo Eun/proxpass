@@ -100,9 +100,11 @@ func defaultItemStyles(r *lipgloss.Renderer) list.DefaultItemStyles {
 	var s list.DefaultItemStyles
 
 	s.NormalTitle = r.NewStyle().
+		PaddingLeft(1).
 		Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#dddddd"})
 
 	s.NormalDesc = r.NewStyle().
+		PaddingLeft(1).
 		Foreground(lipgloss.AdaptiveColor{Light: "#A49FA5", Dark: "#777777"})
 
 	s.SelectedTitle = r.NewStyle().
@@ -111,6 +113,8 @@ func defaultItemStyles(r *lipgloss.Renderer) list.DefaultItemStyles {
 		Foreground(lipgloss.AdaptiveColor{Light: "#EE6FF8", Dark: "#EE6FF8"})
 
 	s.SelectedDesc = r.NewStyle().
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(lipgloss.AdaptiveColor{Light: "#F793FF", Dark: "#AD58B4"}).
 		Foreground(lipgloss.AdaptiveColor{Light: "#F793FF", Dark: "#AD58B4"})
 
 	s.DimmedTitle = r.NewStyle().
@@ -138,15 +142,17 @@ type guestItem struct {
 func (i guestItem) FilterValue() string { return i.guest.Name }
 
 func (i guestItem) Title() string {
-	name := fmt.Sprintf("%s [%s%d]", i.guest.Name, i.guest.Type, i.guest.ProxmoxID)
 	if i.guest.Status == models.StatusRunning {
-		return i.styles.running.Render(name)
+		return i.styles.running.Render(i.guest.Name)
 	}
-	return i.styles.stopped.Render(name)
+	return i.styles.stopped.Render(i.guest.Name)
 }
 
 func (i guestItem) Description() string {
-	parts := []string{i.instName}
+	parts := []string{
+		fmt.Sprintf("%s%d", i.guest.Type, i.guest.ProxmoxID),
+		i.instName,
+	}
 	if i.guest.Status != models.StatusRunning {
 		parts = append(parts, string(i.guest.Status))
 	}
