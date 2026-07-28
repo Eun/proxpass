@@ -382,9 +382,6 @@ func guestConsoleCmd(guest *models.Guest) (string, error) {
 }
 
 // printConnectionBanner writes the pre-connection info banner to the channel.
-// It is called by every code path that is about to proxy to a guest so the
-// user always sees the same message regardless of how they initiated the
-// connection (interactive picker, direct identifier, CLI 'guest connect', etc.).
 // printConnectionBanner writes the pre-connection info banner to the channel.
 // It is called by every code path that is about to proxy to a guest so the
 // user always sees the same message regardless of how they initiated the
