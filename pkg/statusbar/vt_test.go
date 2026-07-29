@@ -108,6 +108,7 @@ func TestWriterPreservesBarAfterClearScreen(t *testing.T) {
 
 	w := sb.Writer()
 	_, _ = w.Write([]byte("\x1b[H\x1b[2J"))
+	sb.Flush()
 	vt.feed(buf.Bytes())
 
 	bar := vt.rowText(rows)
@@ -122,6 +123,7 @@ func TestWriterPreservesBarAfterAltScreenExit(t *testing.T) {
 
 	w := sb.Writer()
 	_, _ = w.Write([]byte("\x1b[?1049l"))
+	sb.Flush()
 	vt.feed(buf.Bytes())
 
 	bar := vt.rowText(rows)
@@ -138,6 +140,7 @@ func TestWriterPreservesBarAfterAllAltScreenVariants(t *testing.T) {
 			sb, buf, vt := newBar(t, cols, rows)
 			w := sb.Writer()
 			_, _ = w.Write([]byte(seq))
+			sb.Flush()
 			vt.feed(buf.Bytes())
 			bar := vt.rowText(rows)
 			if !strings.Contains(bar, "proxpass") {
@@ -161,6 +164,7 @@ func TestWriterClampsGuestDECSTBM(t *testing.T) {
 		fill.WriteString("XXXXXXXXXX\r\n")
 	}
 	_, _ = w.Write(fill.Bytes())
+	sb.Flush()
 	vt.feed(buf.Bytes())
 
 	bar := vt.rowText(rows)
@@ -179,6 +183,7 @@ func TestClearErasesGuestAreaPreservesBar(t *testing.T) {
 	// Write content into a guest row via the bar writer.
 	w := sb.Writer()
 	_, _ = w.Write([]byte("\x1b[1;1HAAAAAAAAAA"))
+	sb.Flush()
 	vt.feed(buf.Bytes())
 
 	if r := vt.rowText(1); !strings.Contains(r, "A") {
@@ -255,6 +260,7 @@ func TestGuestContentStaysInScrollRegion(t *testing.T) {
 		fill.WriteString("LINE\r\n")
 	}
 	_, _ = w.Write(fill.Bytes())
+	sb.Flush()
 	vt.feed(buf.Bytes())
 
 	bar := vt.rowText(rows)
