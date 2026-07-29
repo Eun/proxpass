@@ -27,12 +27,12 @@ const (
 
 // Server is the proxpass SSH server.
 type Server struct {
-	listenAddr  string
-	hostKeyPath string
-	repo        db.Repository
-	proxier     GuestProxier
-	discoverer  proxmox.DiscovererFactory
-	logger      *log.Logger
+	listenAddr   string
+	hostKeyPath  string
+	repo         db.Repository
+	proxier      GuestProxier
+	discoverer   proxmox.DiscovererFactory
+	logger       *log.Logger
 	flagAdminKey gossh.PublicKey
 }
 
@@ -45,7 +45,7 @@ func NewServer(
 	logger *log.Logger,
 ) *Server {
 	return &Server{
-		listenAddr: listenAddr,
+		listenAddr:  listenAddr,
 		hostKeyPath: hostKeyPath,
 		repo:        repo,
 		proxier:     proxier,
@@ -243,6 +243,7 @@ func (s *Server) handleConnection(ctx context.Context, tcpConn net.Conn, config 
 		}
 
 		si := si // capture for goroutine
+		//nolint:gosec // G118: SSH sessions are not request-scoped; background context is intentional
 		go handleSession(channel, reqs, s.repo, s.proxier, s.discoverer, s.logger, si)
 	}
 }

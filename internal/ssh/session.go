@@ -100,7 +100,7 @@ func parseEnvRequest(data []byte) (name, value string, err error) {
 	}
 	nl := binary.BigEndian.Uint32(data[0:4])
 	data = data[4:]
-	if uint32(len(data)) < nl {
+	if uint32(len(data)) < nl { //nolint:gosec // length is protocol-bounded
 		return "", "", fmt.Errorf("env: name length exceeds payload")
 	}
 	name = string(data[:nl])
@@ -110,7 +110,7 @@ func parseEnvRequest(data []byte) (name, value string, err error) {
 	}
 	vl := binary.BigEndian.Uint32(data[0:4])
 	data = data[4:]
-	if uint32(len(data)) < vl {
+	if uint32(len(data)) < vl { //nolint:gosec // length is protocol-bounded
 		return "", "", fmt.Errorf("env: value length exceeds payload")
 	}
 	value = string(data[:vl])

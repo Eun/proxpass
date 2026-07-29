@@ -37,8 +37,6 @@ type sessionInfo struct {
 //	(none/PTY)           interactive TUI picker       interactive TUI picker
 //	single-token+PTY     direct proxy or CLI          resolve+access+proxy
 //	multi-word+PTY       CLI                          "access denied" error
-//
-//nolint:gocognit,funlen // SSH session handling requires sequential branching
 func handleSession(
 	channel gossh.Channel,
 	reqs <-chan *gossh.Request,
@@ -359,7 +357,6 @@ func writeHelp(
 			"If multiple guests match, prefix with the instance name (e.g. rome:ct101).\r\n\r\n")
 	writeFilteredGuestList(ctx, channel, repo, logger, si)
 }
-
 
 // writeFilteredGuestList fetches and prints the guest table, filtered by
 // access for clients. Output goes to w (either stdout or stderr depending

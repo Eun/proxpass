@@ -223,6 +223,8 @@ func sshExecOutput(t *testing.T, addr, username, command string, signer gossh.Si
 
 // sshExecOutputPty dials the proxpass server and runs the given command,
 // optionally requesting a PTY first. Guest proxy connections require a PTY.
+//
+//nolint:unparam // requestPty is kept for future test flexibility
 func sshExecOutputPty(t *testing.T, addr, username, command string, signer gossh.Signer, requestPty bool) string {
 	t.Helper()
 

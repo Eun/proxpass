@@ -34,7 +34,7 @@ const (
 )
 
 // GuestNotFoundError is returned when a guest identifier cannot be resolved.
-type GuestNotFoundError struct { GuestName string }
+type GuestNotFoundError struct{ GuestName string }
 
 func (e *GuestNotFoundError) Error() string {
 	return fmt.Sprintf("guest %q not found", e.GuestName)
@@ -131,7 +131,12 @@ func interactiveGuestPicker(
 	// Do NOT drainAndDiscard(remaining) here — remaining is the live SSH
 	// request stream; PickGuest needs it to receive window-change events
 	// during the picker, and ProxyToGuest needs it for resizes during proxy.
-	guest, _, pickErr := tui.PickGuest(channel, channel, guests, instMap, ptyReq.Width, ptyReq.Height, ptyReq.Term, ptyReq.ColorTerm, ptyReq.NoColor, remaining)
+	guest, _, pickErr := tui.PickGuest(
+		channel, channel, guests, instMap,
+		ptyReq.Width, ptyReq.Height,
+		ptyReq.Term, ptyReq.ColorTerm, ptyReq.NoColor,
+		remaining,
+	)
 	if pickErr != nil {
 		logger.Printf("%s: picker error: %v", label, pickErr)
 		drainAndDiscard(remaining)
@@ -139,7 +144,7 @@ func interactiveGuestPicker(
 	}
 	if guest == nil {
 		drainAndDiscard(remaining)
-		return // user cancelled
+		return // user canceled
 	}
 
 	inst := instByID[guest.InstanceID]
@@ -192,8 +197,8 @@ func labelFromClientID(clientID int64) string {
 // This gives users a reliable escape hatch to terminate a guest console session
 // without killing the SSH connection itself.
 type ctrlAXReader struct {
-	r      io.Reader
-	cancel context.CancelFunc
+	r       io.Reader
+	cancel  context.CancelFunc
 	pending bool // true when we have seen 0x01 and are waiting for the next byte
 }
 
@@ -391,7 +396,7 @@ func loadInstanceKey(inst *models.ProxmoxInstance) ([]byte, error) {
 // effectivePty returns the PTY parameters to request on the Proxmox SSH
 // session. It forwards the client's parameters when available, or falls
 // back to sane defaults (important: pct/even qm crash without a PTY).
-func effectivePty(ptyReq *PtyRequest) (term string, h int, w int, modes gossh.TerminalModes) {
+func effectivePty(ptyReq *PtyRequest) (term string, h, w int, modes gossh.TerminalModes) {
 	p := ptyReq
 	if p == nil {
 		p = &PtyRequest{Term: termXterm256Color, Width: 80, Height: 24}
@@ -417,10 +422,7 @@ func guestConsoleCmd(guest *models.Guest) (string, error) {
 	}
 }
 
-
-
 // writeErr writes msg to stderr, always with \r\n line endings.
 func writeErr(channel gossh.Channel, _ *PtyRequest, msg string) {
 	_, _ = fmt.Fprintf(newCRLFWriter(channel.Stderr()), "%s\r\n", msg)
 }
-

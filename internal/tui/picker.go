@@ -17,6 +17,13 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
+// Color constants used in pickerStyles.
+const (
+	colorEE6FF8 = "#EE6FF8" // selected title / filter cursor highlight.
+	colorAD58B4 = "#AD58B4" // selected item border (dark).
+	colorF793FF = "#F793FF" // selected item border (light).
+)
+
 // filterSep separates the name and description inside FilterValue() so the
 // fuzzy filter searches both fields. We use a space so the combined string is
 // natural text; the separator itself can never be a match target because fuzzy
@@ -52,7 +59,7 @@ func newPickerStyles(r *lipgloss.Renderer) *pickerStyles {
 		stoppedDialog: r.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("209")).
-			Padding(1, 3). //nolint:mnd
+			Padding(1, 3). //nolint:mnd // magic number from color/terminal protocol spec
 			Align(lipgloss.Center),
 		stoppedDialogText: r.NewStyle().
 			Foreground(lipgloss.Color("209")).
@@ -65,7 +72,7 @@ func newPickerStyles(r *lipgloss.Renderer) *pickerStyles {
 	// so any left padding here would push the rendered line beyond the terminal
 	// width, leaving stale title characters visible when the filter activates.
 	// Keep only bottom padding for the blank line between title and items.
-	s.list.TitleBar = r.NewStyle().Padding(0, 0, 1, 0) //nolint:mnd
+	s.list.TitleBar = r.NewStyle().Padding(0, 0, 1, 0) //nolint:mnd // magic number from color/terminal protocol spec
 	s.list.Title = r.NewStyle().
 		Bold(true).
 		Foreground(lipgloss.Color("205"))
@@ -74,11 +81,11 @@ func newPickerStyles(r *lipgloss.Renderer) *pickerStyles {
 	s.list.FilterPrompt = r.NewStyle().
 		Foreground(lipgloss.AdaptiveColor{Light: "#04B575", Dark: "#ECFD65"})
 	s.list.FilterCursor = r.NewStyle().
-		Foreground(lipgloss.AdaptiveColor{Light: "#EE6FF8", Dark: "#EE6FF8"})
+		Foreground(lipgloss.AdaptiveColor{Light: colorEE6FF8, Dark: colorEE6FF8})
 	s.list.DefaultFilterCharacterMatch = r.NewStyle().Underline(true)
 	s.list.StatusBar = r.NewStyle().
 		Foreground(lipgloss.AdaptiveColor{Light: "#A49FA5", Dark: "#777777"}).
-		Padding(0, 0, 1, 2) //nolint:mnd
+		Padding(0, 0, 1, 2) //nolint:mnd // magic number from color/terminal protocol spec
 	s.list.StatusEmpty = r.NewStyle().Foreground(subdued)
 	s.list.StatusBarActiveFilter = r.NewStyle().
 		Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#dddddd"})
@@ -86,8 +93,8 @@ func newPickerStyles(r *lipgloss.Renderer) *pickerStyles {
 	s.list.NoItems = r.NewStyle().
 		Foreground(lipgloss.AdaptiveColor{Light: "#909090", Dark: "#626262"})
 	s.list.ArabicPagination = r.NewStyle().Foreground(subdued)
-	s.list.PaginationStyle = r.NewStyle().PaddingLeft(2) //nolint:mnd
-	s.list.HelpStyle = r.NewStyle().Padding(1, 0, 0, 2)  //nolint:mnd
+	s.list.PaginationStyle = r.NewStyle().PaddingLeft(2) //nolint:mnd // magic number from color/terminal protocol spec
+	s.list.HelpStyle = r.NewStyle().Padding(1, 0, 0, 2)  //nolint:mnd // magic number from color/terminal protocol spec
 	s.list.ActivePaginationDot = r.NewStyle().
 		Foreground(lipgloss.AdaptiveColor{Light: "#847A85", Dark: "#979797"}).
 		SetString("•")
@@ -96,7 +103,7 @@ func newPickerStyles(r *lipgloss.Renderer) *pickerStyles {
 
 	// list.DefaultItemStyles — the delegate applies these styles to the plain
 	// strings returned by guestItem.Title() / Description().  Do NOT pre-render
-	// ANSI codes in those methods; let the delegate do all colouring here so
+	// ANSI codes in those methods; let the delegate do all coloring here so
 	// that filter-match highlighting (lipgloss.StyleRunes) works correctly.
 	runningColor := lipgloss.AdaptiveColor{Light: "#007700", Dark: "#00dd00"}
 	s.delegate.NormalTitle = r.NewStyle().
@@ -107,12 +114,12 @@ func newPickerStyles(r *lipgloss.Renderer) *pickerStyles {
 		Foreground(lipgloss.AdaptiveColor{Light: "#A49FA5", Dark: "#777777"})
 	s.delegate.SelectedTitle = r.NewStyle().
 		Border(lipgloss.NormalBorder(), false, false, false, true).
-		BorderForeground(lipgloss.AdaptiveColor{Light: "#F793FF", Dark: "#AD58B4"}).
-		Foreground(lipgloss.AdaptiveColor{Light: "#EE6FF8", Dark: "#EE6FF8"})
+		BorderForeground(lipgloss.AdaptiveColor{Light: colorF793FF, Dark: colorAD58B4}).
+		Foreground(lipgloss.AdaptiveColor{Light: colorEE6FF8, Dark: colorEE6FF8})
 	s.delegate.SelectedDesc = r.NewStyle().
 		Border(lipgloss.NormalBorder(), false, false, false, true).
-		BorderForeground(lipgloss.AdaptiveColor{Light: "#F793FF", Dark: "#AD58B4"}).
-		Foreground(lipgloss.AdaptiveColor{Light: "#F793FF", Dark: "#AD58B4"})
+		BorderForeground(lipgloss.AdaptiveColor{Light: colorF793FF, Dark: colorAD58B4}).
+		Foreground(lipgloss.AdaptiveColor{Light: colorF793FF, Dark: colorAD58B4})
 	s.delegate.DimmedTitle = r.NewStyle().
 		PaddingLeft(1).
 		Foreground(stoppedColor)
@@ -189,7 +196,8 @@ type guestDelegate struct {
 	styles *pickerStyles
 }
 
-func (d guestDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
+//nolint:gocritic // list.Model is interface-typed; hugeParam does not apply to interface values
+func (d *guestDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
 	gi, ok := item.(guestItem)
 	if !ok {
 		d.DefaultDelegate.Render(w, m, index, item)
@@ -204,7 +212,7 @@ func (d guestDelegate) Render(w io.Writer, m list.Model, index int, item list.It
 	title := gi.Title()
 	desc := gi.Description()
 
-	s := &d.DefaultDelegate.Styles
+	s := &d.Styles
 
 	// Width available for text (excluding padding and border).
 	textWidth := m.Width() - s.NormalTitle.GetPaddingLeft() - s.NormalTitle.GetPaddingRight()
@@ -232,7 +240,7 @@ func (d guestDelegate) Render(w io.Writer, m list.Model, index int, item list.It
 	}
 
 	// Apply filter-match highlighting when there are matches.
-	if isFiltered && !emptyFilter {
+	if isFiltered && !emptyFilter { //nolint:nestif // filter-match index splitting requires nested conditions
 		rawMatches := m.MatchesForItem(index)
 		if len(rawMatches) > 0 {
 			titleRunes := utf8.RuneCountInString(gi.Title())
@@ -266,9 +274,9 @@ func (d guestDelegate) Render(w io.Writer, m list.Model, index int, item list.It
 	desc = descStyle.Render(desc)
 
 	if d.ShowDescription {
-		fmt.Fprintf(w, "%s\n%s", title, desc) //nolint:errcheck
+		fmt.Fprintf(w, "%s\n%s", title, desc)
 	} else {
-		fmt.Fprintf(w, "%s", title) //nolint:errcheck
+		fmt.Fprintf(w, "%s", title)
 	}
 }
 
@@ -297,7 +305,7 @@ func newPickerModel(
 		items = append(items, guestItem{guest: g, instName: instMap[g.InstanceID]})
 	}
 
-	delegate := guestDelegate{DefaultDelegate: list.NewDefaultDelegate(), styles: styles}
+	delegate := &guestDelegate{DefaultDelegate: list.NewDefaultDelegate(), styles: styles}
 	delegate.Styles = styles.delegate
 
 	l := list.New(items, delegate, width, height)
@@ -310,7 +318,7 @@ func newPickerModel(
 	return pickerModel{list: l, styles: styles}
 }
 
-func (m pickerModel) Init() tea.Cmd {
+func (m *pickerModel) Init() tea.Cmd {
 	// Send a WindowSizeMsg on startup so the bubbletea renderer learns the
 	// terminal width. Without this, p.ttyOutput is nil (SSH channel has no
 	// file descriptor), r.width stays 0, and EraseLineRight is never emitted
@@ -320,7 +328,7 @@ func (m pickerModel) Init() tea.Cmd {
 	}
 }
 
-func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		// While the stopped-guest dialog is visible, enter and esc dismiss it;
@@ -366,7 +374,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m pickerModel) View() string {
+func (m *pickerModel) View() string {
 	if m.quit {
 		return ""
 	}
@@ -492,7 +500,7 @@ func PickGuest(
 	m := newPickerModel(guests, instMap, w, h, sshRenderer)
 
 	prog := tea.NewProgram(
-		m,
+		&m,
 		tea.WithInput(reader),
 		tea.WithOutput(writer),
 		tea.WithEnvironment(env.Environ()),
@@ -515,9 +523,13 @@ func PickGuest(
 				}
 				if req.Type == "window-change" {
 					var cols, rows uint32
-					if len(req.Payload) >= 8 { //nolint:mnd
-						cols = uint32(req.Payload[0])<<24 | uint32(req.Payload[1])<<16 | uint32(req.Payload[2])<<8 | uint32(req.Payload[3]) //nolint:mnd
-						rows = uint32(req.Payload[4])<<24 | uint32(req.Payload[5])<<16 | uint32(req.Payload[6])<<8 | uint32(req.Payload[7]) //nolint:mnd
+					if len(req.Payload) >= 8 { //nolint:mnd // magic number from color/terminal protocol spec
+						// RFC 4254 §6.7: window-change payload is cols(4) rows(4) px-w(4) px-h(4)
+						//nolint:mnd // bit offsets are part of the SSH wire format
+						cols = uint32(req.Payload[0])<<24 | uint32(req.Payload[1])<<16 |
+							uint32(req.Payload[2])<<8 | uint32(req.Payload[3])
+						rows = uint32(req.Payload[4])<<24 | uint32(req.Payload[5])<<16 |
+							uint32(req.Payload[6])<<8 | uint32(req.Payload[7])
 						prog.Send(tea.WindowSizeMsg{Width: int(cols), Height: int(rows)})
 					}
 				}
@@ -534,7 +546,7 @@ func PickGuest(
 		return nil, "", fmt.Errorf("picker: %w", err)
 	}
 
-	final, ok := finalModel.(pickerModel)
+	final, ok := finalModel.(*pickerModel)
 	if !ok || final.selected == nil {
 		return nil, "", nil
 	}

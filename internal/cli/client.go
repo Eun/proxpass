@@ -12,7 +12,7 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
-func clientCmd(deps *Deps) *ucli.Command { //nolint:gocognit // CLI command tree
+func clientCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI command tree
 	return &ucli.Command{
 		Name:   flagClient,
 		Usage:  "Manage SSH clients",

@@ -23,7 +23,7 @@ const (
 	vtAttrReverse   = int16(1 << 0) // 1  – already baked into FG/BG by vt10x; kept for completeness
 	vtAttrUnderline = int16(1 << 1) // 2
 	vtAttrBold      = int16(1 << 2) // 4
-	// attrGfx         = int16(1 << 3) // 8  – graphics character set; not an SGR attribute
+	// attrGfx         = int16(1 << 3) // 8  – graphics character set; not an SGR attribute.
 	vtAttrItalic = int16(1 << 4) // 16
 	vtAttrBlink  = int16(1 << 5) // 32
 )
@@ -40,7 +40,7 @@ const (
 // Option is a functional option for New.
 type Option func(*StatusBar)
 
-// WithText sets the left-side label (prefix) and centre content.
+// WithText sets the left-side label (prefix) and center content.
 func WithText(prefix, content string) Option {
 	return func(sb *StatusBar) {
 		sb.prefix = prefix
@@ -53,7 +53,7 @@ func WithHint(hint string) Option {
 	return func(sb *StatusBar) { sb.hint = hint }
 }
 
-// WithColors sets the colour mode. Currently only ColorReverse is supported.
+// WithColors sets the color mode. Currently only ColorReverse is supported.
 func WithColors(_ ColorMode) Option { return func(_ *StatusBar) {} }
 
 // WithTermType detects the SSH client's color capability from its TERM,
@@ -75,7 +75,9 @@ func WithTermType(termType, colorTerm, noColor string) Option {
 //
 // The logic mirrors termenv's own ColorProfile() on Unix, minus the
 // isTTY() guard that would always return Ascii for non-fd writers.
-func ColorProfileFromEnv(term, colorTerm, noColor string) termenv.Profile { //nolint:cyclop
+//
+//nolint:cyclop // mirrors termenv's own detection logic which is inherently multi-branch
+func ColorProfileFromEnv(term, colorTerm, noColor string) termenv.Profile {
 	// NO_COLOR / CLICOLOR=0 disables all color output.
 	if noColor != "" {
 		return termenv.Ascii
@@ -124,8 +126,7 @@ type StatusBar struct {
 	content      string
 	hint         string
 	colorProfile termenv.Profile // TrueColor (default), ANSI256, ANSI, or Ascii
-	// last rendered frame for differential updates
-	lastFrame string
+
 }
 
 // New creates a new StatusBar that writes to client.
@@ -140,7 +141,7 @@ func New(client io.Writer, opts ...Option) *StatusBar {
 	return sb
 }
 
-// Setup initialises the terminal emulator at the given size, renders the
+// Setup initializes the terminal emulator at the given size, renders the
 // initial frame, and returns the guest height (totalRows - 1).
 // Must be called before the guest session starts.
 func (sb *StatusBar) Setup(cols, totalRows int) int {
@@ -205,7 +206,7 @@ func (sb *StatusBar) guestRows() int {
 // Uses differential rendering: skips rows identical to the last frame.
 // Caller must hold sb.mu.
 func (sb *StatusBar) render() {
-	if sb.term == nil || sb.rows < 2 || sb.cols < 1 { //nolint:mnd
+	if sb.term == nil || sb.rows < 2 || sb.cols < 1 { //nolint:mnd // minimum usable terminal size
 		return
 	}
 
@@ -218,7 +219,7 @@ func (sb *StatusBar) render() {
 	_, guestH := sb.term.Size() // Size() returns (cols, rows)
 	// Render guest rows.
 	for y := 0; y < guestH; y++ {
-		out.WriteString(fmt.Sprintf("\x1b[%d;1H", y+1)) // move to row y+1, col 1
+		fmt.Fprintf(&out, "\x1b[%d;1H", y+1) // move to row y+1, col 1
 		renderRow(&out, sb.term, y, sb.cols, sb.colorProfile)
 	}
 
@@ -228,14 +229,14 @@ func (sb *StatusBar) render() {
 	sb.term.Unlock()
 
 	// Render bar row (always at sb.rows).
-	out.WriteString(fmt.Sprintf("\x1b[%d;1H", sb.rows))
+	fmt.Fprintf(&out, "\x1b[%d;1H", sb.rows)
 	out.WriteString("\x1b[0m") // reset before bar
 	out.WriteString(sb.barText())
 
 	// Restore cursor to where the guest expects it (within guest area).
 	cx := cur.X + 1 // 1-indexed
 	cy := cur.Y + 1
-	out.WriteString(fmt.Sprintf("\x1b[%d;%dH", cy, cx))
+	fmt.Fprintf(&out, "\x1b[%d;%dH", cy, cx)
 	if cursorVisible {
 		out.WriteString("\x1b[?25h")
 	}
@@ -246,7 +247,7 @@ func (sb *StatusBar) render() {
 // renderRow writes one row of the vt10x cell grid as SGR-escaped characters.
 // It resets attributes after the row to avoid bleed.
 func renderRow(out *strings.Builder, t vt10x.Terminal, y, cols int, p termenv.Profile) {
-	var lastFG, lastBG vt10x.Color = vt10x.DefaultFG, vt10x.DefaultBG
+	lastFG, lastBG := vt10x.DefaultFG, vt10x.DefaultBG
 	lastMode := int16(0)
 	attrSet := false
 
@@ -302,7 +303,9 @@ func writeSGR(out *strings.Builder, g vt10x.Glyph, p termenv.Profile) {
 // p == ANSI:  only 16-color ANSI codes; 256/24-bit colors are quantised.
 // p == ANSI256: 256-color palette; 24-bit colors are quantised.
 // p == TrueColor: full 24-bit support.
-func writeColor(out *strings.Builder, c vt10x.Color, bg bool, p termenv.Profile) { //nolint:cyclop
+//
+//nolint:cyclop // color depth downgrading requires branching on profile x color depth
+func writeColor(out *strings.Builder, c vt10x.Color, bg bool, p termenv.Profile) {
 	if c == vt10x.DefaultFG || c == vt10x.DefaultBG || c == vt10x.DefaultCursor {
 		return // leave as terminal default
 	}
@@ -313,92 +316,95 @@ func writeColor(out *strings.Builder, c vt10x.Color, bg bool, p termenv.Profile)
 	// Determine what level of color this vt10x.Color value represents.
 	switch {
 	case c < 8: //nolint:mnd // standard ANSI (0-7)
-		out.WriteString(fmt.Sprintf("\x1b[%dm", int(c)+base))
+		fmt.Fprintf(out, "\x1b[%dm", int(c)+base)
 	case c < 16: //nolint:mnd // bright ANSI (8-15)
-		out.WriteString(fmt.Sprintf("\x1b[%dm", int(c)-8+base+60)) //nolint:mnd
+		fmt.Fprintf(out, "\x1b[%dm", int(c)-8+base+60) //nolint:mnd // magic number from color/terminal protocol spec
 	case c < 256: //nolint:mnd // 256-color index
-		if p == termenv.ANSI {
+		if p == termenv.ANSI { //nolint:nestif // 256-color downgrade inherently needs nested conditions
 			// Quantise 256-color to nearest ANSI-16 index.
 			idx := ansi256ToANSI(int(c))
-			if idx < 8 { //nolint:mnd
-				out.WriteString(fmt.Sprintf("\x1b[%dm", idx+base))
+			if idx < 8 { //nolint:mnd // magic number from color/terminal protocol spec
+				fmt.Fprintf(out, "\x1b[%dm", idx+base)
 			} else {
-				out.WriteString(fmt.Sprintf("\x1b[%dm", idx-8+base+60)) //nolint:mnd
+				fmt.Fprintf(out, "\x1b[%dm", idx-8+base+60) //nolint:mnd // magic number from color/terminal protocol spec
 			}
 		} else {
 			// ANSI256 or TrueColor: emit as 256-color.
 			if bg {
-				out.WriteString(fmt.Sprintf("\x1b[48;5;%dm", c))
+				fmt.Fprintf(out, "\x1b[48;5;%dm", c)
 			} else {
-				out.WriteString(fmt.Sprintf("\x1b[38;5;%dm", c))
+				fmt.Fprintf(out, "\x1b[38;5;%dm", c)
 			}
 		}
 	default: // 24-bit color stored as RGB in bits 0-23 (vt10x encodes this way)
-		r := (c >> 16) & 0xff //nolint:mnd
-		g := (c >> 8) & 0xff  //nolint:mnd
+		r := (c >> 16) & 0xff //nolint:mnd // magic number from color/terminal protocol spec
+		g := (c >> 8) & 0xff  //nolint:mnd // magic number from color/terminal protocol spec
 		b := c & 0xff
 		switch p {
 		case termenv.TrueColor:
 			if bg {
-				out.WriteString(fmt.Sprintf("\x1b[48;2;%d;%d;%dm", r, g, b))
+				fmt.Fprintf(out, "\x1b[48;2;%d;%d;%dm", r, g, b)
 			} else {
-				out.WriteString(fmt.Sprintf("\x1b[38;2;%d;%d;%dm", r, g, b))
+				fmt.Fprintf(out, "\x1b[38;2;%d;%d;%dm", r, g, b)
 			}
 		case termenv.ANSI256:
 			// Quantise to 256-color.
 			idx := rgbToANSI256(int(r), int(g), int(b))
 			if bg {
-				out.WriteString(fmt.Sprintf("\x1b[48;5;%dm", idx))
+				fmt.Fprintf(out, "\x1b[48;5;%dm", idx)
 			} else {
-				out.WriteString(fmt.Sprintf("\x1b[38;5;%dm", idx))
+				fmt.Fprintf(out, "\x1b[38;5;%dm", idx)
 			}
 		case termenv.ANSI:
 			// Quantise to ANSI-16.
 			idx256 := rgbToANSI256(int(r), int(g), int(b))
 			idx := ansi256ToANSI(idx256)
-			if idx < 8 { //nolint:mnd
-				out.WriteString(fmt.Sprintf("\x1b[%dm", idx+base))
+			if idx < 8 { //nolint:mnd // magic number from color/terminal protocol spec
+				fmt.Fprintf(out, "\x1b[%dm", idx+base)
 			} else {
-				out.WriteString(fmt.Sprintf("\x1b[%dm", idx-8+base+60)) //nolint:mnd
+				fmt.Fprintf(out, "\x1b[%dm", idx-8+base+60) //nolint:mnd // magic number from color/terminal protocol spec
 			}
+		case termenv.Ascii:
+			// No color output for Ascii profile. Caller (writeSGR) already
+			// guards against this, but we handle it here for completeness.
 		}
 	}
 }
 
 // ansi256ToANSI maps an ANSI-256 palette index to the nearest ANSI-16 index.
-// The first 16 entries map directly; entries 16-231 (the 6×6×6 colour cube)
-// are rounded to the closest standard colour; entries 232-255 (greyscale ramp)
+// The first 16 entries map directly; entries 16-231 (the 6×6×6 color cube)
+// are rounded to the closest standard color; entries 232-255 (greyscale ramp)
 // map to black or white depending on luminance.
 func ansi256ToANSI(idx int) int {
-	if idx < 16 { //nolint:mnd
+	if idx < 16 { //nolint:mnd // magic number from color/terminal protocol spec
 		return idx
 	}
 	if idx > 231 { //nolint:mnd // greyscale ramp (232-255)
-		if idx >= 244 { //nolint:mnd
+		if idx >= 244 { //nolint:mnd // magic number from color/terminal protocol spec
 			return 15 // bright white
 		}
 		return 0 // black
 	}
-	// 6×6×6 colour cube: index 16 = (0,0,0), step = 40 per channel.
-	i := idx - 16 //nolint:mnd
-	b := i % 6    //nolint:mnd
-	g := (i / 6) % 6 //nolint:mnd
-	r := i / 36      //nolint:mnd
+	// 6×6×6 color cube: index 16 = (0,0,0), step = 40 per channel.
+	i := idx - 16    //nolint:mnd // magic number from color/terminal protocol spec
+	b := i % 6       //nolint:mnd // magic number from color/terminal protocol spec
+	g := (i / 6) % 6 //nolint:mnd // magic number from color/terminal protocol spec
+	r := i / 36      //nolint:mnd // magic number from color/terminal protocol spec
 	// Map each channel: 0→0, 1-2→0 (dark), 3-5→1 (bright).
 	ansiR, ansiG, ansiB := 0, 0, 0
-	if r >= 3 { //nolint:mnd
+	if r >= 3 { //nolint:mnd // magic number from color/terminal protocol spec
 		ansiR = 1
 	}
-	if g >= 3 { //nolint:mnd
+	if g >= 3 { //nolint:mnd // magic number from color/terminal protocol spec
 		ansiG = 1
 	}
-	if b >= 3 { //nolint:mnd
+	if b >= 3 { //nolint:mnd // magic number from color/terminal protocol spec
 		ansiB = 1
 	}
 	ansiIdx := ansiR*4 + ansiG*2 + ansiB //nolint:mnd // maps to 0-7
 	// Use bright variant when at least two channels are strong.
-	if r+g+b >= 9 { //nolint:mnd
-		ansiIdx += 8 //nolint:mnd
+	if r+g+b >= 9 { //nolint:mnd // magic number from color/terminal protocol spec
+		ansiIdx += 8 //nolint:mnd // magic number from color/terminal protocol spec
 	}
 	return ansiIdx
 }
@@ -407,18 +413,18 @@ func ansi256ToANSI(idx int) int {
 func rgbToANSI256(r, g, b int) int {
 	// Check greyscale ramp first (232-255): steps of ~10 from 8 to 238.
 	if r == g && g == b {
-		if r < 8 { //nolint:mnd
-			return 16 // use colour-cube black
+		if r < 8 { //nolint:mnd // magic number from color/terminal protocol spec
+			return 16 // use color-cube black
 		}
-		if r > 248 { //nolint:mnd
-			return 231 // use colour-cube white
+		if r > 248 { //nolint:mnd // magic number from color/terminal protocol spec
+			return 231 // use color-cube white
 		}
-		return 232 + (r-8)/10 //nolint:mnd
+		return 232 + (r-8)/10 //nolint:mnd // magic number from color/terminal protocol spec
 	}
-	// 6×6×6 colour cube: index = 16 + 36*r6 + 6*g6 + b6 where x6 = (x*6-1)/256.
-	r6 := (r*6 - 1) / 256 //nolint:mnd
-	g6 := (g*6 - 1) / 256 //nolint:mnd
-	b6 := (b*6 - 1) / 256 //nolint:mnd
+	// 6×6×6 color cube: index = 16 + 36*r6 + 6*g6 + b6 where x6 = (x*6-1)/256.
+	r6 := (r*6 - 1) / 256 //nolint:mnd // magic number from color/terminal protocol spec
+	g6 := (g*6 - 1) / 256 //nolint:mnd // magic number from color/terminal protocol spec
+	b6 := (b*6 - 1) / 256 //nolint:mnd // magic number from color/terminal protocol spec
 	if r6 < 0 {
 		r6 = 0
 	}
@@ -428,7 +434,7 @@ func rgbToANSI256(r, g, b int) int {
 	if b6 < 0 {
 		b6 = 0
 	}
-	return 16 + 36*r6 + 6*g6 + b6 //nolint:mnd
+	return 16 + 36*r6 + 6*g6 + b6 //nolint:mnd // magic number from color/terminal protocol spec
 }
 
 // barText builds the status bar string, padded to sb.cols.

@@ -1,3 +1,5 @@
+//go:build !windows
+
 // statusbar-test runs a command under a persistent status bar.
 //
 // Usage:
@@ -6,6 +8,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,6 +22,14 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+//nolint:gocognit,cyclop // test binary — sequential PTY wiring is intentionally linear
+func run() error {
 	// Parse --text and --hint flags manually so we can keep the rest as the command.
 	args := os.Args[1:]
 	text := "statusbar-test"
@@ -37,8 +48,7 @@ func main() {
 	}
 done:
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: statusbar-test [--text TEXT] [--hint HINT] <command> [args...]")
-		os.Exit(1)
+		return fmt.Errorf("usage: statusbar-test [--text TEXT] [--hint HINT] <command> [args...]")
 	}
 
 	// Get current terminal size.
@@ -55,22 +65,21 @@ done:
 	guestRows := sb.Setup(cols, rows)
 
 	// Start the child command under a PTY sized to guestRows (reserve last row).
-	cmd := exec.Command(args[0], args[1:]...)
+	ctx := context.Background()
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...) //nolint:gosec // test binary: args are user-controlled by design
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{
 		Cols: uint16(cols),
-		Rows: uint16(guestRows),
+		Rows: uint16(guestRows), //nolint:gosec // G115: terminal dimensions are bounded by OS
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "pty.Start: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("pty.Start: %w", err)
 	}
 	defer func() { _ = ptmx.Close() }()
 
 	// Put stdin into raw mode.
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "MakeRaw: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("MakeRaw: %w", err)
 	}
 	defer func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }()
 
@@ -84,7 +93,7 @@ done:
 				continue
 			}
 			gr := sb.Resize(c, r)
-			_ = pty.Setsize(ptmx, &pty.Winsize{Cols: uint16(c), Rows: uint16(gr)})
+			_ = pty.Setsize(ptmx, &pty.Winsize{Cols: uint16(c), Rows: uint16(gr)}) //nolint:gosec // G115: terminal dimensions are bounded by OS
 		}
 	}()
 
@@ -111,7 +120,7 @@ done:
 		pending := false
 		for {
 			n, err := os.Stdin.Read(buf)
-			if n > 0 {
+			if n > 0 { //nolint:nestif // stdin forwarding requires nested byte-by-byte inspection
 				i := 0
 				out := buf[:n]
 				if pending {
@@ -145,4 +154,5 @@ done:
 	sb.Clear()
 	sb.Teardown()
 	_ = term.Restore(int(os.Stdin.Fd()), oldState)
+	return nil
 }
