@@ -266,6 +266,15 @@ func proxyToGuest(
 	// Proxmox host that is one row shorter so that the guest's full-screen
 	// applications never draw into the status bar row.
 	effTerm, effH, effW, effModes := effectivePty(ptyReq)
+
+	// If the client requested bypass via PROXPASS_DISABLE_STATUSBAR, skip the
+	// status bar entirely and proxy raw bytes directly to avoid the per-write
+	// full-frame re-render cost. Ctrl+A X still works (ctrlAXReader is on the
+	// stdin path, which is unaffected by this branch).
+	if ptyReq != nil && ptyReq.DisableStatusBar {
+		return proxyToGuestDirect(clientChan, clientReqs, session, guest, effTerm, effH, effW, effModes, logger)
+	}
+
 	// Extract color env vars safely (ptyReq may be nil in tests).
 	var colorTerm, noColor string
 	if ptyReq != nil {
@@ -374,6 +383,112 @@ func proxyToGuest(
 	sb.Clear()
 	sb.Teardown()
 	// If the session ended due to Ctrl+A X, that is a clean exit.
+	if ctrlCtx.Err() != nil {
+		return nil
+	}
+	return err
+}
+
+// proxyToGuestDirect is the status-bar-bypass variant of the SSH proxy loop.
+// It requests a full-height PTY (no row reserved for the bar), copies stdout
+// directly to the client without any re-rendering, and preserves the Ctrl+A X
+// hotkey on stdin unchanged. Called when PROXPASS_DISABLE_STATUSBAR is truthy.
+func proxyToGuestDirect(
+	clientChan gossh.Channel,
+	clientReqs <-chan *gossh.Request,
+	session *gossh.Session,
+	guest *models.Guest,
+	effTerm string, effH, effW int,
+	effModes gossh.TerminalModes,
+	logger *log.Logger,
+) error {
+	// Use the full height — no row reserved for the status bar.
+	if err := session.RequestPty(effTerm, effH, effW, effModes); err != nil {
+		return fmt.Errorf("requesting remote pty: %w", err)
+	}
+
+	cmd, err := guestConsoleCmd(guest)
+	if err != nil {
+		return err
+	}
+
+	remoteStdin, err := session.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("stdin pipe: %w", err)
+	}
+	remoteStdout, err := session.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("stdout pipe: %w", err)
+	}
+	remoteStderr, err := session.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("stderr pipe: %w", err)
+	}
+	if err := session.Start(cmd); err != nil {
+		return fmt.Errorf("starting command %q: %w", cmd, err)
+	}
+
+	ctrlCtx, ctrlCancel := context.WithCancel(context.Background())
+	defer ctrlCancel()
+
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+
+	// Forward window-change requests directly to the remote session (full height).
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-done:
+				return
+			case req, ok := <-clientReqs:
+				if !ok {
+					return
+				}
+				if req.Type == reqTypeWinChange {
+					if cols, rows, pErr := parseWindowChange(req.Payload); pErr == nil {
+						_ = session.WindowChange(int(rows), int(cols))
+					}
+				}
+				replyReq(req, false)
+			}
+		}
+	}()
+
+	// client → remote stdin, with Ctrl+A X hotkey interception.
+	go func() {
+		src := &ctrlAXReader{r: clientChan, cancel: ctrlCancel}
+		_, _ = io.Copy(remoteStdin, src)
+		_ = remoteStdin.Close()
+	}()
+	// remote stdout → client directly (no status-bar re-render).
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(clientChan, remoteStdout)
+	}()
+	// remote stderr → client stderr.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(clientChan.Stderr(), remoteStderr)
+	}()
+
+	// Wait for either the remote session to finish or Ctrl+A X to be pressed.
+	go func() {
+		<-ctrlCtx.Done()
+		if logger != nil {
+			logger.Print("proxyToGuestDirect: Ctrl+A X received; terminating session")
+		}
+		_ = session.Signal(gossh.SIGTERM)
+		_ = session.Close()
+	}()
+
+	err = session.Wait()
+	close(done)
+	_ = remoteStdin.Close()
+	wg.Wait()
 	if ctrlCtx.Err() != nil {
 		return nil
 	}

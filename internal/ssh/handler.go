@@ -67,7 +67,7 @@ func handleSession(
 				continue
 			}
 			switch name {
-			case "TERM", "COLORTERM", "NO_COLOR":
+			case "TERM", "COLORTERM", "NO_COLOR", "PROXPASS_DISABLE_STATUSBAR":
 				clientEnv[name] = value
 			}
 			replyReq(req, true)
@@ -89,6 +89,7 @@ func handleSession(
 			}
 			ptyReq.ColorTerm = clientEnv["COLORTERM"]
 			ptyReq.NoColor = clientEnv["NO_COLOR"]
+			ptyReq.DisableStatusBar = isTruthy(clientEnv["PROXPASS_DISABLE_STATUSBAR"])
 			replyReq(req, true)
 
 		case reqTypeExec:

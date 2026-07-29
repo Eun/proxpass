@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"strings"
 
 	"proxpass/internal/db"
 	"proxpass/internal/models"
@@ -17,12 +18,23 @@ import (
 // §6.4). TERM from pty-req takes priority; env vars are stored separately so
 // callers can build a complete color-profile picture.
 type PtyRequest struct {
-	Term      string
-	Width     uint32
-	Height    uint32
-	Modes     []byte
-	ColorTerm string // from SSH env "COLORTERM" (e.g. "truecolor", "24bit")
-	NoColor   string // from SSH env "NO_COLOR"   (non-empty → no color)
+	Term             string
+	Width            uint32
+	Height           uint32
+	Modes            []byte
+	ColorTerm        string // from SSH env "COLORTERM" (e.g. "truecolor", "24bit")
+	NoColor          string // from SSH env "NO_COLOR"   (non-empty → no color)
+	DisableStatusBar bool   // from SSH env "PROXPASS_DISABLE_STATUSBAR" (truthy → bypass status bar)
+}
+
+// isTruthy returns true when s is non-empty and not "0", "no", or "false"
+// (case-insensitive). Used for PROXPASS_DISABLE_STATUSBAR.
+func isTruthy(s string) bool {
+	switch strings.ToLower(s) {
+	case "", "0", "no", "false":
+		return false
+	}
+	return true
 }
 
 // parsePtyReq parses the payload of an SSH "pty-req" channel request.
