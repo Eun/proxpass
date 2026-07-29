@@ -1,9 +1,15 @@
 // Package statusbar provides a persistent bottom status bar for SSH/PTY proxy
 // sessions. It uses github.com/hinshun/vt10x as a full VT100 terminal
 // emulator: guest output is parsed into a cell grid, then the grid (plus the
-// bar row) is rendered to the SSH client on every update. This eliminates all
-// DECSTBM tricks, stream interception, and regex patching — the bar is simply
-// the last row of what we send to the client.
+// bar row) is rendered to the SSH client on a rate-limited schedule. This
+// eliminates all DECSTBM tricks, stream interception, and regex patching —
+// the bar is simply the last row of what we send to the client.
+//
+// Render throttling: incoming writes feed the vt10x emulator immediately but
+// only mark the frame as dirty. A background goroutine ticks at up to
+// renderFPS times per second and re-renders to the client only when dirty.
+// This caps the O(cols×rows) render cost regardless of how fast the guest
+// produces output.
 package statusbar
 
 import (
@@ -11,10 +17,17 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	vt10x "github.com/hinshun/vt10x"
 	"github.com/muesli/termenv"
 )
+
+// renderFPS is the maximum number of times per second the status bar is
+// re-rendered to the SSH client. Higher values reduce latency at the cost of
+// more SSH channel writes; lower values save bandwidth.
+const renderFPS = 30 //nolint:mnd // 30 fps is the standard interactive render rate
 
 // vt10x stores these glyph attribute bits in Glyph.Mode (int16).
 // The constants are unexported in vt10x, so we mirror them here.
@@ -115,7 +128,7 @@ func ColorProfileFromEnv(term, colorTerm, noColor string) termenv.Profile {
 // ---- StatusBar ----
 
 // StatusBar wraps a vt10x terminal emulator and renders its cell grid plus a
-// one-line status bar to the SSH client on every guest write.
+// one-line status bar to the SSH client at a rate-limited cadence.
 type StatusBar struct {
 	client       io.Writer // raw SSH channel stdout
 	term         vt10x.Terminal
@@ -126,7 +139,11 @@ type StatusBar struct {
 	content      string
 	hint         string
 	colorProfile termenv.Profile // TrueColor (default), ANSI256, ANSI, or Ascii
-
+	// render goroutine lifecycle
+	dirty   atomic.Int32  // 1 when a write arrived since the last render
+	stopCh  chan struct{} // closed by Teardown to stop the render goroutine
+	doneCh  chan struct{} // closed by the render goroutine when it exits
+	started bool          // true after Setup has launched the render goroutine
 }
 
 // New creates a new StatusBar that writes to client.
@@ -134,6 +151,8 @@ func New(client io.Writer, opts ...Option) *StatusBar {
 	sb := &StatusBar{
 		client:       client,
 		colorProfile: termenv.TrueColor, // default: full color until told otherwise
+		stopCh:       make(chan struct{}),
+		doneCh:       make(chan struct{}),
 	}
 	for _, o := range opts {
 		o(sb)
@@ -142,16 +161,39 @@ func New(client io.Writer, opts ...Option) *StatusBar {
 }
 
 // Setup initializes the terminal emulator at the given size, renders the
-// initial frame, and returns the guest height (totalRows - 1).
-// Must be called before the guest session starts.
+// initial frame, starts the background render goroutine, and returns the guest
+// height (totalRows - 1). Must be called before the guest session starts.
 func (sb *StatusBar) Setup(cols, totalRows int) int {
 	sb.mu.Lock()
-	defer sb.mu.Unlock()
 	sb.cols = cols
 	sb.rows = totalRows
 	sb.term = vt10x.New(vt10x.WithSize(cols, sb.guestRows()))
 	sb.render()
-	return sb.guestRows()
+	guestH := sb.guestRows()
+	sb.started = true
+	sb.mu.Unlock()
+
+	// Start the render goroutine. It wakes at renderFPS and re-renders only
+	// when dirty, decoupling the SSH write from the guest's write rate.
+	go func() {
+		defer close(sb.doneCh)
+		ticker := time.NewTicker(time.Second / renderFPS)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-sb.stopCh:
+				return
+			case <-ticker.C:
+				if sb.dirty.CompareAndSwap(1, 0) {
+					sb.mu.Lock()
+					sb.render()
+					sb.mu.Unlock()
+				}
+			}
+		}
+	}()
+
+	return guestH
 }
 
 // Resize updates the terminal size and re-renders. Returns the new guest height.
@@ -179,8 +221,21 @@ func (sb *StatusBar) Clear() {
 	sb.render()
 }
 
-// Teardown renders a final clean frame and resets the client terminal.
+// Teardown stops the render goroutine, flushes any pending dirty frame, and
+// resets the client terminal. Safe to call even if Setup was never called.
 func (sb *StatusBar) Teardown() {
+	// Signal the render goroutine to stop and wait for it to exit so we do not
+	// race with a concurrent render when writing the final frame below.
+	// stopCh may already be closed if Teardown is called twice; the select
+	// guards against a panic on double-close.
+	if sb.started {
+		close(sb.stopCh)
+		<-sb.doneCh
+	}
+
+	// Flush any write that arrived between the last tick and the goroutine stop.
+	sb.Flush()
+
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 	// Move cursor to top, clear screen, reset attributes.
@@ -188,9 +243,21 @@ func (sb *StatusBar) Teardown() {
 }
 
 // Writer returns an io.Writer for guest→client data. Feed all PTY output
-// through this writer; it parses into vt10x and re-renders on every chunk.
+// through this writer; it parses into vt10x and marks the frame dirty for the
+// background render goroutine.
 func (sb *StatusBar) Writer() io.Writer {
 	return &vtWriter{sb: sb}
+}
+
+// Flush forces an immediate synchronous render if the frame is dirty.
+// Intended for testing and for callers that need to ensure the client sees
+// the latest state before performing a read (e.g. assertions in tests).
+func (sb *StatusBar) Flush() {
+	if sb.dirty.CompareAndSwap(1, 0) {
+		sb.mu.Lock()
+		sb.render()
+		sb.mu.Unlock()
+	}
 }
 
 // guestRows is totalRows - 1 (minimum 1).
@@ -465,7 +532,9 @@ func (sb *StatusBar) barText() string {
 
 // ---- vtWriter ----
 
-// vtWriter feeds guest output into the vt10x emulator and re-renders.
+// vtWriter feeds guest output into the vt10x emulator and marks the frame
+// dirty for the background render goroutine. It does NOT call render()
+// directly, so the SSH write is fully decoupled from the guest's write rate.
 type vtWriter struct {
 	sb *StatusBar
 }
@@ -477,7 +546,8 @@ func (vw *vtWriter) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 	n, err := vw.sb.term.Write(p)
-	vw.sb.render()
+	// Mark dirty so the render goroutine will repaint on the next tick.
+	vw.sb.dirty.Store(1)
 	if err != nil {
 		return n, err
 	}
