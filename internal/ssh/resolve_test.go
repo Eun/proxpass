@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"proxpass/internal/cli"
 	"proxpass/internal/models"
 )
 
@@ -18,7 +19,7 @@ func makeGuests() []*models.Guest {
 
 func TestResolveGuestByVMID(t *testing.T) {
 	guests := makeGuests()
-	g, err := resolveGuest("100", guests, false)
+	g, err := cli.ResolveGuest("100", guests, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -30,7 +31,7 @@ func TestResolveGuestByVMID(t *testing.T) {
 func TestResolveGuestByTypeAndVMID(t *testing.T) {
 	guests := makeGuests()
 
-	g, err := resolveGuest("ct101", guests, false)
+	g, err := cli.ResolveGuest("ct101", guests, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -38,7 +39,7 @@ func TestResolveGuestByTypeAndVMID(t *testing.T) {
 		t.Errorf("expected database, got %s", g.Name)
 	}
 
-	g, err = resolveGuest("VM200", guests, false)
+	g, err = cli.ResolveGuest("VM200", guests, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -50,7 +51,7 @@ func TestResolveGuestByTypeAndVMID(t *testing.T) {
 func TestResolveGuestByName(t *testing.T) {
 	guests := makeGuests()
 
-	g, err := resolveGuest("staging", guests, false)
+	g, err := cli.ResolveGuest("staging", guests, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -62,7 +63,7 @@ func TestResolveGuestByName(t *testing.T) {
 func TestResolveGuestByNameCaseInsensitive(t *testing.T) {
 	guests := makeGuests()
 
-	g, err := resolveGuest("WebServer", guests, false)
+	g, err := cli.ResolveGuest("WebServer", guests, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -77,7 +78,7 @@ func TestResolveGuestAmbiguousVMID(t *testing.T) {
 		{ID: 2, Type: models.GuestTypeVM, Name: "vm-a", ProxmoxID: 100, InstanceID: 2},
 	}
 
-	_, err := resolveGuest("100", guests, false)
+	_, err := cli.ResolveGuest("100", guests, false)
 	if err == nil {
 		t.Fatal("expected ambiguity error")
 	}
@@ -94,7 +95,7 @@ func TestResolveGuestAmbiguousName(t *testing.T) {
 		{ID: 2, Type: models.GuestTypeVM, Name: testAppName, ProxmoxID: 200, InstanceID: 2},
 	}
 
-	_, err := resolveGuest("app", guests, false)
+	_, err := cli.ResolveGuest("app", guests, false)
 	if err == nil {
 		t.Fatal("expected ambiguity error")
 	}
@@ -113,7 +114,7 @@ func TestResolveGuestTypeIDDisambiguates(t *testing.T) {
 		{ID: 2, Type: models.GuestTypeVM, Name: testAppName, ProxmoxID: 100, InstanceID: 2},
 	}
 
-	g, err := resolveGuest("ct100", guests, false)
+	g, err := cli.ResolveGuest("ct100", guests, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -121,7 +122,7 @@ func TestResolveGuestTypeIDDisambiguates(t *testing.T) {
 		t.Errorf("expected ID 1, got %d", g.ID)
 	}
 
-	g, err = resolveGuest("vm100", guests, false)
+	g, err = cli.ResolveGuest("vm100", guests, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestResolveGuestTypeIDDisambiguates(t *testing.T) {
 func TestResolveGuestNotFound(t *testing.T) {
 	guests := makeGuests()
 
-	_, err := resolveGuest("nonexistent", guests, false)
+	_, err := cli.ResolveGuest("nonexistent", guests, false)
 	if err == nil {
 		t.Fatal("expected not-found error")
 	}

@@ -127,30 +127,28 @@ func TestAdminProxyUnknownGuestReturnsError(t *testing.T) {
 	}
 }
 
-// TestAdminCLIShellShowsGuestList verifies that a plain shell session
-// (no exec command) lists available guests instead of the generic --help.
-func TestAdminCLIShellShowsGuestList(t *testing.T) {
+// TestAdminCLIShellLaunchesPicker verifies that a plain shell session
+// (no exec command, with PTY) launches the interactive TUI picker without
+// proxying directly.
+func TestAdminCLIShellLaunchesPicker(t *testing.T) {
 	addr, adminSigner, mp, cancel := setupAdminTest(t)
 	defer cancel()
 
-	// No exec command -> plain shell -> should list guests (same as 'guest ls').
-	// Use sshShellOutput which opens a shell session (not exec).
+	// No exec command + PTY -> interactive picker.
+	// The TUI will write to the channel; closing stdin causes it to exit.
 	output := sshShellOutput(t, addr, "admin", adminSigner)
 
-	if strings.Contains(output, "[mock proxy]") {
-		t.Errorf("expected guest list, got mock proxy banner; output: %q", output)
-	}
-	// Seeded guests: webserver, database, devbox, staging
-	for _, name := range []string{testGuestWebserver, "database", "devbox", "staging"} {
-		if !strings.Contains(output, name) {
-			t.Errorf("expected guest %q in output, got: %q", name, output)
-		}
-	}
-
+	// We should NOT get a proxy session (user didn't select a guest).
 	sessions := mp.RecordedSessions()
 	if len(sessions) != 0 {
-		t.Errorf("expected no proxy sessions for plain shell, got %d", len(sessions))
+		t.Errorf("expected no proxy sessions for plain shell picker, got %d", len(sessions))
 	}
+
+	// The output comes from the TUI; we just ensure no crash or proxy banner.
+	if strings.Contains(output, "[mock proxy]") {
+		t.Errorf("expected picker, got mock proxy banner; output: %q", output)
+	}
+	t.Logf("picker output: %q", output)
 }
 
 // TestAdminCLIMultiWordExecRunsCLI verifies that a multi-word exec command

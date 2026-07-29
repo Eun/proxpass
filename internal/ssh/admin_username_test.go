@@ -89,14 +89,12 @@ func setupAdminTest(t *testing.T) (
 	logger := log.New(io.Discard, "", 0)
 	mp = &testenv.MockProxier{}
 
-	adminHandler := proxssh.DefaultAdminHandler(mp, nil, logger)
-
 	srv := proxssh.NewServer(
 		"127.0.0.1:0", // not used; we pass an explicit listener
 		hostKeyPath,
 		env.Repo,
-		adminHandler,
 		mp,
+		nil, // no discoverer needed for proxy-only tests
 		logger,
 	)
 
@@ -161,25 +159,26 @@ func sshShellOutput(t *testing.T, addr, username string, signer gossh.Signer) st
 		t.Fatalf("stdin pipe: %v", err)
 	}
 
+	if err := sess.RequestPty("xterm-256color", 24, 80, gossh.TerminalModes{
+		gossh.ECHO: 1,
+	}); err != nil {
+		t.Fatalf("request pty for shell: %v", err)
+	}
+
 	if err := sess.Shell(); err != nil {
 		t.Fatalf("shell: %v", err)
 	}
 
 	var buf bytes.Buffer
-	firstByte := make(chan struct{}, 1)
 	var wg sync.WaitGroup
 
-	copyWithSignal := func(r io.Reader) {
+	copyAll := func(r io.Reader) {
 		defer wg.Done()
 		b := make([]byte, 4096)
 		for {
 			n, err := r.Read(b)
 			if n > 0 {
 				buf.Write(b[:n])
-				select {
-				case firstByte <- struct{}{}:
-				default:
-				}
 			}
 			if err != nil {
 				return
@@ -188,14 +187,12 @@ func sshShellOutput(t *testing.T, addr, username string, signer gossh.Signer) st
 	}
 
 	wg.Add(2)
-	go copyWithSignal(stdoutPipe)
-	go copyWithSignal(stderrPipe)
+	go copyAll(stdoutPipe)
+	go copyAll(stderrPipe)
 
-	select {
-	case <-firstByte:
-	case <-time.After(5 * time.Second):
-	}
-
+	// Send 'q' to quit the interactive TUI picker, then close stdin.
+	time.Sleep(200 * time.Millisecond)
+	_, _ = stdinPipe.Write([]byte("q"))
 	stdinPipe.Close()
 
 	done := make(chan struct{})
@@ -218,13 +215,16 @@ func sshShellOutput(t *testing.T, addr, username string, signer gossh.Signer) st
 
 // sshExecOutput dials the proxpass server, runs the given command via SSH exec,
 // collects stdout+stderr, and returns the combined output.
+// A PTY is always requested because the server requires one for all sessions.
 func sshExecOutput(t *testing.T, addr, username, command string, signer gossh.Signer) string {
 	t.Helper()
-	return sshExecOutputPty(t, addr, username, command, signer, false)
+	return sshExecOutputPty(t, addr, username, command, signer, true)
 }
 
 // sshExecOutputPty dials the proxpass server and runs the given command,
 // optionally requesting a PTY first. Guest proxy connections require a PTY.
+//
+//nolint:unparam // requestPty is kept for future test flexibility
 func sshExecOutputPty(t *testing.T, addr, username, command string, signer gossh.Signer, requestPty bool) string {
 	t.Helper()
 
@@ -283,6 +283,9 @@ func sshExecErroutput(t *testing.T, addr, username, command string, signer gossh
 	if err != nil {
 		return ""
 	}
+
+	// A PTY is required because the server enforces it for all sessions.
+	_ = sess.RequestPty("xterm-256color", 24, 80, gossh.TerminalModes{gossh.ECHO: 1})
 
 	var outBuf, errBuf strings.Builder
 	sess.Stdout = &outBuf

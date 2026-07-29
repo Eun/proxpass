@@ -133,36 +133,25 @@ func TestClientNoAccessReturnsError(t *testing.T) {
 	}
 }
 
-// TestClientShellWithoutCommandShowsHelp verifies that a plain shell
-// session (no exec command) writes a usage message, lists available guests,
-// and exits without proxying.
-func TestClientShellWithoutCommandShowsHelp(t *testing.T) {
+// TestClientShellWithoutPTYIsRejected verifies that a plain shell session
+// without a PTY is rejected with a clear error message. A PTY (ssh -t) is
+// always required for interactive access.
+func TestClientShellWithoutPTYIsRejected(t *testing.T) {
 	addr, clientSigner, mp, cancel := setupClientTest(t)
 	defer cancel()
 
-	// No exec command: plain shell. The client should receive a usage message
-	// followed by the guest list (same output as 'guest ls').
+	// No exec command, no PTY: should receive the PTY-required error.
 	output := sshShellStderrOutput(t, addr, "alice", clientSigner)
 
 	if strings.Contains(output, "[mock proxy]") {
-		t.Errorf("did not expect proxy banner for plain shell; output: %q", output)
+		t.Errorf("did not expect proxy banner; output: %q", output)
 	}
-	if !strings.Contains(output, "Usage:") && !strings.Contains(output, "identifier") {
-		t.Errorf("expected usage message for plain shell, got: %q", output)
-	}
-	// Guest listing should follow the usage message.
-	if !strings.Contains(output, "Available guests") {
-		t.Errorf("expected 'Available guests' header in output, got: %q", output)
-	}
-	// Seeded guests: webserver, database, devbox, staging
-	for _, name := range []string{testGuestWebserver, "database", "devbox", "staging"} {
-		if !strings.Contains(output, name) {
-			t.Errorf("expected guest %q in output, got: %q", name, output)
-		}
+	if !strings.Contains(output, "PTY") && !strings.Contains(output, "ssh -t") {
+		t.Errorf("expected PTY-required error in output, got: %q", output)
 	}
 
 	sessions := mp.RecordedSessions()
 	if len(sessions) != 0 {
-		t.Errorf("expected no proxy sessions for plain shell, got %d", len(sessions))
+		t.Errorf("expected no proxy sessions, got %d", len(sessions))
 	}
 }

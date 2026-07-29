@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"io"
 
 	"proxpass/internal/db"
 	"proxpass/internal/models"
@@ -11,12 +12,17 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
-// PtyRequest holds the parsed fields of an SSH "pty-req" request.
+// PtyRequest holds the parsed fields of an SSH "pty-req" request plus any
+// color-relevant env vars received via SSH "env" channel requests (RFC 4254
+// §6.4). TERM from pty-req takes priority; env vars are stored separately so
+// callers can build a complete color-profile picture.
 type PtyRequest struct {
-	Term   string
-	Width  uint32
-	Height uint32
-	Modes  []byte
+	Term      string
+	Width     uint32
+	Height    uint32
+	Modes     []byte
+	ColorTerm string // from SSH env "COLORTERM" (e.g. "truecolor", "24bit")
+	NoColor   string // from SSH env "NO_COLOR"   (non-empty → no color)
 }
 
 // parsePtyReq parses the payload of an SSH "pty-req" channel request.
@@ -86,6 +92,31 @@ func parseWindowChange(data []byte) (width, height uint32, err error) {
 	return width, height, nil
 }
 
+// parseEnvRequest parses the payload of an SSH "env" channel request.
+// Wire format (RFC 4254 §6.4): string name, string value.
+func parseEnvRequest(data []byte) (name, value string, err error) {
+	if len(data) < 4 {
+		return "", "", fmt.Errorf("env payload too short")
+	}
+	nl := binary.BigEndian.Uint32(data[0:4])
+	data = data[4:]
+	if uint32(len(data)) < nl { //nolint:gosec // length is protocol-bounded
+		return "", "", fmt.Errorf("env: name length exceeds payload")
+	}
+	name = string(data[:nl])
+	data = data[nl:]
+	if len(data) < 4 {
+		return "", "", fmt.Errorf("env: missing value length")
+	}
+	vl := binary.BigEndian.Uint32(data[0:4])
+	data = data[4:]
+	if uint32(len(data)) < vl { //nolint:gosec // length is protocol-bounded
+		return "", "", fmt.Errorf("env: value length exceeds payload")
+	}
+	value = string(data[:vl])
+	return name, value, nil
+}
+
 // findClientByKey searches every client in the database for one whose stored
 // public keys contain a key matching the offered key. Returns nil, nil when no
 // match is found.
@@ -142,4 +173,13 @@ func keysEqual(a, b []byte) bool {
 		}
 	}
 	return true
+}
+
+func failIfNoPtyRequest(w io.Writer, ptyReq *PtyRequest) (failed bool) {
+	if ptyReq == nil {
+		_, _ = fmt.Fprintf(w,
+			"error: a PTY is required for guest access.\r\nConnect with: ssh -t ... or add 'RequestTTY yes' to ~/.ssh/config\r\n")
+		return true
+	}
+	return false
 }

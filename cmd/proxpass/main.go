@@ -101,12 +101,10 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	defer func() { _ = repo.Close() }()
 
 	// Create services.
-	adminHandler := proxssh.DefaultAdminHandler(
-		proxssh.DefaultProxier{}, proxmox.DefaultDiscovererFactory, logger)
 	discovery := proxmox.NewDiscovery(
 		repo, discoveryInterval, logger, proxmox.DefaultDiscovererFactory)
 	server := proxssh.NewServer(
-		listenAddr, hostKeyPath, repo, adminHandler, proxssh.DefaultProxier{}, logger)
+		listenAddr, hostKeyPath, repo, proxssh.DefaultProxier{}, proxmox.DefaultDiscovererFactory, logger)
 
 	// Flag-based admin: if both --admin-user and --admin-key
 	// are set, the server accepts that credential as an admin

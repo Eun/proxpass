@@ -9,9 +9,10 @@ import (
 	"proxpass/internal/models"
 
 	ucli "github.com/urfave/cli/v3"
+	gossh "golang.org/x/crypto/ssh"
 )
 
-func clientCmd(deps *Deps) *ucli.Command { //nolint:gocognit // CLI command tree
+func clientCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI command tree
 	return &ucli.Command{
 		Name:   flagClient,
 		Usage:  "Manage SSH clients",
@@ -62,6 +63,10 @@ func clientCmd(deps *Deps) *ucli.Command { //nolint:gocognit // CLI command tree
 					for _, k := range keys {
 						k = strings.TrimSpace(k)
 						if k != "" {
+							_, _, _, _, err := gossh.ParseAuthorizedKey([]byte(k))
+							if err != nil {
+								return fmt.Errorf("invalid --key: %w", err)
+							}
 							trimmed = append(trimmed, k)
 						}
 					}

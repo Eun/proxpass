@@ -12,6 +12,7 @@ import (
 
 	"proxpass/internal/models"
 	"proxpass/internal/proxmox"
+	"proxpass/pkg/statusbar"
 
 	"github.com/coder/websocket"
 	gossh "golang.org/x/crypto/ssh"
@@ -144,14 +145,42 @@ func proxyViaTermProxy(
 		}
 	}
 
-	// --- Step 6: Send initial terminal size ---
+	// --- Step 6: Send initial terminal size (height - 1 for status bar) ---
 	// Format: "1:<cols>:<rows>:" — derived from termproxy Rust source
 	// (MSG_TYPE_RESIZE = 1, remove_number reads cols then rows).
+	// We reserve the bottom row for the persistent status bar, so we tell
+	// the guest it has height-1 rows and draw the bar in the last row.
+	initCols, initRows := 80, 24
 	if ptyReq != nil {
-		resizeMsg := fmt.Sprintf("1:%d:%d:", ptyReq.Width, ptyReq.Height)
-		if err := conn.Write(ctx, websocket.MessageBinary, []byte(resizeMsg)); err != nil {
-			return fmt.Errorf("send initial resize: %w", err)
-		}
+		initCols = int(ptyReq.Width)
+		initRows = int(ptyReq.Height)
+	}
+	guestH := initRows - 1
+	if guestH < 1 {
+		guestH = 1
+	}
+	var termType, colorTerm, noColor string
+	if ptyReq != nil {
+		termType = ptyReq.Term
+		colorTerm = ptyReq.ColorTerm
+		noColor = ptyReq.NoColor
+	}
+	if termType == "" {
+		termType = termXterm256Color
+	}
+	sb := statusbar.New(clientChan,
+		statusbar.WithText("proxpass", fmt.Sprintf("%s (%s%d) @ %s",
+			guest.Name, guest.Type, guest.ProxmoxID, inst.Name)),
+		statusbar.WithHint("Ctrl+A X: disconnect"),
+		statusbar.WithTermType(termType, colorTerm, noColor),
+	)
+	// Setup() sets the scroll region and draws the bar before the WS bridge
+	// starts, so it is in place before the first byte of guest output arrives.
+	_ = sb.Setup(initCols, initRows) // guestH already computed above
+
+	initResizeMsg := fmt.Sprintf("1:%d:%d:", initCols, guestH)
+	if err := conn.Write(ctx, websocket.MessageBinary, []byte(initResizeMsg)); err != nil {
+		return fmt.Errorf("send initial resize: %w", err)
 	}
 
 	// --- Step 7: Bidirectional bridge ---
@@ -177,10 +206,11 @@ func proxyViaTermProxy(
 				}
 				switch req.Type {
 				case "window-change":
-					// Format: "1:<cols>:<rows>:" matching termproxy MSG_TYPE_RESIZE.
+					// Update status bar + send adjusted size to guest.
 					w, h, parseErr := parseWindowChange(req.Payload)
 					if parseErr == nil {
-						msg := fmt.Sprintf("1:%d:%d:", w, h)
+						newGuestH := sb.Resize(int(w), int(h))
+						msg := fmt.Sprintf("1:%d:%d:", w, newGuestH)
 						_ = conn.Write(ctx, websocket.MessageBinary, []byte(msg))
 					}
 					if req.WantReply {
@@ -195,20 +225,23 @@ func proxyViaTermProxy(
 		}
 	}()
 
-	// SSH client → WebSocket: "0:<len>:<data>" binary frames.
+	// SSH client → WebSocket: "0:<len>:<data>" binary frames, with Ctrl+A X intercept.
 	// MSG_TYPE_DATA = 0. Build header and data separately to avoid %s
 	// converting the byte slice through a UTF-8 string, which would corrupt
 	// non-ASCII bytes (arrow keys, escape sequences) and invalidate the
 	// declared length for multi-byte input.
 	// Mirrors the approach in luthermonson/go-proxmox TermWebSocket.
+	ctrlCtx, ctrlCancel := context.WithCancel(ctx)
+	defer ctrlCancel()
 	go func() {
+		src := &ctrlAXReader{r: clientChan, cancel: ctrlCancel}
 		buf := make([]byte, 4096)
 		for {
-			n, readErr := clientChan.Read(buf)
+			n, readErr := src.Read(buf)
 			if n > 0 {
 				header := fmt.Sprintf("0:%d:", n)
 				msg := append([]byte(header), buf[:n]...)
-				if writeErr := conn.Write(ctx, websocket.MessageBinary, msg); writeErr != nil {
+				if writeErr := conn.Write(ctrlCtx, websocket.MessageBinary, msg); writeErr != nil {
 					return
 				}
 			}
@@ -225,18 +258,21 @@ func proxyViaTermProxy(
 	// WebSocket → SSH client: raw PTY output, no framing.
 	// The termproxy binary writes PTY bytes directly to the TCP socket;
 	// the vncwebsocket tunnel forwards them verbatim as binary WS frames.
-	// When the WS reader exits (connection closed by either side), signal
-	// done to stop the control goroutine.
+	// Write all WS→client data through the status bar writer so the bar
+	// is redrawn after every chunk and DECSTBM-destroying sequences are handled.
+	sbWriter := sb.Writer()
 	for {
 		_, data, readErr := conn.Read(ctx)
 		if readErr != nil {
 			break
 		}
-		if _, writeErr := clientChan.Write(data); writeErr != nil {
+		if _, writeErr := sbWriter.Write(data); writeErr != nil {
 			break
 		}
 	}
 	close(done)
+	sb.Clear()
+	sb.Teardown()
 	return nil
 }
 
