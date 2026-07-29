@@ -145,38 +145,62 @@ func proxyViaTermProxy(
 		}
 	}
 
-	// --- Step 6: Send initial terminal size (height - 1 for status bar) ---
+	// --- Step 6: Send initial terminal size ---
 	// Format: "1:<cols>:<rows>:" — derived from termproxy Rust source
 	// (MSG_TYPE_RESIZE = 1, remove_number reads cols then rows).
-	// We reserve the bottom row for the persistent status bar, so we tell
-	// the guest it has height-1 rows and draw the bar in the last row.
 	initCols, initRows := 80, 24
 	if ptyReq != nil {
 		initCols = int(ptyReq.Width)
 		initRows = int(ptyReq.Height)
 	}
+
+	// Determine whether to bypass the status bar.
+	disableBar := ptyReq != nil && ptyReq.DisableStatusBar
+
+	// Compute the height to advertise to the guest.
+	// With the status bar: reserve the last row (guestH = initRows-1).
+	// Without the status bar: use the full height.
 	guestH := initRows - 1
 	if guestH < 1 {
 		guestH = 1
 	}
-	var termType, colorTerm, noColor string
-	if ptyReq != nil {
-		termType = ptyReq.Term
-		colorTerm = ptyReq.ColorTerm
-		noColor = ptyReq.NoColor
+	if disableBar {
+		guestH = initRows
 	}
-	if termType == "" {
-		termType = termXterm256Color
+
+	// clientWriter is where WebSocket data gets written.
+	// In bypass mode it is the raw SSH channel; otherwise it goes through the
+	// status-bar writer so the bar is redrawn on every chunk.
+	var clientWriter io.Writer = clientChan
+
+	// sb is only initialized when the status bar is active (disableBar == false).
+	// It is declared here so the resize goroutine below can call sb.Resize.
+	var sb *statusbar.StatusBar
+	if !disableBar {
+		var termType, colorTerm, noColor string
+		if ptyReq != nil {
+			termType = ptyReq.Term
+			colorTerm = ptyReq.ColorTerm
+			noColor = ptyReq.NoColor
+		}
+		if termType == "" {
+			termType = termXterm256Color
+		}
+		sb = statusbar.New(clientChan,
+			statusbar.WithText("proxpass", fmt.Sprintf("%s (%s%d) @ %s",
+				guest.Name, guest.Type, guest.ProxmoxID, inst.Name)),
+			statusbar.WithHint("Ctrl+A X: disconnect"),
+			statusbar.WithTermType(termType, colorTerm, noColor),
+		)
+		// Setup() draws the bar before the WS bridge starts.
+		_ = sb.Setup(initCols, initRows)
+		clientWriter = sb.Writer()
+		// Ensure teardown runs after the bridge exits.
+		defer func() {
+			sb.Clear()
+			sb.Teardown()
+		}()
 	}
-	sb := statusbar.New(clientChan,
-		statusbar.WithText("proxpass", fmt.Sprintf("%s (%s%d) @ %s",
-			guest.Name, guest.Type, guest.ProxmoxID, inst.Name)),
-		statusbar.WithHint("Ctrl+A X: disconnect"),
-		statusbar.WithTermType(termType, colorTerm, noColor),
-	)
-	// Setup() sets the scroll region and draws the bar before the WS bridge
-	// starts, so it is in place before the first byte of guest output arrives.
-	_ = sb.Setup(initCols, initRows) // guestH already computed above
 
 	initResizeMsg := fmt.Sprintf("1:%d:%d:", initCols, guestH)
 	if err := conn.Write(ctx, websocket.MessageBinary, []byte(initResizeMsg)); err != nil {
@@ -206,10 +230,16 @@ func proxyViaTermProxy(
 				}
 				switch req.Type {
 				case "window-change":
-					// Update status bar + send adjusted size to guest.
 					w, h, parseErr := parseWindowChange(req.Payload)
 					if parseErr == nil {
-						newGuestH := sb.Resize(int(w), int(h))
+						var newGuestH int
+						if disableBar {
+							// Bypass: send full height to the guest.
+							newGuestH = int(h)
+						} else {
+							// Status bar active: resize bar, reserve last row.
+							newGuestH = sb.Resize(int(w), int(h))
+						}
 						msg := fmt.Sprintf("1:%d:%d:", w, newGuestH)
 						_ = conn.Write(ctx, websocket.MessageBinary, []byte(msg))
 					}
@@ -258,21 +288,19 @@ func proxyViaTermProxy(
 	// WebSocket → SSH client: raw PTY output, no framing.
 	// The termproxy binary writes PTY bytes directly to the TCP socket;
 	// the vncwebsocket tunnel forwards them verbatim as binary WS frames.
-	// Write all WS→client data through the status bar writer so the bar
-	// is redrawn after every chunk and DECSTBM-destroying sequences are handled.
-	sbWriter := sb.Writer()
+	// clientWriter is either the raw channel (bypass) or the status-bar writer.
 	for {
 		_, data, readErr := conn.Read(ctx)
 		if readErr != nil {
 			break
 		}
-		if _, writeErr := sbWriter.Write(data); writeErr != nil {
+		if _, writeErr := clientWriter.Write(data); writeErr != nil {
 			break
 		}
 	}
 	close(done)
-	sb.Clear()
-	sb.Teardown()
+	// sb.Clear() / sb.Teardown() are called via the deferred closure set up
+	// above when !disableBar.
 	return nil
 }
 

@@ -67,7 +67,7 @@ func handleSession(
 				continue
 			}
 			switch name {
-			case "TERM", "COLORTERM", "NO_COLOR":
+			case "TERM", "COLORTERM", "NO_COLOR", "PROXPASS_DISABLE_STATUSBAR":
 				clientEnv[name] = value
 			}
 			replyReq(req, true)
@@ -80,15 +80,6 @@ func handleSession(
 				continue
 			}
 			ptyReq = p
-			// An env request arriving before pty-req (which is the normal
-			// OpenSSH order) may have already set TERM. Prefer pty-req TERM
-			// when non-empty (it is the authoritative terminal type); fall
-			// back to the env value otherwise.
-			if ptyReq.Term == "" {
-				ptyReq.Term = clientEnv["TERM"]
-			}
-			ptyReq.ColorTerm = clientEnv["COLORTERM"]
-			ptyReq.NoColor = clientEnv["NO_COLOR"]
 			replyReq(req, true)
 
 		case reqTypeExec:
@@ -107,6 +98,19 @@ func handleSession(
 	return
 
 dispatch:
+	// Apply all accumulated SSH env vars to ptyReq now that the full negotiation
+	// loop has run. We do this at dispatch time (not at pty-req time) so that
+	// env requests arriving *after* pty-req (which OpenSSH may do) are included.
+	// pty-req TERM takes priority over the env TERM when non-empty.
+	if ptyReq != nil {
+		if ptyReq.Term == "" {
+			ptyReq.Term = clientEnv["TERM"]
+		}
+		ptyReq.ColorTerm = clientEnv["COLORTERM"]
+		ptyReq.NoColor = clientEnv["NO_COLOR"]
+		ptyReq.DisableStatusBar = isTruthy(clientEnv["PROXPASS_DISABLE_STATUSBAR"])
+	}
+
 	ctx := context.Background()
 
 	// --- phase 2: help is allowed with or without a PTY ---
