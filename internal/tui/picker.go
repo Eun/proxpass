@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
+	gossh "golang.org/x/crypto/ssh"
 )
 
 // filterSep separates the name and description inside FilterValue() so the
@@ -442,6 +443,12 @@ func (e sshEnviron) Getenv(key string) string {
 // Returns the selected Guest and the name of its instance,
 // or nil, "" if the user cancels without making a selection.
 //
+// reqs is the live SSH channel request stream. PickGuest reads window-change
+// requests from it and forwards them as tea.WindowSizeMsg to the bubbletea
+// program so the picker resizes when the user resizes their terminal. The
+// channel is NOT drained — the caller must continue reading it after
+// PickGuest returns (e.g. to pass it to ProxyToGuest).
+//
 // termType is the TERM value (e.g. "xterm-256color") — from pty-req or SSH env.
 // colorTerm is the COLORTERM value (e.g. "truecolor") — from SSH env, may be empty.
 // noColor is the NO_COLOR value — non-empty disables all color output.
@@ -452,6 +459,7 @@ func PickGuest(
 	instMap map[int64]string,
 	width, height uint32,
 	termType, colorTerm, noColor string,
+	reqs <-chan *gossh.Request,
 ) (*models.Guest, string, error) {
 	if len(guests) == 0 {
 		return nil, "", nil
@@ -483,18 +491,50 @@ func PickGuest(
 
 	m := newPickerModel(guests, instMap, w, h, sshRenderer)
 
-	p, err := tea.NewProgram(
+	prog := tea.NewProgram(
 		m,
 		tea.WithInput(reader),
 		tea.WithOutput(writer),
 		tea.WithEnvironment(env.Environ()),
 		tea.WithoutCatchPanics(),
-	).Run()
+	)
+
+	// Forward SSH window-change requests as tea.WindowSizeMsg so the picker
+	// resizes when the user resizes their terminal. We stop forwarding as
+	// soon as the program exits (stopFwd is closed). Non-window-change
+	// requests are replied to with false and discarded.
+	stopFwd := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stopFwd:
+				return
+			case req, ok := <-reqs:
+				if !ok {
+					return
+				}
+				if req.Type == "window-change" {
+					var cols, rows uint32
+					if len(req.Payload) >= 8 { //nolint:mnd
+						cols = uint32(req.Payload[0])<<24 | uint32(req.Payload[1])<<16 | uint32(req.Payload[2])<<8 | uint32(req.Payload[3]) //nolint:mnd
+						rows = uint32(req.Payload[4])<<24 | uint32(req.Payload[5])<<16 | uint32(req.Payload[6])<<8 | uint32(req.Payload[7]) //nolint:mnd
+						prog.Send(tea.WindowSizeMsg{Width: int(cols), Height: int(rows)})
+					}
+				}
+				if req.WantReply {
+					_ = req.Reply(req.Type == "window-change", nil)
+				}
+			}
+		}
+	}()
+
+	finalModel, err := prog.Run()
+	close(stopFwd)
 	if err != nil {
 		return nil, "", fmt.Errorf("picker: %w", err)
 	}
 
-	final, ok := p.(pickerModel)
+	final, ok := finalModel.(pickerModel)
 	if !ok || final.selected == nil {
 		return nil, "", nil
 	}

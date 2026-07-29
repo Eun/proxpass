@@ -128,25 +128,28 @@ func interactiveGuestPicker(
 		instByID[inst.ID] = inst
 	}
 
-	drainAndDiscard(remaining)
-
-	guest, _, pickErr := tui.PickGuest(channel, channel, guests, instMap, ptyReq.Width, ptyReq.Height, ptyReq.Term, ptyReq.ColorTerm, ptyReq.NoColor)
+	// Do NOT drainAndDiscard(remaining) here — remaining is the live SSH
+	// request stream; PickGuest needs it to receive window-change events
+	// during the picker, and ProxyToGuest needs it for resizes during proxy.
+	guest, _, pickErr := tui.PickGuest(channel, channel, guests, instMap, ptyReq.Width, ptyReq.Height, ptyReq.Term, ptyReq.ColorTerm, ptyReq.NoColor, remaining)
 	if pickErr != nil {
 		logger.Printf("%s: picker error: %v", label, pickErr)
+		drainAndDiscard(remaining)
 		return
 	}
 	if guest == nil {
+		drainAndDiscard(remaining)
 		return // user cancelled
 	}
 
 	inst := instByID[guest.InstanceID]
 	if inst == nil {
 		writeErr(channel, ptyReq, fmt.Sprintf("instance for guest %q not found", guest.Name))
+		drainAndDiscard(remaining)
 		return
 	}
-	proxyReqs := make(chan *gossh.Request, 4)
-	defer close(proxyReqs)
-	if err := proxier.ProxyToGuest(channel, proxyReqs, guest, inst, ptyReq, logger); err != nil {
+	// Pass remaining directly — it carries live window-change requests.
+	if err := proxier.ProxyToGuest(channel, remaining, guest, inst, ptyReq, logger); err != nil {
 		logger.Printf("%s: proxy error: %v", label, err)
 	}
 }

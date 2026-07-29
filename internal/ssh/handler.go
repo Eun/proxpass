@@ -294,16 +294,12 @@ func tryDirectProxy(
 		return false, err
 	}
 
-	// Forward remaining SSH requests via a buffered bridge channel so they
-	// don't block while proxyToGuest is running.
+	// Bridge remaining into proxyReqs. The goroutine blocks on send so that
+	// no requests (especially window-change) are ever silently dropped.
 	proxyReqs := make(chan *gossh.Request, 4)
 	go func() {
 		for req := range remaining {
-			select {
-			case proxyReqs <- req:
-			default:
-				replyReq(req, false)
-			}
+			proxyReqs <- req
 		}
 		close(proxyReqs)
 	}()
