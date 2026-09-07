@@ -1,6 +1,6 @@
 module proxpass
 
-go 1.25.7
+go 1.26.0
 
 require (
 	github.com/charmbracelet/bubbles v1.0.0
@@ -11,12 +11,12 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/hinshun/vt10x v0.0.0-20220301184237-5011da428d02
 	github.com/muesli/termenv v0.16.0
-	github.com/pressly/goose/v3 v3.27.3
+	github.com/pressly/goose/v3 v3.28.0
 	github.com/urfave/cli/v3 v3.10.1
-	golang.org/x/crypto v0.54.0
+	golang.org/x/crypto v0.55.0
 	golang.org/x/term v0.45.0
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/sqlite v1.54.0
+	modernc.org/sqlite v1.57.0
 )
 
 require (
@@ -32,7 +32,7 @@ require (
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
-	github.com/mattn/go-isatty v0.0.23 // indirect
+	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-localereader v0.0.1 // indirect
 	github.com/mattn/go-runewidth v0.0.19 // indirect
 	github.com/mfridman/interpolate v0.0.2 // indirect
@@ -47,8 +47,8 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.40.0 // indirect
-	modernc.org/libc v1.74.3 // indirect
+	golang.org/x/text v0.41.0 // indirect
+	modernc.org/libc v1.75.6 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
-	modernc.org/memory v1.11.0 // indirect
+	modernc.org/memory v1.12.1 // indirect
 )
