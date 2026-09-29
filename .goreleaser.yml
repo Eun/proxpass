@@ -3,6 +3,10 @@
 
 version: 2
 project_name: "proxpass"
+# proxpass only ships as a container image: the binary is useless on its own
+# now that OpenSSH sshd terminates the SSH connection and resolves users
+# through libnss_http.so.2. So: linux/amd64 + linux/arm64 only, no archives,
+# no deb/rpm, no checksums and no release assets -- just the image.
 builds:
   -
     id: "proxpass"
@@ -12,36 +16,26 @@ builds:
       - "CGO_ENABLED=0"
     goos:
       - "linux"
-      - "darwin"
-      - "windows"
     goarch:
-      - "386"
-      - "arm"
       - "arm64"
       - "amd64"
     ldflags:
       - -s
       - -w
 archives:
-  - name_template: "proxpass_{{.Version}}_{{.Os}}_{{.Arch}}{{if .Arm}}v{{.Arm}}{{end}}"
+  # the image is the only artifact; `binary' means goreleaser does not wrap the
+  # binary in a tar.gz it would otherwise have to upload somewhere.
+  - formats: ["binary"]
 checksum:
-  name_template: 'checksums.txt'
+  disable: true
 snapshot:
   version_template: "{{.Tag}}-next"
 changelog:
   disable: true
-nfpms:
-  -
-    id: "proxpass"
-    package_name: "proxpass"
-    homepage: "https://github.com/Eun/proxpass"
-    maintainer: "Tobias Salzmann <tobias@salzmann.berlin>"
-    description: "Proxmox SSH Proxy"
-    license: "MIT"
-    formats:
-      - "deb"
-      - "rpm"
-    epoch: 1
+release:
+  # No raw binaries, archives or packages are attached to the GitHub release;
+  # the image on ghcr.io is the only artifact.
+  disable: true
 dockers:
   -
     goos: linux
@@ -52,6 +46,14 @@ dockers:
     image_templates:
       - "{{.Env.REGISTRY}}/{{.Env.IMAGE_NAME}}:{{.Version}}-amd64"
     dockerfile: ".github/Dockerfile"
+    # goreleaser builds the image with dist/ as the docker context, so the
+    # nsswitch/nss_http/sshd/entrypoint files the Dockerfile COPYs are not
+    # visible there unless we stage them in explicitly. Copying the whole
+    # docker/ directory keeps the paths inside the Dockerfile identical to the
+    # paths in the repo, so `docker build -f .github/Dockerfile .' from the
+    # repo root (see `mise run docker') works too.
+    extra_files:
+      - "docker"
     build_flag_templates:
       - "--pull"
       - "--label=org.opencontainers.image.created={{.Date}}"
@@ -69,6 +71,9 @@ dockers:
     image_templates:
       - "{{.Env.REGISTRY}}/{{.Env.IMAGE_NAME}}:{{.Version}}-arm64"
     dockerfile: ".github/Dockerfile"
+    # See the amd64 entry above.
+    extra_files:
+      - "docker"
     build_flag_templates:
       - "--pull"
       - "--label=org.opencontainers.image.created={{.Date}}"

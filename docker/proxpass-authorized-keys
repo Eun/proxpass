@@ -1,0 +1,11 @@
+#!/bin/sh
+# sshd AuthorizedKeysCommand wrapper.
+#
+# sshd refuses to run an AuthorizedKeysCommand unless it is an absolute path
+# owned by root and not writable by group or others, hence this fixed wrapper
+# instead of pointing sshd straight at /app with arguments.
+#
+# Prints the authorized_keys lines for $1 on stdout and nothing else: any
+# proxpass diagnostics must go to stderr, because sshd parses stdout.
+set -eu
+exec /app authorized-keys "$@"
