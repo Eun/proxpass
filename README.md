@@ -1,25 +1,53 @@
 # ProxPass
 
-A standalone SSH proxy for Proxmox VE that routes client connections to LXC containers and QEMU virtual machines. Administrators manage access through a CLI delivered over SSH.
+An SSH proxy for Proxmox VE that routes client connections to LXC containers and QEMU virtual machines. Administrators manage access through a CLI delivered over SSH.
+
+ProxPass ships as a single Docker image containing OpenSSH `sshd` and the
+proxpass binary. It does **not** implement its own SSH server: sshd owns the
+protocol, and proxpass supplies the users, the keys and the session.
 
 ## Features
 
-- **SSH Proxy** — Clients SSH in and are transparently proxied to Proxmox guests (`pct enter` for containers, `qm terminal` for VMs)
-- **Public Key Authentication** — Both admin and client access is controlled via SSH public keys
+- **Real OpenSSH** — sshd handles the protocol; proxpass only decides who may log in and where they land
+- **Public Key Authentication** — The only supported method; password authentication is disabled
 - **Auto-Discovery** — Periodically discovers containers and VMs from configured Proxmox hosts via the REST API
 - **Admin CLI over SSH** — Full command-line interface for managing instances, clients, groups, access rules, and admin keys
-- **Flexible Guest Resolution** — Connect by VMID (`ssh 100@host`), type+VMID (`ssh ct100@host`), or name (`ssh webserver@host`)
+- **Flexible Guest Resolution** — Connect by VMID (`100`), type+VMID (`ct100`), name (`webserver`), or instance-qualified (`rome:ct101`)
 - **Access Control** — Per-client and per-group access rules with a global default policy fallback
 - **SQLite Storage** — Single-file embedded database, no external dependencies
+
+## How it works
+
+```
+ssh alice@proxpass-host ct100
+        │
+        ▼
+     sshd  ──AuthorizedKeysCommand──▶  proxpass authorized-keys alice
+        │                                       │
+        │   ◀──── alice's public keys ──────────┘
+        │
+        │   NSS (libnss_http.so.2) ──HTTP──▶  proxpass serve
+        │     resolves "alice" to a uid              (directory API)
+        ▼
+     ForceCommand: proxpass session
+        │
+        ▼
+     Proxmox guest console (termproxy WebSocket, or SSH + pct/qm)
+```
+
+Clients are not Unix accounts. sshd resolves them through NSS, which asks the
+proxpass directory API over loopback, so all user management stays in the
+proxpass database. This requires **glibc** — musl (Alpine) has no NSS support,
+which is why the image is Debian based.
 
 ## Quick Start
 
 ```bash
-# Build
-mise run build
-
-# Run with a flag-based admin key
-./proxpass --admin-key "$(cat ~/.ssh/id_ed25519.pub)"
+docker run -d --name proxpass \
+  -p 2222:22 \
+  -v proxpass-data:/var/lib/proxpass \
+  -e PROXPASS_ADMIN_KEY="$(cat ~/.ssh/id_ed25519.pub)" \
+  ghcr.io/eun/proxpass:latest
 
 # Connect as admin and view help
 ssh -p 2222 admin@localhost
@@ -130,36 +158,51 @@ All flags can also be set via environment variables.
 
 | Flag | Env Var | Default | Description |
 |------|---------|---------|-------------|
-| `--listen` | `PROXPASS_LISTEN` | `:2222` | SSH listen address |
-| `--host-key` | `PROXPASS_HOST_KEY` | `./proxpass_host_key` | Path to ED25519 host key (auto-generated if missing) |
-| `--data` | `PROXPASS_DATA` | `./proxpass.db` | Path to SQLite database |
-| `--discovery-interval` | `PROXPASS_DISCOVERY_INTERVAL` | `5m` | Guest discovery poll interval |
+| `--data` | `PROXPASS_DATA` | `/var/lib/proxpass/proxpass.db` | Path to SQLite database |
 | `--log-level` | `PROXPASS_LOG_LEVEL` | `info` | Log level (debug, info, warn, error) |
-| `--admin-key` | `PROXPASS_ADMIN_KEY` | | Flag-based admin public key (see below) |
+| `--admin-key` | `PROXPASS_ADMIN_KEY` | | Admin public key (see below) |
+| `--listen` | `PROXPASS_LISTEN` | `127.0.0.1:8080` | Address of the NSS directory API (`serve` only) |
+| `--discovery-interval` | `PROXPASS_DISCOVERY_INTERVAL` | `5m` | Guest discovery poll interval (`serve` only) |
 
-### Flag-based admin key
+The SSH port itself is sshd's, so it is published with `-p` on the container
+rather than configured in proxpass.
 
-The `--admin-key` flag accepts an SSH public key in `authorized_keys` format. When set, this key is treated as an admin key **for the lifetime of the process**, checked before any database lookup. Users are identified solely by their public key — the SSH username is not used for authentication.
+### Admin key
+
+`--admin-key` accepts an SSH public key in `authorized_keys` format. It is
+offered for the reserved `admin` login **for the lifetime of the process**, in
+addition to any keys in the database. It is never offered for a client login.
+
+### Subcommands
+
+| Command | Invoked by | Purpose |
+|---------|-----------|---------|
+| `proxpass serve` | container entrypoint | Guest discovery + the NSS directory API |
+| `proxpass authorized-keys <user>` | sshd `AuthorizedKeysCommand` | Prints the user's public keys |
+| `proxpass session` | sshd `ForceCommand` | Runs the client's session |
 
 ## Client Connections
 
-The guest identifier is passed as the SSH **exec command** (not the username).
-A PTY (`-t`) is required — without it the terminal echoes every character twice
-because both the local terminal and the remote guest's PTY produce output.
+Log in as your client name. The guest identifier is passed as the SSH command;
+with no command you get an interactive picker. A PTY (`-t`) is required when
+naming a guest directly.
 
 ```bash
+# Interactive picker
+ssh -p 2222 alice@proxpass-host
+
 # By VMID
-ssh -t -p 2222 proxpass-host 100
+ssh -t -p 2222 alice@proxpass-host 100
 
 # By type+VMID (disambiguates collisions)
-ssh -t -p 2222 proxpass-host ct100
-ssh -t -p 2222 proxpass-host vm200
+ssh -t -p 2222 alice@proxpass-host ct100
+ssh -t -p 2222 alice@proxpass-host vm200
 
 # By name (case-insensitive)
-ssh -t -p 2222 proxpass-host webserver
+ssh -t -p 2222 alice@proxpass-host webserver
 
 # With an instance prefix (when the same VMID exists on multiple nodes)
-ssh -t -p 2222 proxpass-host rome:ct101
+ssh -t -p 2222 alice@proxpass-host rome:ct101
 ```
 
 Add this to `~/.ssh/config` to avoid typing `-t` every time:
@@ -167,6 +210,7 @@ Add this to `~/.ssh/config` to avoid typing `-t` every time:
 ```
 Host proxpass-host
     Port 2222
+    User alice
     RequestTTY yes
 ```
 
@@ -174,14 +218,17 @@ Host proxpass-host
 
 ```
 proxpass/
-├── cmd/proxpass/          # CLI entry point (urfave/cli v3)
+├── cmd/proxpass/          # CLI entry point (serve, authorized-keys, session)
 ├── cmd/proxmox-mock/      # Mock Proxmox service for testing
+├── docker/                # Entrypoint and sshd/NSS configuration
 └── internal/
+    ├── api/               # NSS directory API consumed by libnss_http
     ├── cli/               # Admin CLI commands
-    ├── models/            # Data types
+    ├── console/           # Guest console transports (termproxy, ssh)
     ├── db/                # SQLite repository
+    ├── models/            # Data types
     ├── proxmox/           # Proxmox API client & discovery
-    ├── ssh/               # SSH server, auth, proxy
+    ├── session/           # Login session: auth, routing, picker
     └── testenv/           # Test infrastructure & mocks
 ```
 

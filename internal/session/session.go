@@ -1,0 +1,273 @@
+// Package session implements the login command that sshd runs for an
+// authenticated proxpass client.
+//
+// sshd is configured with ForceCommand, so this runs instead of a shell no
+// matter what the client asked for. The originally requested command, if any,
+// arrives in $SSH_ORIGINAL_COMMAND:
+//
+//	ssh proxpass-host              → no command   → interactive guest picker
+//	ssh -t proxpass-host ct100     → "ct100"      → connect straight to a guest
+//	ssh proxpass-host guest ls     → "guest ls"   → admin CLI (admins only)
+package session
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log"
+	"os"
+	"strings"
+
+	"proxpass/internal/cli"
+	"proxpass/internal/console"
+	"proxpass/internal/db"
+	"proxpass/internal/models"
+	"proxpass/internal/proxmox"
+)
+
+// Deps holds everything a session needs.
+type Deps struct {
+	Repo       db.Repository
+	Discoverer proxmox.DiscovererFactory
+	Proxier    console.Proxier
+	Logger     *log.Logger
+
+	// Terminal is the local terminal provided by sshd.
+	Terminal *console.Terminal
+
+	// User is the authenticated login name, as reported by sshd.
+	User string
+	// IsAdmin grants access to the full admin CLI and to every guest.
+	IsAdmin bool
+	// ClientID is the database id of the authenticated client; 0 for admins.
+	ClientID int64
+
+	// Command is the client's requested command ($SSH_ORIGINAL_COMMAND).
+	Command string
+}
+
+// Run executes the session and returns the process exit code.
+func Run(ctx context.Context, d *Deps) int {
+	cmd := strings.TrimSpace(d.Command)
+
+	switch {
+	case isHelp(cmd):
+		return d.writeHelp(ctx)
+
+	case cmd == "":
+		// No command: let the user choose a guest.
+		return d.runPicker(ctx)
+
+	case d.IsAdmin:
+		return d.runAdmin(ctx, cmd)
+
+	case strings.ContainsRune(cmd, ' '):
+		// Non-admins may only name a guest. A multi-word command looks like
+		// an attempt to reach the admin CLI.
+		d.Logger.Printf("%s: rejected multi-word command %q", d.User, cmd)
+		d.errf("access denied: clients may only connect to guests")
+		return 1
+
+	default:
+		return d.connect(ctx, cmd)
+	}
+}
+
+// runAdmin handles an admin command: a bare guest identifier connects
+// directly, anything else runs through the admin CLI.
+func (d *Deps) runAdmin(ctx context.Context, cmd string) int {
+	if !strings.ContainsRune(cmd, ' ') {
+		// A single token may be a guest; fall through to the CLI when it is
+		// not, so "ssh host bogus" reports "unknown command" rather than
+		// "guest not found".
+		guest, inst, err := d.resolve(ctx, cmd)
+		if err == nil {
+			return d.attach(guest, inst)
+		}
+	}
+
+	deps := &cli.Deps{
+		Repo:       d.Repo,
+		Discoverer: d.Discoverer,
+		Out:        d.Terminal.Out,
+		ErrOut:     d.Terminal.Err,
+	}
+	argv := append([]string{"proxpass"}, splitArgs(cmd)...)
+	if err := cli.Build(deps).Run(ctx, argv); err != nil {
+		d.errf("Error: %v", err)
+		return 1
+	}
+	// "guest connect <id>" asks the caller to attach once the CLI returns.
+	if deps.ConnectRequest != nil {
+		return d.attach(deps.ConnectRequest.Guest, deps.ConnectRequest.Instance)
+	}
+	return 0
+}
+
+// connect resolves a guest identifier, checks access and attaches.
+func (d *Deps) connect(ctx context.Context, target string) int {
+	guest, inst, err := d.resolve(ctx, target)
+	if err != nil {
+		d.Logger.Printf("%s: %v", d.User, err)
+		d.errf("%v", err)
+		return 1
+	}
+	allowed, err := d.hasAccess(ctx, guest)
+	if err != nil {
+		d.Logger.Printf("%s: access check failed: %v", d.User, err)
+		d.errf("internal error")
+		return 1
+	}
+	if !allowed {
+		d.Logger.Printf("%s: access denied to guest %s", d.User, guest.Name)
+		d.errf("access denied")
+		return 1
+	}
+	return d.attach(guest, inst)
+}
+
+func (d *Deps) attach(guest *models.Guest, inst *models.ProxmoxInstance) int {
+	d.Logger.Printf("%s: connecting to %s (%s%d) on %s",
+		d.User, guest.Name, guest.Type, guest.ProxmoxID, inst.Name)
+	if err := d.Proxier.Connect(d.Terminal, guest, inst, d.Logger); err != nil {
+		d.Logger.Printf("%s: console error: %v", d.User, err)
+		d.errf("console error: %v", err)
+		return 1
+	}
+	return 0
+}
+
+// resolve turns a user-supplied target into a guest and its instance.
+func (d *Deps) resolve(ctx context.Context, target string) (*models.Guest, *models.ProxmoxInstance, error) {
+	instName, identifier := cli.ParseGuestTarget(target)
+	guests, err := d.Repo.ListGuests(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("listing guests: %w", err)
+	}
+	instances, err := d.Repo.ListProxmoxInstances(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("listing instances: %w", err)
+	}
+	return cli.ResolveGuestAndInstance(identifier, instName, guests, instances)
+}
+
+// hasAccess reports whether the session may reach the guest. Admins may
+// always connect.
+func (d *Deps) hasAccess(ctx context.Context, guest *models.Guest) (bool, error) {
+	if d.IsAdmin {
+		return true, nil
+	}
+	ok, err := d.Repo.HasAccess(ctx, d.ClientID, guest.ID)
+	if err != nil {
+		return false, fmt.Errorf("checking access: %w", err)
+	}
+	return ok, nil
+}
+
+// accessibleGuests returns the guests this session is allowed to reach.
+func (d *Deps) accessibleGuests(ctx context.Context) ([]*models.Guest, error) {
+	guests, err := d.Repo.ListGuests(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing guests: %w", err)
+	}
+	if d.IsAdmin {
+		return guests, nil
+	}
+	out := make([]*models.Guest, 0, len(guests))
+	for _, g := range guests {
+		ok, err := d.Repo.HasAccess(ctx, d.ClientID, g.ID)
+		if err != nil {
+			return nil, fmt.Errorf("checking access: %w", err)
+		}
+		if ok {
+			out = append(out, g)
+		}
+	}
+	return out, nil
+}
+
+// splitArgs does a shell-like split that understands single and double
+// quotes.
+//
+// The local shell already removed one layer of quoting before ssh sent the
+// command, but arguments that legitimately contain spaces — an SSH public key
+// passed to "client add --key" is the common case — arrive here still quoted.
+// Splitting on whitespace alone would tear such a key into fragments and the
+// command would fail with "no key found".
+func splitArgs(s string) []string {
+	var (
+		args  []string
+		cur   strings.Builder
+		quote rune
+	)
+	for _, r := range s {
+		switch {
+		case quote != 0:
+			// Inside a quoted run: only the matching quote ends it.
+			if r == quote {
+				quote = 0
+			} else {
+				cur.WriteRune(r)
+			}
+		case r == '"' || r == '\'':
+			quote = r
+		case r == ' ' || r == '\t':
+			if cur.Len() > 0 {
+				args = append(args, cur.String())
+				cur.Reset()
+			}
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	if cur.Len() > 0 {
+		args = append(args, cur.String())
+	}
+	return args
+}
+
+func isHelp(cmd string) bool {
+	switch strings.ToLower(strings.TrimSpace(cmd)) {
+	case "help", "--help", "-h":
+		return true
+	}
+	return false
+}
+
+// writeHelp prints usage. Admins get the real CLI help so it can never drift
+// from the actual command set.
+func (d *Deps) writeHelp(ctx context.Context) int {
+	if d.IsAdmin {
+		deps := &cli.Deps{
+			Repo:       d.Repo,
+			Discoverer: d.Discoverer,
+			Out:        d.Terminal.Err,
+			ErrOut:     d.Terminal.Err,
+		}
+		_ = cli.Build(deps).Run(ctx, []string{"proxpass", "--help"})
+		return 0
+	}
+
+	w := d.Terminal.Err
+	fmt.Fprintf(w, "proxpass — connect to a Proxmox guest\n\n")
+	fmt.Fprintf(w, "  ssh %s@<host>              choose a guest interactively\n", d.User)
+	fmt.Fprintf(w, "  ssh -t %s@<host> <guest>   connect directly\n\n", d.User)
+	fmt.Fprintf(w, "A guest may be named by VMID (100), type+VMID (ct100, vm200),\n")
+	fmt.Fprintf(w, "name (webserver), or instance-qualified (rome:ct101).\n\n")
+
+	guests, err := d.accessibleGuests(ctx)
+	if err != nil {
+		return 1
+	}
+	writeGuestTable(w, guests)
+	return 0
+}
+
+// errf reports an error to the user on stderr.
+func (d *Deps) errf(format string, args ...any) {
+	var w io.Writer = os.Stderr
+	if d.Terminal != nil && d.Terminal.Err != nil {
+		w = d.Terminal.Err
+	}
+	fmt.Fprintf(w, format+"\n", args...)
+}

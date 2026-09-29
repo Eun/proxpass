@@ -7,15 +7,14 @@ import (
 	"crypto/rand"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"os"
 	"strings"
 	"sync"
 
+	"proxpass/internal/console"
 	"proxpass/internal/models"
-	proxssh "proxpass/internal/ssh"
 
 	gossh "golang.org/x/crypto/ssh"
 )
@@ -314,8 +313,8 @@ func (m *MockSSHServer) Close() {
 	_ = os.Remove(m.KeyPath)
 }
 
-// MockProxier implements proxssh.GuestProxier without any real SSH
-// connection. It writes a mock banner to the channel and returns.
+// MockProxier implements console.Proxier without any real connection to a
+// Proxmox host. It writes a banner to the terminal and echoes input back.
 type MockProxier struct {
 	mu       sync.Mutex
 	Sessions []MockProxySession
@@ -328,14 +327,12 @@ type MockProxySession struct {
 	ProxmoxID int
 }
 
-// ProxyToGuest implements proxssh.GuestProxier. It writes a mock
-// banner, records the session, drains the channel briefly, and returns.
-func (p *MockProxier) ProxyToGuest(
-	clientChan gossh.Channel,
-	clientReqs <-chan *gossh.Request,
+// Connect implements console.Proxier. It records the session, writes a mock
+// banner and echoes terminal input until the input stream ends.
+func (p *MockProxier) Connect(
+	term *console.Terminal,
 	guest *models.Guest,
 	inst *models.ProxmoxInstance,
-	_ *proxssh.PtyRequest,
 	_ *log.Logger,
 ) error {
 	p.mu.Lock()
@@ -346,26 +343,15 @@ func (p *MockProxier) ProxyToGuest(
 	})
 	p.mu.Unlock()
 
-	banner := fmt.Sprintf("[mock proxy] connected to %s (%s %d) on %s\r\n",
+	_, _ = fmt.Fprintf(term.Out, "[mock proxy] connected to %s (%s %d) on %s\r\n",
 		guest.Name, guest.Type, guest.ProxmoxID, inst.Name)
-	_, _ = io.WriteString(clientChan, banner)
 
-	// Drain requests until the channel closes
-	go func() {
-		for req := range clientReqs {
-			if req.WantReply {
-				_ = req.Reply(false, nil)
-			}
-		}
-	}()
-
-	// Echo a few bytes then return (simulates a short session)
+	// Echo input back until the terminal closes (simulates a short session).
 	buf := make([]byte, 256)
 	for {
-		n, err := clientChan.Read(buf)
+		n, err := term.In.Read(buf)
 		if n > 0 {
-			_, writeErr := clientChan.Write(buf[:n])
-			if writeErr != nil {
+			if _, writeErr := term.Out.Write(buf[:n]); writeErr != nil {
 				break
 			}
 		}
@@ -373,7 +359,6 @@ func (p *MockProxier) ProxyToGuest(
 			break
 		}
 	}
-
 	return nil
 }
 
@@ -470,4 +455,4 @@ func (p *MockProxier) RecordedSessions() []MockProxySession {
 }
 
 // Compile-time check.
-var _ proxssh.GuestProxier = (*MockProxier)(nil)
+var _ console.Proxier = (*MockProxier)(nil)
