@@ -37,6 +37,16 @@ func ResolveIdentity(ctx context.Context, repo db.Repository, user string) (*Ide
 		return nil, fmt.Errorf("empty user name")
 	}
 	if user == AdminUser {
+		// Defense in depth: "admin" is reserved, and cli.ValidateClientName
+		// refuses to create a client with that name. If one exists anyway
+		// (for example from a database predating that check), refuse the
+		// login rather than silently granting it admin routing.
+		existing, err := repo.GetClientByName(ctx, user)
+		if err == nil && existing != nil {
+			return nil, fmt.Errorf(
+				"a client named %q exists and shadows the administrator login; rename or remove it",
+				user)
+		}
 		return &Identity{User: user, IsAdmin: true}, nil
 	}
 	client, err := repo.GetClientByName(ctx, user)

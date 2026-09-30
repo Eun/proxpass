@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -61,21 +63,26 @@ const (
 	// always UIDBase plus a positive row id.
 	AdminUID = UIDBase - 1
 
-	// SharedGroup owns the proxpass state directory. "proxpass session" runs
-	// as the logged-in user rather than as root, so every login needs group
-	// access to the database.
+	// SharedGroup is the primary group of every client login. It grants
+	// READ access to the proxpass state directory, which is all a client
+	// session needs: it resolves a guest, checks access and connects.
 	//
-	// This is each user's PRIMARY group rather than a supplementary one.
-	// Supplementary membership would not work: glibc builds that list with
-	// initgroups(), which enumerates the group database, and enumeration has
-	// to stay disabled because sshd's late getgrent() crashes the sshd child
-	// from inside the Go runtime embedded in libnss_http.so.2. A primary gid
-	// is read straight from the passwd entry, so it needs no enumeration.
-	//
-	// Sharing one primary group across logins is acceptable here because a
-	// session is confined by sshd's ForceCommand and never gets a shell.
+	// This is a PRIMARY group rather than a supplementary one. Supplementary
+	// membership would not work: glibc builds that list with initgroups(),
+	// which enumerates the group database, and enumeration has to stay
+	// disabled because sshd's late getgrent() crashes the sshd child from
+	// inside the Go runtime embedded in libnss_http.so.2. A primary gid is
+	// read straight from the passwd entry, so it needs no enumeration.
 	SharedGroup    = "proxpass"
 	SharedGroupGID = 64000
+
+	// AdminGroup is the primary group of the admin login. Only it may WRITE
+	// the database, because only the admin CLI modifies it. Keeping clients
+	// out of this group means a client session cannot tamper with another
+	// client's access rules or corrupt the database, even though it can read
+	// it.
+	AdminGroup    = "proxpass-admin"
+	AdminGroupGID = 64001
 )
 
 // adminUser is the synthetic NSS entry for the reserved admin login.
@@ -87,7 +94,7 @@ func adminUser() User {
 		Dir:      HomeDir,
 		Shell:    LoginShell,
 		Uid:      AdminUID,
-		Gid:      SharedGroupGID,
+		Gid:      AdminGroupGID,
 		AuthKeys: []string{},
 	}
 }
@@ -162,7 +169,7 @@ func UserFor(c *models.Client) User {
 		Shell:    LoginShell,
 		Uid:      uid,
 		Gid:      SharedGroupGID,
-		AuthKeys: c.PublicKeys,
+		AuthKeys: []string{},
 	}
 }
 
@@ -192,17 +199,21 @@ func (s *Server) handleUserByName(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	client, err := s.repo.GetClientByName(r.Context(), name)
-	if err != nil || client == nil {
-		// GetClientByName reports a missing row as an error, so an error here
-		// is treated as "no such user" rather than a server fault. Logging it
-		// keeps a real database problem visible.
-		if err != nil {
-			s.logger.Printf("directory: user %q lookup: %v", name, err)
-		}
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		// Genuinely no such user.
 		http.NotFound(w, r)
-		return
+	case err != nil:
+		// A real backend fault must NOT be reported as 404: nss_http reads
+		// 404 as "no such user", so sshd would reject the login pre-auth as
+		// an invalid user and a storage problem would look like a deleted
+		// account.
+		s.fail(w, fmt.Sprintf("user %q lookup", name), err)
+	case client == nil:
+		http.NotFound(w, r)
+	default:
+		s.writeJSON(w, UserFor(client))
 	}
-	s.writeJSON(w, UserFor(client))
 }
 
 func (s *Server) handleUserByUID(w http.ResponseWriter, r *http.Request) {
@@ -307,19 +318,27 @@ func (s *Server) allGroups(ctx context.Context) ([]Group, error) {
 	}
 
 	byID := make(map[int64]string, len(clients))
-	// The shared group is every login's primary group, so it also lists them
-	// as members. That is only cosmetic — "getent group proxpass" shows who
-	// can reach the state directory — since access comes from the primary
-	// gid in each passwd entry.
+	// The shared group is every client's primary group, so it also lists
+	// them as members. That is cosmetic — "getent group proxpass" shows who
+	// can read the state directory — since access comes from the primary gid
+	// in each passwd entry. The admin is deliberately NOT a member: it has
+	// its own group, which is the only one with write access.
 	shared := Group{
 		Name:         SharedGroup,
 		Passwd:       shadowPasswd,
 		Gid:          SharedGroupGID,
-		GroupMembers: make([]string, 0, len(clients)+1),
+		GroupMembers: make([]string, 0, len(clients)),
 	}
-	shared.GroupMembers = append(shared.GroupMembers, AdminUser)
+	// The admin group has exactly one member and grants write access.
+	adminGrp := Group{
+		Name:         AdminGroup,
+		Passwd:       shadowPasswd,
+		Gid:          AdminGroupGID,
+		GroupMembers: []string{AdminUser},
+	}
 
-	out := make([]Group, 0, len(groups)+2)
+	out := make([]Group, 0, len(groups)+3)
+	out = append(out, adminGrp)
 	for _, c := range clients {
 		byID[c.ID] = c.Name
 		shared.GroupMembers = append(shared.GroupMembers, c.Name)

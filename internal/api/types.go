@@ -21,9 +21,11 @@ type User struct {
 	Uid    uint   `json:"Uid"` //nolint:revive // field name fixed by the nss_http wire format
 	Gid    uint   `json:"Gid"` //nolint:revive // field name fixed by the nss_http wire format
 
-	// AuthKeys is consumed by nss_http's sshkey helper. proxpass serves keys
-	// through its own authorized-keys command instead, but the field is part
-	// of the contract so it is populated anyway.
+	// AuthKeys is consumed by nss_http's own sshkey helper, which proxpass
+	// does not use: sshd is pointed at "proxpass authorized-keys" instead.
+	// It is therefore always empty. Publishing the real keys here would
+	// expose every client's credentials to anything able to reach the
+	// loopback directory, for no benefit.
 	AuthKeys []string `json:"AuthKeys"`
 }
 

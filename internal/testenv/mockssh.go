@@ -320,6 +320,16 @@ type MockProxier struct {
 	Sessions []MockProxySession
 }
 
+// SessionsSnapshot returns a copy of the recorded sessions. Tests may call
+// this while a session is still running, so it must hold the lock.
+func (p *MockProxier) SessionsSnapshot() []MockProxySession {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]MockProxySession, len(p.Sessions))
+	copy(out, p.Sessions)
+	return out
+}
+
 // MockProxySession records a proxy session that was requested.
 type MockProxySession struct {
 	GuestName string

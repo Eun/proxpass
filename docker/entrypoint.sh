@@ -48,19 +48,26 @@ trap terminate TERM INT
 mkdir -p "${PROXPASS_DATA_DIR}" "${PROXPASS_HOST_KEY_DIR}"
 
 # `proxpass session' runs as the logged-in user, not as root, so it needs to
-# reach the database. Grant access through a dedicated group rather than by
-# loosening the mode: the database holds proxmox API credentials, so it must
-# not become world readable.
+# reach the database. Access is granted through dedicated groups rather than
+# by loosening the mode: the database holds proxmox API credentials and every
+# client's public keys, so it must not become world readable.
 #
-# The group is deliberately NOT created in /etc/group. nsswitch.conf consults
-# "files" before "http", so a local entry would shadow the one the proxpass
-# directory serves and the member list would always come back empty. The gid
-# is fixed here and must match api.SharedGroupGID.
+# Clients get READ access via gid PROXPASS_GID, the admin gets WRITE access
+# via PROXPASS_ADMIN_GID. Splitting them means a client session cannot modify
+# another client's access rules or corrupt the database.
+#
+# Neither group is created in /etc/group. nsswitch.conf consults "files"
+# before "http", so a local entry would shadow the one the proxpass directory
+# serves and the member list would always come back empty. The gids are fixed
+# here and must match api.SharedGroupGID and api.AdminGroupGID.
 PROXPASS_GID="${PROXPASS_GID:-64000}"
-chgrp -R "${PROXPASS_GID}" "${PROXPASS_DATA_DIR}"
-# setgid so the WAL and journal files sqlite creates alongside the database
-# inherit the group too.
-chmod 2770 "${PROXPASS_DATA_DIR}"
+PROXPASS_ADMIN_GID="${PROXPASS_ADMIN_GID:-64001}"
+
+# The directory is owned by the admin group and setgid, so sqlite's WAL and
+# journal siblings inherit it. Clients need to traverse and read it, which
+# "other" x+r provides without letting them create or unlink anything.
+chown -R "root:${PROXPASS_ADMIN_GID}" "${PROXPASS_DATA_DIR}"
+chmod 2775 "${PROXPASS_DATA_DIR}"
 PROXPASS_DATA="${PROXPASS_DATA:-${PROXPASS_DATA_DIR}/proxpass.db}"
 export PROXPASS_DATA
 # Host keys stay root-only: sshd reads them before dropping privileges.
@@ -107,10 +114,19 @@ if [ "$#" -eq 0 ]; then
 	# after serve has created the file — a chmod beforehand would silently
 	# do nothing on a fresh volume and every write would fail with
 	# "attempt to write a readonly database".
+	# 0664 root:<admin gid>: the admin group writes, everyone else (i.e. the
+	# client logins, via their shared primary group) only reads. Clients must
+	# not be able to modify another client's access rules.
 	fix_db_mode() {
 		[ -f "${PROXPASS_DATA}" ] || return 0
-		chgrp "${PROXPASS_GID}" "${PROXPASS_DATA}" 2>/dev/null || true
-		chmod 0660 "${PROXPASS_DATA}" 2>/dev/null || true
+		chown "root:${PROXPASS_ADMIN_GID}" "${PROXPASS_DATA}" 2>/dev/null || true
+		chmod 0664 "${PROXPASS_DATA}" 2>/dev/null || true
+		# sqlite writes -wal/-shm siblings next to the database.
+		for sib in "${PROXPASS_DATA}-wal" "${PROXPASS_DATA}-shm" "${PROXPASS_DATA}-journal"; do
+			[ -e "${sib}" ] || continue
+			chown "root:${PROXPASS_ADMIN_GID}" "${sib}" 2>/dev/null || true
+			chmod 0664 "${sib}" 2>/dev/null || true
+		done
 	}
 
 	log "waiting for the proxpass nss api on ${PROXPASS_LISTEN}"

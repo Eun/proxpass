@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"testing"
+	"time"
 
 	"proxpass/internal/console"
 	"proxpass/internal/db"
@@ -126,6 +127,44 @@ func TestResolveIdentityClient(t *testing.T) {
 	}
 	if id.ClientID != client.ID {
 		t.Errorf("ClientID = %d, want %d", id.ClientID, client.ID)
+	}
+}
+
+// A client named "admin" would otherwise be routed as an administrator.
+// cli.ValidateClientName prevents creating one, and this is the second line
+// of defense for a database that predates that check.
+func TestResolveIdentityRefusesShadowedAdmin(t *testing.T) {
+	repo := newRepo(t)
+	if err := repo.AddClient(t.Context(), &models.Client{
+		Name:       session.AdminUser,
+		PublicKeys: []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ2H6djoN78rkj1En9yM7XsMUUDyFgiGWn3WZZqfI3JF x"},
+	}); err != nil {
+		t.Fatalf("add client: %v", err)
+	}
+
+	if _, err := session.ResolveIdentity(t.Context(), repo, session.AdminUser); err == nil {
+		t.Fatal("a client shadowing the admin login must be refused")
+	}
+}
+
+// Even with such a client present, its keys must never be offered for the
+// admin login.
+func TestAuthorizedKeysNeverOffersAShadowedAdminClientKey(t *testing.T) {
+	repo := newRepo(t)
+	const attacker = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ2H6djoN78rkj1En9yM7XsMUUDyFgiGWn3WZZqfI3JF attacker"
+	if err := repo.AddClient(t.Context(), &models.Client{
+		Name: session.AdminUser, PublicKeys: []string{attacker},
+	}); err != nil {
+		t.Fatalf("add client: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := session.WriteAuthorizedKeys(
+		t.Context(), &out, repo, session.AdminUser, ""); err != nil {
+		t.Fatalf("WriteAuthorizedKeys: %v", err)
+	}
+	if strings.Contains(out.String(), "attacker") {
+		t.Errorf("the shadowing client's key was offered for the admin login: %q", out.String())
 	}
 }
 
@@ -318,25 +357,99 @@ func TestPickerHidesInaccessibleGuests(t *testing.T) {
 	}
 }
 
+// A PTY in raw mode has ICRNL disabled, so Enter arrives as a bare "\r".
+// bufio.ScanLines only breaks on "\n", so the picker used to block until EOF
+// and the documented "ssh <user>@host" workflow hung on every real terminal.
+//
+// The input must come from a reader that STAYS OPEN after the keystrokes,
+// like a terminal does. With a strings.Reader, EOF terminates the line and
+// even ScanLines appears to work, which is exactly why the original bug was
+// not caught.
+func TestPickerAcceptsCarriageReturn(t *testing.T) {
+	for what, input := range map[string]string{
+		"bare CR (raw mode)": "1\r",
+		"CRLF":               "1\r\n",
+		"LF":                 "1\n",
+	} {
+		input := input
+		t.Run(what, func(t *testing.T) {
+			repo := newRepo(t)
+			client := addClient(t, repo)
+			guest := seedGuest(t, repo)
+			if err := repo.GrantClientAccess(t.Context(), client.ID, []int64{guest.ID}); err != nil {
+				t.Fatalf("grant access: %v", err)
+			}
+
+			// The keystrokes arrive on a pipe that STAYS OPEN, exactly as a
+			// terminal's input does, so the picker cannot fall back on EOF
+			// to terminate the line. The pipe is closed only once a console
+			// session has actually started, which is what lets the mock
+			// proxier (it echoes until its input ends) return.
+			proxier := &testenv.MockProxier{}
+			pr, pw := io.Pipe()
+			t.Cleanup(func() { _ = pw.Close() })
+			go func() {
+				_, _ = pw.Write([]byte(input))
+				// Wait for the selection to be acted on, then end the
+				// console session. If the picker never read the line this
+				// never fires and the test times out, which is the point.
+				for i := 0; i < 200; i++ {
+					if len(proxierSessions(proxier)) > 0 {
+						_ = pw.Close()
+						return
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+			}()
+
+			tb := newTerminal("")
+			tb.term.In = pr
+			d := newDeps(repo, tb, proxier)
+			d.User = userAlice
+			d.ClientID = client.ID
+
+			done := make(chan int, 1)
+			go func() { done <- session.Run(t.Context(), d) }()
+
+			select {
+			case code := <-done:
+				if code != 0 {
+					t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, tb.errb.String())
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("the picker hung: Enter was not accepted as a line terminator")
+			}
+			if len(proxier.Sessions) != 1 {
+				t.Fatalf("got %d console sessions, want 1", len(proxier.Sessions))
+			}
+		})
+	}
+}
+
 func TestQuitFromPicker(t *testing.T) {
-	repo := newRepo(t)
-	client := addClient(t, repo)
-	guest := seedGuest(t, repo)
-	if err := repo.GrantClientAccess(t.Context(), client.ID, []int64{guest.ID}); err != nil {
-		t.Fatalf("grant access: %v", err)
-	}
+	// Both line endings must work: a raw-mode terminal sends a bare CR.
+	for what, input := range map[string]string{"LF": "q\n", "CR": "q\r"} {
+		t.Run(what, func(t *testing.T) {
+			repo := newRepo(t)
+			client := addClient(t, repo)
+			guest := seedGuest(t, repo)
+			if err := repo.GrantClientAccess(t.Context(), client.ID, []int64{guest.ID}); err != nil {
+				t.Fatalf("grant access: %v", err)
+			}
 
-	tb := newTerminal("q\n")
-	proxier := &testenv.MockProxier{}
-	d := newDeps(repo, tb, proxier)
-	d.User = userAlice
-	d.ClientID = client.ID
+			tb := newTerminal(input)
+			proxier := &testenv.MockProxier{}
+			d := newDeps(repo, tb, proxier)
+			d.User = userAlice
+			d.ClientID = client.ID
 
-	if code := session.Run(t.Context(), d); code != 0 {
-		t.Errorf("quitting must exit cleanly, got %d", code)
-	}
-	if len(proxier.Sessions) != 0 {
-		t.Error("quitting must not open a console")
+			if code := session.Run(t.Context(), d); code != 0 {
+				t.Errorf("quitting must exit cleanly, got %d", code)
+			}
+			if len(proxier.Sessions) != 0 {
+				t.Error("quitting must not open a console")
+			}
+		})
 	}
 }
 
@@ -411,6 +524,11 @@ func TestAdminCanAddAClientWithAQuotedKey(t *testing.T) {
 			}
 		})
 	}
+}
+
+// proxierSessions snapshots the mock's recorded sessions.
+func proxierSessions(p *testenv.MockProxier) []testenv.MockProxySession {
+	return p.SessionsSnapshot()
 }
 
 func nonEmptyLines(s string) []string {

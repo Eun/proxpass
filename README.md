@@ -169,9 +169,40 @@ rather than configured in proxpass.
 
 ### Admin key
 
-`--admin-key` accepts an SSH public key in `authorized_keys` format. It is
-offered for the reserved `admin` login **for the lifetime of the process**, in
-addition to any keys in the database. It is never offered for a client login.
+`--admin-key` accepts a single SSH public key in `authorized_keys` format and
+authorizes the reserved `admin` login. It is never offered for a client login.
+
+> **It is stored in the database on startup, not held in memory.** sshd runs
+> `AuthorizedKeysCommand` with a scrubbed environment, so that process cannot
+> see `PROXPASS_ADMIN_KEY`; persisting the key is what makes the admin able to
+> log in at all. Consequently, **removing the flag or environment variable
+> does not revoke access** — the key remains valid until it is removed
+> explicitly:
+>
+> ```bash
+> ssh -p 2222 admin@proxpass admin-key ls
+> ssh -p 2222 admin@proxpass admin-key rm --key "ssh-ed25519 AAAA..."
+> ```
+
+### Users, groups and the database
+
+Clients are served to NSS as users whose uid is derived from their database
+id, all sharing the primary group `proxpass` (gid 64000). The `admin` login
+has its own group, `proxpass-admin` (gid 64001).
+
+That split matters: `proxpass session` runs as the logged-in user, so it needs
+filesystem access to the SQLite database. The database is owned by
+`root:proxpass-admin` and mode `0664`, which means **the admin can write it
+and clients can only read it**. A client session therefore cannot modify
+another client's access rules, though it can read the database — which holds
+the Proxmox API tokens. Treat any client login as able to read those
+credentials, and rely on sshd's `ForceCommand` confinement (no shell, no
+forwarding, no sftp) to keep that boundary.
+
+Group membership is exposed as a *primary* group rather than a supplementary
+one because supplementary groups require NSS enumeration, which has to stay
+disabled: sshd's late `getgrent()` crashes the sshd child from inside the Go
+runtime embedded in `libnss_http.so.2`.
 
 ### Subcommands
 

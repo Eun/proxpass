@@ -65,9 +65,36 @@ func (d *Deps) runPicker(ctx context.Context) int {
 // errQuit signals that the user declined to pick a guest.
 var errQuit = fmt.Errorf("quit")
 
+// scanTerminalLines splits input on CR, LF or CRLF.
+//
+// The session runs on a PTY in raw mode, which disables ICRNL, so pressing
+// Enter delivers a bare "\r". bufio.ScanLines only terminates a line on "\n"
+// and would block until EOF, hanging the picker on every real terminal.
+func scanTerminalLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+	for i, b := range data {
+		if b != '\r' && b != '\n' {
+			continue
+		}
+		// Consume a following LF so CRLF yields a single empty-free token.
+		end := i + 1
+		if b == '\r' && end < len(data) && data[end] == '\n' {
+			end++
+		}
+		return end, data[:i], nil
+	}
+	if atEOF {
+		return len(data), data, nil
+	}
+	return 0, nil, nil // request more data
+}
+
 // readChoice reads a selection in [1,max] from r.
 func readChoice(r io.Reader, maxChoice int) (int, error) {
 	scanner := bufio.NewScanner(r)
+	scanner.Split(scanTerminalLines)
 	if !scanner.Scan() {
 		// EOF: the client closed the input stream, e.g. ssh without a PTY.
 		return 0, errQuit

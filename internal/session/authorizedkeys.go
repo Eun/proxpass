@@ -31,9 +31,7 @@ func WriteAuthorizedKeys(
 	}
 
 	if user == AdminUser {
-		if key := strings.TrimSpace(flagAdminKey); key != "" {
-			fmt.Fprintln(w, key)
-		}
+		writeKeys(w, []string{flagAdminKey})
 		keys, err := repo.ListAdminKeys(ctx)
 		if err != nil {
 			return fmt.Errorf("listing admin keys: %w", err)
@@ -53,10 +51,21 @@ func WriteAuthorizedKeys(
 }
 
 // writeKeys prints one key per line, skipping blanks.
+//
+// A stored value containing a line break would become several
+// authorized_keys entries, so anything multi-line is dropped rather than
+// emitted. cli.ValidatePublicKey rejects such values at the point of entry;
+// this is the second line of defense for rows written before that check
+// existed, or by anything that bypasses the CLI.
 func writeKeys(w io.Writer, keys []string) {
 	for _, k := range keys {
-		if k = strings.TrimSpace(k); k != "" {
-			fmt.Fprintln(w, k)
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
 		}
+		if strings.ContainsAny(k, "\n\r") {
+			continue
+		}
+		fmt.Fprintln(w, k)
 	}
 }

@@ -19,10 +19,10 @@ import (
 	"syscall"
 	"time"
 
-	cli "github.com/urfave/cli/v3"
-	gossh "golang.org/x/crypto/ssh"
+	ucli "github.com/urfave/cli/v3"
 
 	"proxpass/internal/api"
+	"proxpass/internal/cli"
 	"proxpass/internal/console"
 	"proxpass/internal/db"
 	"proxpass/internal/proxmox"
@@ -34,29 +34,29 @@ func main() {
 }
 
 func run() int {
-	cmd := &cli.Command{
+	cmd := &ucli.Command{
 		Name:  "proxpass",
 		Usage: "Proxmox SSH proxy",
-		Flags: []cli.Flag{
-			&cli.StringFlag{
+		Flags: []ucli.Flag{
+			&ucli.StringFlag{
 				Name:    "data",
 				Usage:   "path to SQLite database",
 				Value:   "/var/lib/proxpass/proxpass.db",
-				Sources: cli.EnvVars("PROXPASS_DATA"),
+				Sources: ucli.EnvVars("PROXPASS_DATA"),
 			},
-			&cli.StringFlag{
+			&ucli.StringFlag{
 				Name:    "log-level",
 				Usage:   "log level (debug, info, warn, error)",
 				Value:   "info",
-				Sources: cli.EnvVars("PROXPASS_LOG_LEVEL"),
+				Sources: ucli.EnvVars("PROXPASS_LOG_LEVEL"),
 			},
-			&cli.StringFlag{
+			&ucli.StringFlag{
 				Name:    "admin-key",
 				Usage:   "admin SSH public key (authorized_keys format)",
-				Sources: cli.EnvVars("PROXPASS_ADMIN_KEY"),
+				Sources: ucli.EnvVars("PROXPASS_ADMIN_KEY"),
 			},
 		},
-		Commands: []*cli.Command{
+		Commands: []*ucli.Command{
 			serveCommand(),
 			authorizedKeysCommand(),
 			sessionCommand(),
@@ -74,29 +74,29 @@ func run() int {
 	return 0
 }
 
-func serveCommand() *cli.Command {
-	return &cli.Command{
+func serveCommand() *ucli.Command {
+	return &ucli.Command{
 		Name:  "serve",
 		Usage: "run guest discovery and the NSS directory API",
-		Flags: []cli.Flag{
-			&cli.StringFlag{
+		Flags: []ucli.Flag{
+			&ucli.StringFlag{
 				Name:    "listen",
 				Usage:   "address for the NSS directory API",
 				Value:   "127.0.0.1:8080",
-				Sources: cli.EnvVars("PROXPASS_LISTEN"),
+				Sources: ucli.EnvVars("PROXPASS_LISTEN"),
 			},
-			&cli.DurationFlag{
+			&ucli.DurationFlag{
 				Name:    "discovery-interval",
 				Usage:   "guest discovery poll interval",
 				Value:   5 * time.Minute,
-				Sources: cli.EnvVars("PROXPASS_DISCOVERY_INTERVAL"),
+				Sources: ucli.EnvVars("PROXPASS_DISCOVERY_INTERVAL"),
 			},
 		},
 		Action: runServe,
 	}
 }
 
-func runServe(ctx context.Context, cmd *cli.Command) error {
+func runServe(ctx context.Context, cmd *ucli.Command) error {
 	listenAddr := cmd.String("listen")
 	dataPath := cmd.String("data")
 	interval := cmd.Duration("discovery-interval")
@@ -142,8 +142,11 @@ func storeAdminKey(ctx context.Context, repo db.Repository, rawKey string, logge
 		return nil
 	}
 	// Reject a malformed key at startup rather than silently never
-	// authorizing anybody.
-	if _, _, _, _, err := gossh.ParseAuthorizedKey([]byte(rawKey)); err != nil {
+	// authorizing anybody. The validation is strict about being a single
+	// entry: a multi-line value here would install several admin
+	// credentials, only one of which anybody reviewed.
+	rawKey, err := cli.ValidatePublicKey(rawKey)
+	if err != nil {
 		return fmt.Errorf("invalid --admin-key: %w", err)
 	}
 
@@ -163,8 +166,8 @@ func storeAdminKey(ctx context.Context, repo db.Repository, rawKey string, logge
 	return nil
 }
 
-func authorizedKeysCommand() *cli.Command {
-	return &cli.Command{
+func authorizedKeysCommand() *ucli.Command {
+	return &ucli.Command{
 		Name:      "authorized-keys",
 		Usage:     "print authorized_keys lines for a user (sshd AuthorizedKeysCommand)",
 		ArgsUsage: "<username>",
@@ -172,7 +175,7 @@ func authorizedKeysCommand() *cli.Command {
 	}
 }
 
-func runAuthorizedKeys(ctx context.Context, cmd *cli.Command) error {
+func runAuthorizedKeys(ctx context.Context, cmd *ucli.Command) error {
 	user := cmd.Args().First()
 	if user == "" {
 		// sshd should always pass a user, but never fail loudly here: any
@@ -190,27 +193,27 @@ func runAuthorizedKeys(ctx context.Context, cmd *cli.Command) error {
 		ctx, os.Stdout, repo, user, cmd.String("admin-key"))
 }
 
-func sessionCommand() *cli.Command {
-	return &cli.Command{
+func sessionCommand() *ucli.Command {
+	return &ucli.Command{
 		Name:  "session",
 		Usage: "run a client session (sshd ForceCommand)",
-		Flags: []cli.Flag{
-			&cli.StringFlag{
+		Flags: []ucli.Flag{
+			&ucli.StringFlag{
 				Name:    "user",
 				Usage:   "login name; defaults to $USER",
-				Sources: cli.EnvVars("USER"),
+				Sources: ucli.EnvVars("USER"),
 			},
-			&cli.StringFlag{
+			&ucli.StringFlag{
 				Name:    "command",
 				Usage:   "requested command; defaults to $SSH_ORIGINAL_COMMAND",
-				Sources: cli.EnvVars("SSH_ORIGINAL_COMMAND"),
+				Sources: ucli.EnvVars("SSH_ORIGINAL_COMMAND"),
 			},
 		},
 		Action: runSession,
 	}
 }
 
-func runSession(ctx context.Context, cmd *cli.Command) error {
+func runSession(ctx context.Context, cmd *ucli.Command) error {
 	// Sessions log to stderr: stdout is the user's terminal stream.
 	logger := log.New(os.Stderr, "proxpass: ", log.LstdFlags)
 
@@ -246,11 +249,11 @@ func runSession(ctx context.Context, cmd *cli.Command) error {
 	})
 	// The session already reported any problem to the user, so surface the
 	// status without printing a second, redundant error. Restore the
-	// terminal explicitly first: cli.Exit unwinds through os.Exit, which
+	// terminal explicitly first: ucli.Exit unwinds through os.Exit, which
 	// would skip the deferred restore.
 	if code != 0 {
 		restore()
-		return cli.Exit("", code)
+		return ucli.Exit("", code)
 	}
 	return nil
 }

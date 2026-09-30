@@ -7,11 +7,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 
 	"proxpass/internal/api"
+	"proxpass/internal/cli"
 	"proxpass/internal/db"
 	"proxpass/internal/models"
+	"proxpass/internal/session"
 )
 
 func newTestServer(t *testing.T) (http.Handler, db.Repository) {
@@ -46,9 +49,11 @@ func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
 	return rec
 }
 
+const userAliceName = "alice"
+
 func TestUserByName(t *testing.T) {
 	h, repo := newTestServer(t)
-	seedClient(t, repo, "alice", "ssh-ed25519 AAAAkey alice")
+	seedClient(t, repo, userAliceName, "ssh-ed25519 AAAAkey alice")
 
 	rec := get(t, h, "/user/name/alice")
 	if rec.Code != http.StatusOK {
@@ -89,7 +94,7 @@ func TestUserByName(t *testing.T) {
 // would make every NSS lookup silently return an empty entry.
 func TestUserJSONKeysAreCapitalized(t *testing.T) {
 	h, repo := newTestServer(t)
-	seedClient(t, repo, "alice", "ssh-ed25519 AAAAkey alice")
+	seedClient(t, repo, userAliceName, "ssh-ed25519 AAAAkey alice")
 
 	rec := get(t, h, "/user/name/alice")
 	var raw map[string]any
@@ -112,7 +117,7 @@ func TestUnknownUserIs404(t *testing.T) {
 
 func TestUserByUID(t *testing.T) {
 	h, repo := newTestServer(t)
-	client := seedClient(t, repo, "alice", "ssh-ed25519 AAAAkey alice")
+	client := seedClient(t, repo, userAliceName, "ssh-ed25519 AAAAkey alice")
 	want := api.UserFor(client)
 
 	rec := get(t, h, "/user/uid/"+itoa(want.Uid))
@@ -130,7 +135,7 @@ func TestUserByUID(t *testing.T) {
 // resolve through this API.
 func TestSystemUIDIsNotServed(t *testing.T) {
 	h, repo := newTestServer(t)
-	seedClient(t, repo, "alice")
+	seedClient(t, repo, userAliceName)
 
 	if rec := get(t, h, "/user/uid/0"); rec.Code != http.StatusNotFound {
 		t.Errorf("uid 0: status = %d, want 404", rec.Code)
@@ -139,7 +144,7 @@ func TestSystemUIDIsNotServed(t *testing.T) {
 
 func TestUsersList(t *testing.T) {
 	h, repo := newTestServer(t)
-	seedClient(t, repo, "alice")
+	seedClient(t, repo, userAliceName)
 	seedClient(t, repo, "bob")
 
 	rec := get(t, h, "/users")
@@ -189,7 +194,7 @@ func TestAdminResolves(t *testing.T) {
 // The admin uid must never collide with a client's.
 func TestAdminUIDDoesNotCollideWithClients(t *testing.T) {
 	h, repo := newTestServer(t)
-	client := seedClient(t, repo, "alice")
+	client := seedClient(t, repo, userAliceName)
 
 	if api.UserFor(client).Uid == api.AdminUID {
 		t.Errorf("client uid %d collides with the admin uid", api.AdminUID)
@@ -204,7 +209,7 @@ func TestAdminUIDDoesNotCollideWithClients(t *testing.T) {
 // supplementary groups would require NSS enumeration (which is disabled).
 func TestEveryUserHasAPrimaryGroup(t *testing.T) {
 	h, repo := newTestServer(t)
-	client := seedClient(t, repo, "alice")
+	client := seedClient(t, repo, userAliceName)
 	user := api.UserFor(client)
 
 	if user.Gid != api.SharedGroupGID {
@@ -224,7 +229,7 @@ func TestEveryUserHasAPrimaryGroup(t *testing.T) {
 
 func TestGroupMembership(t *testing.T) {
 	h, repo := newTestServer(t)
-	alice := seedClient(t, repo, "alice")
+	alice := seedClient(t, repo, userAliceName)
 	bob := seedClient(t, repo, "bob")
 
 	g := &models.Group{Name: "devs", ClientIDs: []int64{alice.ID, bob.ID}}
@@ -251,7 +256,7 @@ func TestGroupMembership(t *testing.T) {
 // list, and a null would be indistinguishable from a decode failure.
 func TestEmptyGroupMembersSerializeAsArray(t *testing.T) {
 	h, repo := newTestServer(t)
-	seedClient(t, repo, "alice")
+	seedClient(t, repo, userAliceName)
 
 	rec := get(t, h, "/group/name/"+api.SharedGroup)
 	var raw map[string]any
@@ -267,7 +272,7 @@ func TestEmptyGroupMembersSerializeAsArray(t *testing.T) {
 
 func TestGroupsList(t *testing.T) {
 	h, repo := newTestServer(t)
-	alice := seedClient(t, repo, "alice")
+	alice := seedClient(t, repo, userAliceName)
 	if err := repo.AddGroup(t.Context(), &models.Group{
 		Name: "devs", ClientIDs: []int64{alice.ID},
 	}); err != nil {
@@ -279,9 +284,61 @@ func TestGroupsList(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &groups); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	// The shared primary group plus the devs group.
-	if len(groups) != 2 {
-		t.Fatalf("got %d groups, want 2: %+v", len(groups), groups)
+	// The admin group, the shared client group, and the devs group.
+	if len(groups) != 3 {
+		t.Fatalf("got %d groups, want 3: %+v", len(groups), groups)
+	}
+}
+
+// Clients must not share a group with the admin: the admin group is the only
+// one with write access to the database, so a client in it could rewrite
+// another client's access rules.
+func TestClientsAreNotInTheAdminGroup(t *testing.T) {
+	h, repo := newTestServer(t)
+	client := seedClient(t, repo, userAliceName)
+
+	if api.UserFor(client).Gid != api.SharedGroupGID {
+		t.Errorf("client primary gid = %d, want the read-only shared gid %d",
+			api.UserFor(client).Gid, api.SharedGroupGID)
+	}
+	if api.SharedGroupGID == api.AdminGroupGID {
+		t.Fatal("the client and admin groups must be distinct")
+	}
+
+	rec := get(t, h, "/group/gid/"+itoa(api.AdminGroupGID))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin group must resolve, got %d", rec.Code)
+	}
+	var adminGroup api.Group
+	_ = json.Unmarshal(rec.Body.Bytes(), &adminGroup)
+	for _, m := range adminGroup.GroupMembers {
+		if m == userAliceName {
+			t.Errorf("client %q is a member of the admin group", m)
+		}
+	}
+	if len(adminGroup.GroupMembers) != 1 || adminGroup.GroupMembers[0] != api.AdminUser {
+		t.Errorf("admin group members = %v, want only %q",
+			adminGroup.GroupMembers, api.AdminUser)
+	}
+}
+
+// The directory must not hand out clients' public keys: sshd gets them from
+// "proxpass authorized-keys", and this endpoint is unauthenticated.
+func TestDirectoryDoesNotExposeAuthKeys(t *testing.T) {
+	h, repo := newTestServer(t)
+	// A public key, not a secret.
+	const pubKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ2H6djoN78rkj1" +
+		"En9yM7XsMUUDyFgiGWn3WZZqfI3JF alice"
+	seedClient(t, repo, userAliceName, pubKey)
+
+	rec := get(t, h, "/user/name/"+userAliceName)
+	if strings.Contains(rec.Body.String(), "AAAAC3Nza") {
+		t.Errorf("the directory leaked a public key: %s", rec.Body.String())
+	}
+	var user api.User
+	_ = json.Unmarshal(rec.Body.Bytes(), &user)
+	if len(user.AuthKeys) != 0 {
+		t.Errorf("AuthKeys = %v, want empty", user.AuthKeys)
 	}
 }
 
@@ -292,6 +349,21 @@ func TestUnknownGroupIs404(t *testing.T) {
 	}
 	if rec := get(t, h, "/group/gid/999999"); rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+// The admin login name must agree across the packages that use it: the
+// directory publishes the NSS entry, the session grants admin routing, and
+// the CLI refuses to create a client with it. A mismatch would either lock
+// the admin out or open a privilege-escalation hole.
+func TestAdminNameIsConsistent(t *testing.T) {
+	if api.AdminUser != session.AdminUser {
+		t.Errorf("api.AdminUser = %q but session.AdminUser = %q",
+			api.AdminUser, session.AdminUser)
+	}
+	if api.AdminUser != cli.ReservedAdminName {
+		t.Errorf("api.AdminUser = %q but cli.ReservedAdminName = %q",
+			api.AdminUser, cli.ReservedAdminName)
 	}
 }
 

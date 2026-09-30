@@ -28,7 +28,7 @@ import (
 // Requires PVE 9 with pve-manager >= 9.0.13 and proxmox-termproxy >= 1.1.0
 // (the --vncticket-endpoint flag). PVE 8 rejects API token IDs as usernames.
 //
-//nolint:gocognit,gocyclo // sequential protocol steps plus teardown
+//nolint:gocognit,gocyclo,funlen // sequential protocol steps plus teardown
 func connectTermProxy(
 	term *Terminal,
 	guest *models.Guest,
@@ -130,6 +130,11 @@ func connectTermProxy(
 	done := make(chan struct{})
 
 	// Resizes and keepalives.
+	//
+	// resizes is a local copy: the Terminal belongs to the caller and its
+	// SIGWINCH goroutine still sends on that channel, so nilling the struct
+	// field here would be a data race.
+	resizes := term.Resizes
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -140,11 +145,11 @@ func connectTermProxy(
 			case <-ticker.C:
 				// Message type 2 is the termproxy keepalive ping.
 				_ = conn.Write(ctx, websocket.MessageBinary, []byte("2"))
-			case size, ok := <-term.Resizes:
+			case size, ok := <-resizes:
 				if !ok {
 					// Stop selecting on a closed channel, but keep the
 					// keepalive running.
-					term.Resizes = nil
+					resizes = nil
 					continue
 				}
 				_ = conn.Write(ctx, websocket.MessageBinary,
