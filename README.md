@@ -187,8 +187,35 @@ authorizes the reserved `admin` login. It is never offered for a client login.
 ### Users, groups and the database
 
 Clients are served to NSS as users whose uid is derived from their database
-id, all sharing the primary group `proxpass` (gid 64000). The `admin` login
-has its own group, `proxpass-admin` (gid 64001).
+id, all sharing the primary group `proxpass`. The `admin` login has its own
+group, `proxpass-admin`.
+
+The id layout is configurable, because the usable range is a property of the
+deployment rather than of proxpass:
+
+| Env Var | Default | Description |
+|---------|---------|-------------|
+| `PROXPASS_ADMIN_UID` | `19999` | uid of the `admin` login |
+| `PROXPASS_ADMIN_GID` | `19001` | gid of `proxpass-admin`; the only group that may write the database |
+| `PROXPASS_GID` | `19000` | gid of `proxpass`, every client's primary group (read-only) |
+| `PROXPASS_UID_BASE` | `20000` | added to a client's row id to derive its uid |
+| `PROXPASS_GID_BASE` | `40000` | added to a group's row id to derive its gid |
+| `PROXPASS_MAX_ID` | `65535` | highest id proxpass will serve |
+
+> **Every id must stay below `PROXPASS_MAX_ID`, which defaults to 65535.** A
+> user-namespaced Docker daemon (`userns-remap`, or rootless) maps only the
+> 65536 subordinate ids from `/etc/subuid` into the container, so a higher id
+> does not exist inside the namespace. sshd accepts the public key and *then*
+> fails the login with:
+>
+> ```
+> Accepted publickey for admin ...
+> setresuid 99999: Invalid argument
+> ```
+>
+> Raise `PROXPASS_MAX_ID` only if your daemon maps a wider range. The layout
+> is validated at startup, so a bad combination refuses to boot with a
+> message naming the offending variable instead of breaking logins later.
 
 That split matters: `proxpass session` runs as the logged-in user, so it needs
 filesystem access to the SQLite database. The database is owned by

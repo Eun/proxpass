@@ -81,9 +81,9 @@ func TestUserByName(t *testing.T) {
 			t.Errorf("Shell = %q, which breaks ForceCommand", user.Shell)
 		}
 	}
-	if user.Uid < api.UIDBase {
+	if user.Uid < api.DefaultUIDBase {
 		t.Errorf("Uid = %d, want >= %d to avoid colliding with system users",
-			user.Uid, api.UIDBase)
+			user.Uid, api.DefaultUIDBase)
 	}
 	if user.Shell == "" || user.Dir == "" {
 		t.Errorf("Shell/Dir must be set, got %q/%q", user.Shell, user.Dir)
@@ -118,7 +118,7 @@ func TestUnknownUserIs404(t *testing.T) {
 func TestUserByUID(t *testing.T) {
 	h, repo := newTestServer(t)
 	client := seedClient(t, repo, userAliceName, "ssh-ed25519 AAAAkey alice")
-	want := api.UserFor(client)
+	want := api.DefaultIDLayout().UserFor(client)
 
 	rec := get(t, h, "/user/uid/"+itoa(want.Uid))
 	if rec.Code != http.StatusOK {
@@ -196,10 +196,10 @@ func TestAdminUIDDoesNotCollideWithClients(t *testing.T) {
 	h, repo := newTestServer(t)
 	client := seedClient(t, repo, userAliceName)
 
-	if api.UserFor(client).Uid == api.AdminUID {
-		t.Errorf("client uid %d collides with the admin uid", api.AdminUID)
+	if api.DefaultIDLayout().UserFor(client).Uid == uint(api.DefaultUIDBase-1) {
+		t.Errorf("client uid %d collides with the admin uid", uint(api.DefaultUIDBase-1))
 	}
-	if rec := get(t, h, "/user/uid/"+itoa(api.AdminUID)); rec.Code != http.StatusOK {
+	if rec := get(t, h, "/user/uid/"+itoa(uint(api.DefaultUIDBase-1))); rec.Code != http.StatusOK {
 		t.Errorf("admin uid must resolve, got %d", rec.Code)
 	}
 }
@@ -210,10 +210,10 @@ func TestAdminUIDDoesNotCollideWithClients(t *testing.T) {
 func TestEveryUserHasAPrimaryGroup(t *testing.T) {
 	h, repo := newTestServer(t)
 	client := seedClient(t, repo, userAliceName)
-	user := api.UserFor(client)
+	user := api.DefaultIDLayout().UserFor(client)
 
-	if user.Gid != api.SharedGroupGID {
-		t.Errorf("primary gid = %d, want the shared gid %d", user.Gid, api.SharedGroupGID)
+	if user.Gid != uint(api.DefaultSharedGroupGID) {
+		t.Errorf("primary gid = %d, want the shared gid %d", user.Gid, uint(api.DefaultSharedGroupGID))
 	}
 
 	rec := get(t, h, "/group/gid/"+itoa(user.Gid))
@@ -247,8 +247,8 @@ func TestGroupMembership(t *testing.T) {
 	if len(group.GroupMembers) != 2 {
 		t.Fatalf("members = %v, want alice and bob", group.GroupMembers)
 	}
-	if group.Gid < api.GIDBase {
-		t.Errorf("Gid = %d, want >= %d", group.Gid, api.GIDBase)
+	if group.Gid < api.DefaultGIDBase {
+		t.Errorf("Gid = %d, want >= %d", group.Gid, api.DefaultGIDBase)
 	}
 }
 
@@ -297,15 +297,15 @@ func TestClientsAreNotInTheAdminGroup(t *testing.T) {
 	h, repo := newTestServer(t)
 	client := seedClient(t, repo, userAliceName)
 
-	if api.UserFor(client).Gid != api.SharedGroupGID {
+	if api.DefaultIDLayout().UserFor(client).Gid != uint(api.DefaultSharedGroupGID) {
 		t.Errorf("client primary gid = %d, want the read-only shared gid %d",
-			api.UserFor(client).Gid, api.SharedGroupGID)
+			api.DefaultIDLayout().UserFor(client).Gid, uint(api.DefaultSharedGroupGID))
 	}
-	if api.SharedGroupGID == api.AdminGroupGID {
+	if uint(api.DefaultSharedGroupGID) == uint(api.DefaultAdminGroupGID) {
 		t.Fatal("the client and admin groups must be distinct")
 	}
 
-	rec := get(t, h, "/group/gid/"+itoa(api.AdminGroupGID))
+	rec := get(t, h, "/group/gid/"+itoa(uint(api.DefaultAdminGroupGID)))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("admin group must resolve, got %d", rec.Code)
 	}
@@ -364,6 +364,92 @@ func TestAdminNameIsConsistent(t *testing.T) {
 	if api.AdminUser != cli.ReservedAdminName {
 		t.Errorf("api.AdminUser = %q but cli.ReservedAdminName = %q",
 			api.AdminUser, cli.ReservedAdminName)
+	}
+}
+
+// Every id proxpass hands out must fit inside a user namespace.
+//
+// A userns-remapped or rootless Docker daemon maps only the 65536
+// subordinate ids from /etc/subuid into the container, so an id above 65535
+// does not exist there. sshd accepts the public key and only then fails with
+// "setresuid <uid>: Invalid argument", which looks like a broken login rather
+// than a configuration limit.
+func TestIDsFitInAUserNamespace(t *testing.T) {
+	const ceiling = 65535
+
+	if uint(api.DefaultUIDBase-1) > ceiling {
+		t.Errorf("AdminUID = %d, must be <= %d", uint(api.DefaultUIDBase-1), ceiling)
+	}
+	if uint(api.DefaultSharedGroupGID) > ceiling {
+		t.Errorf("SharedGroupGID = %d, must be <= %d", uint(api.DefaultSharedGroupGID), ceiling)
+	}
+	if uint(api.DefaultAdminGroupGID) > ceiling {
+		t.Errorf("AdminGroupGID = %d, must be <= %d", uint(api.DefaultAdminGroupGID), ceiling)
+	}
+	if api.DefaultUIDBase > ceiling {
+		t.Errorf("UIDBase = %d, must be <= %d", api.DefaultUIDBase, ceiling)
+	}
+	if api.DefaultGIDBase > ceiling {
+		t.Errorf("GIDBase = %d, must be <= %d", api.DefaultGIDBase, ceiling)
+	}
+
+	// And a realistic number of clients and groups must still fit.
+	const room = 1000
+	if api.DefaultUIDBase+room > ceiling {
+		t.Errorf("UIDBase %d leaves room for fewer than %d clients under %d",
+			api.DefaultUIDBase, room, ceiling)
+	}
+	if api.DefaultGIDBase+room > ceiling {
+		t.Errorf("GIDBase %d leaves room for fewer than %d groups under %d",
+			api.DefaultGIDBase, room, ceiling)
+	}
+
+	// The admin id must not collide with the client range, and the two group
+	// bases must not overlap the uid range.
+	if uint(api.DefaultUIDBase-1) >= api.DefaultUIDBase {
+		t.Errorf("AdminUID %d must sit below UIDBase %d", uint(api.DefaultUIDBase-1), api.DefaultUIDBase)
+	}
+	if uint(api.DefaultSharedGroupGID) >= api.DefaultUIDBase || uint(api.DefaultAdminGroupGID) >= api.DefaultUIDBase {
+		t.Errorf("the fixed gids (%d, %d) must sit below UIDBase %d",
+			uint(api.DefaultSharedGroupGID), uint(api.DefaultAdminGroupGID), api.DefaultUIDBase)
+	}
+}
+
+// Real served entries must be in range too, not just the constants.
+func TestServedIDsAreInRange(t *testing.T) {
+	h, repo := newTestServer(t)
+	seedClient(t, repo, userAliceName)
+
+	for _, path := range []string{"/users", "/user/name/" + userAliceName} {
+		rec := get(t, h, path)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status %d", path, rec.Code)
+		}
+	}
+
+	rec := get(t, h, "/users")
+	var users []api.User
+	if err := json.Unmarshal(rec.Body.Bytes(), &users); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, u := range users {
+		if !api.DefaultIDLayout().InRange(u.Uid) {
+			t.Errorf("user %q has out-of-range uid %d", u.User, u.Uid)
+		}
+		if !api.DefaultIDLayout().InRange(u.Gid) {
+			t.Errorf("user %q has out-of-range gid %d", u.User, u.Gid)
+		}
+	}
+
+	rec = get(t, h, "/groups")
+	var groups []api.Group
+	if err := json.Unmarshal(rec.Body.Bytes(), &groups); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, g := range groups {
+		if !api.DefaultIDLayout().InRange(g.Gid) {
+			t.Errorf("group %q has out-of-range gid %d", g.Name, g.Gid)
+		}
 	}
 }
 

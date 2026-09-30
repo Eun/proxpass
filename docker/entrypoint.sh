@@ -58,10 +58,20 @@ mkdir -p "${PROXPASS_DATA_DIR}" "${PROXPASS_HOST_KEY_DIR}"
 #
 # Neither group is created in /etc/group. nsswitch.conf consults "files"
 # before "http", so a local entry would shadow the one the proxpass directory
-# serves and the member list would always come back empty. The gids are fixed
-# here and must match api.SharedGroupGID and api.AdminGroupGID.
-PROXPASS_GID="${PROXPASS_GID:-64000}"
-PROXPASS_ADMIN_GID="${PROXPASS_ADMIN_GID:-64001}"
+# serves and the member list would always come back empty.
+#
+# These are the same variables `proxpass serve' reads (see api.IDLayout), so
+# overriding them here and in the environment keeps the filesystem ownership
+# and the served gids in agreement. Defaults must match api.DefaultSharedGroupGID
+# and api.DefaultAdminGroupGID.
+#
+# Note the ceiling: on a userns-remapped or rootless daemon only the 65536
+# subordinate ids from /etc/subuid exist inside the container, so an id above
+# 65535 makes sshd fail the login with "setresuid <uid>: Invalid argument"
+# after it has already accepted the key.
+PROXPASS_GID="${PROXPASS_GID:-19000}"
+PROXPASS_ADMIN_GID="${PROXPASS_ADMIN_GID:-19001}"
+export PROXPASS_GID PROXPASS_ADMIN_GID
 
 # The directory is owned by the admin group and setgid, so sqlite's WAL and
 # journal siblings inherit it. Clients need to traverse and read it, which
