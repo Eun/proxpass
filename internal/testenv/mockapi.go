@@ -22,6 +22,11 @@ type MockAPIServer struct {
 	localNode  string               // the node reported as local in cluster/status
 	server     *httptest.Server     // non-nil for test mode (httptest)
 	httpServer *http.Server         // non-nil for standalone mode
+
+	// termProxy records the most recent vncwebsocket session so tests can
+	// assert on the termproxy protocol exchange.
+	termProxy         *TermProxyTranscript
+	termProxyGreeting string
 }
 
 type mockNode struct {
@@ -245,6 +250,12 @@ func (m *MockAPIServer) handleNodePaths(w http.ResponseWriter, r *http.Request) 
 	// /api2/json/nodes/{node}/{lxc|qemu}/{vmid}/termproxy
 	if len(parts) == 4 && parts[3] == "termproxy" && r.Method == http.MethodPost {
 		m.handleTermProxy(w, r, nodeName, parts[1], parts[2])
+		return
+	}
+
+	// /api2/json/nodes/{node}/{lxc|qemu}/{vmid}/vncwebsocket
+	if len(parts) == 4 && parts[3] == "vncwebsocket" {
+		m.handleVNCWebSocket(w, r)
 		return
 	}
 

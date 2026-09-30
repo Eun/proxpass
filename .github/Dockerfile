@@ -11,11 +11,12 @@
 # directly), so Alpine cannot resolve proxpass users -- this is verified and
 # non-negotiable. Hence debian:*-slim.
 
-# nss_http-go has no tags yet, so this pins the current tip of its default
-# branch (main). Bump deliberately, and re-run the image tests when you do.
-#   https://github.com/Eun/nss_http-go
+# Pinned to a tagged release of nss_http-go rather than a branch, so an
+# image rebuild cannot silently pick up upstream changes. Bump deliberately,
+# and re-run the image tests when you do.
+#   https://github.com/Eun/nss_http-go/releases
 ARG NSS_HTTP_REPO="https://github.com/Eun/nss_http-go.git"
-ARG NSS_HTTP_REF="05779ef4eff323878f5926db9d6703909378b38c"
+ARG NSS_HTTP_REF="v1.0.0"
 ARG DEBIAN_RELEASE="bookworm"
 
 # --- build stage ------------------------------------------------------------
