@@ -2,8 +2,6 @@ package main
 
 import (
 	"os"
-	"os/signal"
-	"syscall"
 
 	"golang.org/x/term"
 
@@ -45,29 +43,7 @@ func currentTerminal() (t *console.Terminal, restore func()) {
 
 	resizes := make(chan console.Size, 1)
 	t.Resizes = resizes
-
-	sigwinch := make(chan os.Signal, 1)
-	signal.Notify(sigwinch, syscall.SIGWINCH)
-	done := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-done:
-				return
-			case <-sigwinch:
-				w, h, err := term.GetSize(fd)
-				if err != nil {
-					continue
-				}
-				select {
-				case resizes <- console.Size{Width: w, Height: h}:
-				default:
-					// A resize is already queued; the newest size will be
-					// picked up by the next read.
-				}
-			}
-		}
-	}()
+	stopResizes := watchResizes(fd, resizes)
 
 	var restored bool
 	return t, func() {
@@ -75,8 +51,7 @@ func currentTerminal() (t *console.Terminal, restore func()) {
 			return
 		}
 		restored = true
-		signal.Stop(sigwinch)
-		close(done)
+		stopResizes()
 		_ = term.Restore(fd, state)
 	}
 }
