@@ -5,11 +5,13 @@ on:
 
 name: "release_published"
 jobs:
-  # Build the binary using GoReleaser
-  build_binary:
+  # build and push the multi-arch container image using GoReleaser.
+  # proxpass only ships as a container image, so there are no binary, deb or
+  # rpm artifacts to attach to the release anymore.
+  publish_image:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       packages: write
     steps:
       -
@@ -32,6 +34,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       -
         name: GoReleaser
+        # builds proxpass for linux/amd64 + linux/arm64, builds the image for
+        # both architectures and pushes them plus the multi-arch manifest.
         run: mise exec -- goreleaser release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

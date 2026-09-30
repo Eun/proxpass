@@ -1,0 +1,8 @@
+#!/bin/sh
+# sshd ForceCommand wrapper.
+#
+# Replaces whatever the client asked for. `proxpass session' picks the real
+# request up from $SSH_ORIGINAL_COMMAND (which sshd sets for us): empty means
+# "show the interactive guest list", anything else names a target.
+set -eu
+exec /app session

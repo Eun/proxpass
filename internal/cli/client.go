@@ -9,7 +9,6 @@ import (
 	"proxpass/internal/models"
 
 	ucli "github.com/urfave/cli/v3"
-	gossh "golang.org/x/crypto/ssh"
 )
 
 func clientCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI command tree
@@ -54,21 +53,26 @@ func clientCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI comma
 				},
 				Action: func(ctx context.Context, cmd *ucli.Command) error {
 					name := cmd.String("name")
+					if err := ValidateClientName(name); err != nil {
+						return err
+					}
 					keys := cmd.StringSlice("key")
 					if len(keys) == 0 {
 						return fmt.Errorf("at least one --key is required")
 					}
-					// Trim whitespace
+					// Each --key must be exactly one authorized_keys entry;
+					// see ValidatePublicKey for why a lenient check here
+					// would let one flag smuggle additional keys.
 					var trimmed []string
 					for _, k := range keys {
-						k = strings.TrimSpace(k)
-						if k != "" {
-							_, _, _, _, err := gossh.ParseAuthorizedKey([]byte(k))
-							if err != nil {
-								return fmt.Errorf("invalid --key: %w", err)
-							}
-							trimmed = append(trimmed, k)
+						if strings.TrimSpace(k) == "" {
+							continue
 						}
+						valid, err := ValidatePublicKey(k)
+						if err != nil {
+							return fmt.Errorf("invalid --key: %w", err)
+						}
+						trimmed = append(trimmed, valid)
 					}
 					if len(trimmed) == 0 {
 						return fmt.Errorf("at least one non-empty --key is required")

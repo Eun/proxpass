@@ -19,10 +19,56 @@ run = "go test -v -count=1 -cover -coverprofile=coverage.out -covermode=atomic .
 description = "Run GoReleaser (snapshot)"
 run = "goreleaser release --snapshot --clean"
 
+# the image is the only release artifact, so build it the same way goreleaser
+# does: the binary first, then `docker build' with the repo root as context
+# (the Dockerfile COPYs from docker/, and goreleaser stages that directory into
+# dist/ via extra_files so both paths line up).
+[tasks.docker]
+description = "Build the proxpass docker image locally"
+run = [
+  "go build -ldflags='-s -w' -o dist/proxpass ./cmd/proxpass",
+  "docker build -f .github/Dockerfile --build-arg BINARY=dist/proxpass -t proxpass:local .",
+]
+
+# smoke test of the image itself: does the NSS module ship, is nsswitch.conf
+# wired to it, and does sshd accept the generated config?
+[tasks.docker-check]
+description = "Verify the layout and sshd config of the local proxpass image"
+depends = ["docker"]
+run = """
+docker run --rm --entrypoint /bin/sh proxpass:local -euc '
+  echo "--- nss module ---"
+  ls -l /lib/libnss_http.so.2
+  ls -l /sbin/nss_http /sbin/nss_http_sshkey
+  echo "--- nsswitch.conf ---"
+  grep -E "^(passwd|group|shadow|gshadow):" /etc/nsswitch.conf
+  echo "--- authorized keys command permissions ---"
+  ls -l /usr/local/bin/proxpass-authorized-keys
+  echo "--- sshd -t ---"
+  mkdir -p /var/lib/proxpass/ssh
+  for t in rsa ecdsa ed25519; do
+    ssh-keygen -q -t "$t" -f "/var/lib/proxpass/ssh/ssh_host_${t}_key" -N ""
+  done
+  /usr/sbin/sshd -t
+  echo "sshd config ok"
+'
+"""
+
+# needs the PROXPASS_* proxmox settings in the environment, e.g.
+#   PROXPASS_PROXMOX_URL=... mise run docker-run
+# then: ssh -p 2222 <user>@localhost
+[tasks.docker-run]
+description = "Run the proxpass image locally, ssh on localhost:2222"
+depends = ["docker"]
+run = "docker run --rm -it -p 2222:22 -v proxpass-data:/var/lib/proxpass proxpass:local"
+
 [tasks.mock]
 description = "Run the mock Proxmox service"
 run = "go run ./cmd/proxmox-mock"
 
 [tasks.clean]
 description = "Remove build artifacts"
-run = "rm -rf proxpass proxmox-mock dist coverage.out"
+run = [
+  "rm -rf proxpass proxmox-mock dist coverage.out",
+  "docker rmi -f proxpass:local 2>/dev/null || true",
+]

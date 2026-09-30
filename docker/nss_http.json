@@ -1,0 +1,23 @@
+{
+  "Providers": [
+    {
+      "Name": "http",
+      "URLs": {
+        "Users": "http://127.0.0.1:8080/users",
+        "UserUID": "http://127.0.0.1:8080/user/uid/",
+        "UserName": "http://127.0.0.1:8080/user/name/",
+        "Groups": "http://127.0.0.1:8080/groups",
+        "GroupGID": "http://127.0.0.1:8080/group/gid/",
+        "GroupName": "http://127.0.0.1:8080/group/name/"
+      },
+      "RequestTimeout": "5s",
+      "Headers": {}
+    }
+  ],
+  "Cache": {
+    "Name": "disabled"
+  },
+  "AllowListingOfUsers": false,
+  "AllowListingOfGroups": false,
+  "DisableShadow": false
+}

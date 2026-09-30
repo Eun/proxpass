@@ -56,7 +56,15 @@ func adminKeyCmd(deps *Deps) *ucli.Command {
 						cmd.StringSlice(flagKey), deps.Out,
 						"added",
 						func(k string) error {
-							return deps.Repo.AddAdminKey(ctx, k)
+							// Admin keys grant full access, so they get the
+							// same single-entry validation as client keys: a
+							// multi-line value would add several admin
+							// credentials while reporting one.
+							valid, err := ValidatePublicKey(k)
+							if err != nil {
+								return fmt.Errorf("invalid --key: %w", err)
+							}
+							return deps.Repo.AddAdminKey(ctx, valid)
 						},
 					)
 				},
