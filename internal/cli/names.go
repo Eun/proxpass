@@ -3,6 +3,8 @@ package cli
 import (
 	"fmt"
 	"strings"
+
+	"proxpass/internal/api"
 )
 
 // ReservedAdminName is the login name that identifies an administrator. It
@@ -12,10 +14,6 @@ import (
 // free of a dependency on the session package; session.AdminUser and
 // api.AdminUser carry the same value and api_test asserts they agree.
 const ReservedAdminName = "admin"
-
-// maxClientNameLen bounds the login name. NSS and sshd both handle long
-// names, but a login this long is a mistake rather than an intent.
-const maxClientNameLen = 32
 
 // ValidateClientName rejects names that cannot safely be used as a login.
 //
@@ -32,24 +30,16 @@ func ValidateClientName(name string) error {
 	if strings.EqualFold(name, ReservedAdminName) {
 		return fmt.Errorf("client name %q is reserved for administrators", name)
 	}
-	if len(name) > maxClientNameLen {
-		return fmt.Errorf("client name must be at most %d characters", maxClientNameLen)
+	if len(name) > api.MaxLoginNameLen {
+		return fmt.Errorf("client name must be at most %d characters", api.MaxLoginNameLen)
 	}
-
-	// Restrict to a conservative portable login name: start with a letter or
-	// underscore, then letters, digits, underscore or hyphen. This keeps the
-	// name safe in /etc/passwd-style output, in a URL path segment (the
-	// directory API builds its routes by concatenation and does not escape),
-	// and in the shell wrappers sshd invokes.
-	for i, r := range name {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r == '_':
-		case i > 0 && (r >= '0' && r <= '9' || r == '-'):
-		default:
-			return fmt.Errorf(
-				"client name %q is invalid: use letters, digits, '_' and '-', starting with a letter",
-				name)
-		}
+	// The syntax rules live in the api package because the directory server
+	// applies the same ones when it decides whether to serve an unknown name
+	// as an administrator alias.
+	if !api.ValidLoginName(name) {
+		return fmt.Errorf(
+			"client name %q is invalid: use letters, digits, '_' and '-', starting with a letter",
+			name)
 	}
 	return nil
 }

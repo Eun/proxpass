@@ -415,11 +415,13 @@ func addSingleInstance( //nolint:cyclop // multi-URL dispatch adds branching
 				fmt.Fprintf(deps.ErrOut, "Discovery failed: %v\n", err)
 				return nil
 			}
-			for _, g := range guests {
-				g.InstanceID = i.ID
-				_ = deps.Repo.UpsertGuest(ctx, g)
+			// Shared with the discovery loop: only running guests are
+			// stored, so the list cannot contain an unconnectable guest.
+			stored, _, err := proxmox.StoreGuests(ctx, deps.Repo, i, guests)
+			if err != nil {
+				fmt.Fprintf(deps.ErrOut, "Storing guests: %v\n", err)
 			}
-			fmt.Fprintf(deps.Out, "Discovered %d guests.\n", len(guests))
+			fmt.Fprintf(deps.Out, "Discovered %d guests, %d running.\n", len(guests), stored)
 			break
 		}
 	}

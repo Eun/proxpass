@@ -30,23 +30,24 @@ func WriteAuthorizedKeys(
 		return nil
 	}
 
-	if user == AdminUser {
-		writeKeys(w, []string{flagAdminKey})
-		keys, err := repo.ListAdminKeys(ctx)
-		if err != nil {
-			return fmt.Errorf("listing admin keys: %w", err)
-		}
-		writeKeys(w, keys)
+	client, err := repo.GetClientByName(ctx, user)
+	if err == nil && client != nil && user != AdminUser {
+		// A client: only its own keys, never an admin key.
+		writeKeys(w, client.PublicKeys)
 		return nil
 	}
 
-	client, err := repo.GetClientByName(ctx, user)
-	if err != nil || client == nil {
-		// An unknown user is not an error: sshd asks about every login name
-		// it is offered, including ones that do not exist.
-		return nil
+	// Not a client, so this is the administrator under some login name.
+	// proxpass used to authenticate purely by key and ignore the name, so
+	// "ssh tobias@host" worked with an admin key; the directory serves any
+	// unused name as an admin alias to keep that working. Authorization
+	// still comes from the admin key list alone.
+	writeKeys(w, []string{flagAdminKey})
+	keys, err := repo.ListAdminKeys(ctx)
+	if err != nil {
+		return fmt.Errorf("listing admin keys: %w", err)
 	}
-	writeKeys(w, client.PublicKeys)
+	writeKeys(w, keys)
 	return nil
 }
 

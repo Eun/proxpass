@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	ucli "github.com/urfave/cli/v3"
+
+	"proxpass/internal/proxmox"
 )
 
 func discoverCmd(deps *Deps) *ucli.Command {
@@ -31,12 +33,17 @@ func discoverCmd(deps *Deps) *ucli.Command {
 					fmt.Fprintf(deps.ErrOut, "Instance %q: %v\n", inst.Name, err)
 					continue
 				}
-				for _, g := range guests {
-					g.InstanceID = inst.ID
-					_ = deps.Repo.UpsertGuest(ctx, g)
+				// Shared with the background discovery loop so a manual
+				// pass produces exactly the same guest list: only running
+				// guests are stored, and anything gone is pruned.
+				stored, removed, err := proxmox.StoreGuests(ctx, deps.Repo, inst, guests)
+				if err != nil {
+					fmt.Fprintf(deps.ErrOut, "Instance %q: %v\n", inst.Name, err)
 				}
-				fmt.Fprintf(deps.Out, "Instance %q: %d guests discovered.\n", inst.Name, len(guests))
-				total += len(guests)
+				fmt.Fprintf(deps.Out,
+					"Instance %q: %d running guest(s) of %d discovered, %d stale removed.\n",
+					inst.Name, stored, len(guests), removed)
+				total += stored
 			}
 			fmt.Fprintf(deps.Out, "Total: %d guests.\n", total)
 			return nil
