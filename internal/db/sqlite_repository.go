@@ -234,6 +234,74 @@ func (r *sqliteRepo) GetGuestByID(ctx context.Context, id int64) (*models.Guest,
 	return g, nil
 }
 
+// RemoveGuestsNotIn deletes guests of an instance that the last discovery
+// pass did not report, together with any access rules pointing at them.
+//
+// Discovery is otherwise append-only, so a guest that is stopped or destroyed
+// on the Proxmox host would linger in the list forever: it would still be
+// offered by the picker and still resolve by name, then fail at connect time
+// because pct enter and qm terminal only work on a running guest.
+//
+// Deleting the access rules alongside the guests matters because guests.id is
+// AUTOINCREMENT but access_rules.guest_id has no foreign key: a stale rule
+// would keep granting access to whatever guest later occupied that row id.
+func (r *sqliteRepo) RemoveGuestsNotIn(ctx context.Context, instanceID int64, keep []int) (int, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Collect the row ids to drop. Doing this in Go rather than with a
+	// NOT IN (...) clause keeps the statement free of dynamic SQL.
+	rows, err := tx.QueryContext(ctx,
+		"SELECT id, proxmox_id FROM guests WHERE instance_id = ?", instanceID)
+	if err != nil {
+		return 0, fmt.Errorf("select guests: %w", err)
+	}
+	keepSet := make(map[int]struct{}, len(keep))
+	for _, vmid := range keep {
+		keepSet[vmid] = struct{}{}
+	}
+	var stale []int64
+	for rows.Next() {
+		var id int64
+		var vmid int
+		if err := rows.Scan(&id, &vmid); err != nil {
+			_ = rows.Close()
+			return 0, fmt.Errorf("scan guest: %w", err)
+		}
+		if _, ok := keepSet[vmid]; !ok {
+			stale = append(stale, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, fmt.Errorf("iterate guests: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("close rows: %w", err)
+	}
+	if len(stale) == 0 {
+		return 0, nil
+	}
+
+	for _, id := range stale {
+		if _, err := tx.ExecContext(ctx,
+			"DELETE FROM access_rules WHERE guest_id = ?", id); err != nil {
+			return 0, fmt.Errorf("delete access rules for guest %d: %w", id, err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			"DELETE FROM guests WHERE id = ?", id); err != nil {
+			return 0, fmt.Errorf("delete guest %d: %w", id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit: %w", err)
+	}
+	return len(stale), nil
+}
+
 // --- Clients ---
 
 func (r *sqliteRepo) AddClient(ctx context.Context, client *models.Client) error {

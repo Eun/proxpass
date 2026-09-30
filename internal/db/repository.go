@@ -20,6 +20,12 @@ type Repository interface {
 	UpsertGuest(ctx context.Context, guest *models.Guest) error
 	ListGuests(ctx context.Context) ([]*models.Guest, error)
 	GetGuestByID(ctx context.Context, id int64) (*models.Guest, error)
+	// RemoveGuestsNotIn deletes every guest of an instance whose Proxmox
+	// vmid is absent from keep, and returns how many were removed. Access
+	// rules referencing those guests are removed with them, since a rule
+	// pointing at a vanished guest would silently grant access to whatever
+	// reused its row id.
+	RemoveGuestsNotIn(ctx context.Context, instanceID int64, keep []int) (int, error)
 
 	// Clients
 	AddClient(ctx context.Context, client *models.Client) error

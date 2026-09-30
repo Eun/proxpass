@@ -10,7 +10,7 @@ protocol, and proxpass supplies the users, the keys and the session.
 
 - **Real OpenSSH** — sshd handles the protocol; proxpass only decides who may log in and where they land
 - **Public Key Authentication** — The only supported method; password authentication is disabled
-- **Auto-Discovery** — Periodically discovers containers and VMs from configured Proxmox hosts via the REST API
+- **Auto-Discovery** — Periodically reconciles the guest list against the configured Proxmox hosts via the REST API: guests that start are added, and guests that stop or are destroyed are removed
 - **Admin CLI over SSH** — Full command-line interface for managing instances, clients, groups, access rules, and admin keys
 - **Flexible Guest Resolution** — Connect by VMID (`100`), type+VMID (`ct100`), name (`webserver`), or instance-qualified (`rome:ct101`)
 - **Access Control** — Per-client and per-group access rules with a global default policy fallback
