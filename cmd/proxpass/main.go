@@ -105,6 +105,17 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	logger.Printf("config: listen=%s data=%s discovery-interval=%s",
 		listenAddr, dataPath, interval)
 
+	// Resolve the uid/gid layout before anything else: an invalid one must
+	// fail at startup rather than after sshd has accepted a key, where it
+	// surfaces as "setresuid ...: Invalid argument".
+	ids, err := api.LoadIDLayout(os.LookupEnv)
+	if err != nil {
+		return fmt.Errorf("id layout: %w", err)
+	}
+	logger.Printf("id layout: admin uid=%d gid=%d, client gid=%d, uid base=%d, gid base=%d, max=%d",
+		ids.AdminUID, ids.AdminGroupGID, ids.SharedGroupGID,
+		ids.UIDBase, ids.GIDBase, ids.MaxID)
+
 	repo, err := db.NewSQLiteRepository(dataPath)
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
@@ -127,7 +138,7 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	go discovery.Run(ctx)
 
 	logger.Printf("serving directory API on %s", listenAddr)
-	if err := api.NewServer(repo, logger).ListenAndServe(ctx, listenAddr); err != nil {
+	if err := api.NewServerWithIDs(repo, logger, ids).ListenAndServe(ctx, listenAddr); err != nil {
 		return err
 	}
 	logger.Println("shutting down")

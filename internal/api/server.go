@@ -17,14 +17,6 @@ import (
 )
 
 const (
-	// UIDBase is added to a client's database id to derive its Unix uid, and
-	// GIDBase likewise for groups. Debian allocates uids below 1000 to system
-	// accounts and the local adduser range starts at 1000, so starting well
-	// above that keeps proxpass users from ever colliding with an account in
-	// /etc/passwd. nsswitch consults "files" before "http", so a collision
-	// would silently shadow the proxpass user.
-	UIDBase = 100000
-	GIDBase = 200000
 
 	// LoginShell must be a REAL, executable shell.
 	//
@@ -58,11 +50,6 @@ const (
 	// an "invalid user" before it ever consults AuthorizedKeysCommand.
 	AdminUser = "admin"
 
-	// AdminUID is the fixed uid/gid of the reserved admin account. It sits
-	// just below UIDBase so it can never collide with a client, whose uid is
-	// always UIDBase plus a positive row id.
-	AdminUID = UIDBase - 1
-
 	// SharedGroup is the primary group of every client login. It grants
 	// READ access to the proxpass state directory, which is all a client
 	// session needs: it resolves a guest, checks access and connects.
@@ -74,42 +61,53 @@ const (
 	// inside the Go runtime embedded in libnss_http.so.2. A primary gid is
 	// read straight from the passwd entry, so it needs no enumeration.
 	SharedGroup    = "proxpass"
-	SharedGroupGID = 64000
+	SharedGroupGID = 19000
 
-	// AdminGroup is the primary group of the admin login. Only it may WRITE
-	// the database, because only the admin CLI modifies it. Keeping clients
-	// out of this group means a client session cannot tamper with another
-	// client's access rules or corrupt the database, even though it can read
-	// it.
-	AdminGroup    = "proxpass-admin"
-	AdminGroupGID = 64001
+	// AdminGroup is the name of the admin login's primary group. Only it may
+	// WRITE the database, because only the admin CLI modifies it. Keeping
+	// clients out of this group means a client session cannot tamper with
+	// another client's access rules.
+	AdminGroup = "proxpass-admin"
 )
 
 // adminUser is the synthetic NSS entry for the reserved admin login.
-func adminUser() User {
+func (l IDLayout) adminUser() User {
 	return User{
 		User:     AdminUser,
 		Passwd:   shadowPasswd,
 		Name:     "proxpass administrator",
 		Dir:      HomeDir,
 		Shell:    LoginShell,
-		Uid:      AdminUID,
-		Gid:      AdminGroupGID,
+		Uid:      l.AdminUID,
+		Gid:      l.AdminGroupGID,
 		AuthKeys: []string{},
 	}
 }
+
+// errIDOutOfRange marks a client whose derived uid cannot be represented
+// inside a user-namespaced container.
+var errIDOutOfRange = errors.New("id out of range")
 
 // Server serves the nss_http user/group directory backed by the proxpass
 // database.
 type Server struct {
 	repo   db.Repository
 	logger *log.Logger
+	ids    IDLayout
 }
 
-// NewServer builds the directory server.
+// NewServer builds the directory server with the default id layout.
 func NewServer(repo db.Repository, logger *log.Logger) *Server {
-	return &Server{repo: repo, logger: logger}
+	return NewServerWithIDs(repo, logger, DefaultIDLayout())
 }
+
+// NewServerWithIDs builds the directory server with an explicit id layout.
+func NewServerWithIDs(repo db.Repository, logger *log.Logger, ids IDLayout) *Server {
+	return &Server{repo: repo, logger: logger, ids: ids}
+}
+
+// IDs returns the layout the server serves.
+func (s *Server) IDs() IDLayout { return s.ids }
 
 // Handler returns the HTTP routes implementing the nss_http contract.
 //
@@ -158,9 +156,12 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 }
 
 // UserFor converts a proxpass client into its NSS user entry.
-func UserFor(c *models.Client) User {
-	//nolint:gosec // client ids are small positive sqlite rowids
-	uid := uint(c.ID) + UIDBase
+//
+// A client whose derived uid would exceed maxID is not representable: see
+// UIDBase. Callers should skip such a client rather than publish an entry
+// sshd cannot use; handleUsers and handleUserByName do.
+func (l IDLayout) UserFor(c *models.Client) User {
+	uid := l.UIDFor(c.ID)
 	return User{
 		User:     c.Name,
 		Passwd:   shadowPasswd,
@@ -168,22 +169,21 @@ func UserFor(c *models.Client) User {
 		Dir:      HomeDir,
 		Shell:    LoginShell,
 		Uid:      uid,
-		Gid:      SharedGroupGID,
+		Gid:      l.SharedGroupGID,
 		AuthKeys: []string{},
 	}
 }
 
 // GroupFor converts a proxpass group into its NSS group entry. members are the
 // names of the clients belonging to the group.
-func GroupFor(g *models.Group, members []string) Group {
+func (l IDLayout) GroupFor(g *models.Group, members []string) Group {
 	if members == nil {
 		members = []string{}
 	}
-	//nolint:gosec // group ids are small positive sqlite rowids
 	return Group{
 		Name:         g.Name,
 		Passwd:       shadowPasswd,
-		Gid:          uint(g.ID) + GIDBase,
+		Gid:          l.GIDFor(g.ID),
 		GroupMembers: members,
 	}
 }
@@ -195,7 +195,7 @@ func (s *Server) handleUserByName(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if name == AdminUser {
-		s.writeJSON(w, adminUser())
+		s.writeJSON(w, s.ids.adminUser())
 		return
 	}
 	client, err := s.repo.GetClientByName(r.Context(), name)
@@ -212,19 +212,28 @@ func (s *Server) handleUserByName(w http.ResponseWriter, r *http.Request) {
 	case client == nil:
 		http.NotFound(w, r)
 	default:
-		s.writeJSON(w, UserFor(client))
+		user := s.ids.UserFor(client)
+		if !s.ids.InRange(user.Uid) {
+			// Not representable inside a user namespace; sshd would accept
+			// the key and then fail with "setresuid ...: Invalid argument".
+			// Refusing here at least fails cleanly and visibly.
+			s.fail(w, fmt.Sprintf("user %q uid %d exceeds the maximum of %d",
+				name, user.Uid, s.ids.MaxID), errIDOutOfRange)
+			return
+		}
+		s.writeJSON(w, user)
 	}
 }
 
 func (s *Server) handleUserByUID(w http.ResponseWriter, r *http.Request) {
 	raw := strings.TrimPrefix(r.URL.Path, "/user/uid/")
 	uid, err := strconv.ParseUint(raw, 10, 32)
-	if err != nil || uid < AdminUID {
+	if err != nil || uid < uint64(s.ids.AdminUID) {
 		http.NotFound(w, r)
 		return
 	}
-	if uid == AdminUID {
-		s.writeJSON(w, adminUser())
+	if uid == uint64(s.ids.AdminUID) {
+		s.writeJSON(w, s.ids.adminUser())
 		return
 	}
 	clients, err := s.repo.ListClients(r.Context())
@@ -233,7 +242,7 @@ func (s *Server) handleUserByUID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, c := range clients {
-		if u := UserFor(c); uint64(u.Uid) == uid {
+		if u := s.ids.UserFor(c); uint64(u.Uid) == uid {
 			s.writeJSON(w, u)
 			return
 		}
@@ -248,9 +257,15 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	users := make([]User, 0, len(clients)+1)
-	users = append(users, adminUser())
+	users = append(users, s.ids.adminUser())
 	for _, c := range clients {
-		users = append(users, UserFor(c))
+		u := s.ids.UserFor(c)
+		if !s.ids.InRange(u.Uid) {
+			s.logger.Printf("directory: skipping user %q: uid %d exceeds %d",
+				c.Name, u.Uid, s.ids.MaxID)
+			continue
+		}
+		users = append(users, u)
 	}
 	s.writeJSON(w, users)
 }
@@ -326,14 +341,14 @@ func (s *Server) allGroups(ctx context.Context) ([]Group, error) {
 	shared := Group{
 		Name:         SharedGroup,
 		Passwd:       shadowPasswd,
-		Gid:          SharedGroupGID,
+		Gid:          s.ids.SharedGroupGID,
 		GroupMembers: make([]string, 0, len(clients)),
 	}
 	// The admin group has exactly one member and grants write access.
 	adminGrp := Group{
 		Name:         AdminGroup,
 		Passwd:       shadowPasswd,
-		Gid:          AdminGroupGID,
+		Gid:          s.ids.AdminGroupGID,
 		GroupMembers: []string{AdminUser},
 	}
 
@@ -351,7 +366,7 @@ func (s *Server) allGroups(ctx context.Context) ([]Group, error) {
 				members = append(members, name)
 			}
 		}
-		out = append(out, GroupFor(g, members))
+		out = append(out, s.ids.GroupFor(g, members))
 	}
 	return out, nil
 }
