@@ -1,23 +1,20 @@
 package session
 
 import (
-	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
-	"text/tabwriter"
 
 	"proxpass/internal/models"
 )
 
+// errQuit signals that the user declined to pick a guest.
+var errQuit = errors.New("quit")
+
 // runPicker lists the guests the session may reach and connects to the one
 // the user selects.
-//
-// This is deliberately a plain numbered prompt rather than a full-screen TUI:
-// the session runs on whatever terminal sshd handed us, and a line-oriented
-// prompt behaves correctly on every client, including ones without a PTY.
 func (d *Deps) runPicker(ctx context.Context) int {
 	guests, err := d.accessibleGuests(ctx)
 	if err != nil {
@@ -30,97 +27,157 @@ func (d *Deps) runPicker(ctx context.Context) int {
 		return 1
 	}
 
-	out := d.Terminal.Out
-	fmt.Fprintf(out, "proxpass — guests available to %s\n\n", d.User)
-	writeGuestTable(out, guests)
-	fmt.Fprintf(out, "\nSelect a guest [1-%d], or q to quit: ", len(guests))
-
-	choice, err := readChoice(d.Terminal.In, len(guests))
-	if err != nil {
-		if err == errQuit {
-			fmt.Fprintln(out)
-			return 0
-		}
-		d.errf("\n%v", err)
-		return 1
-	}
-
-	guest := guests[choice-1]
 	instances, err := d.Repo.ListProxmoxInstances(ctx)
 	if err != nil {
 		d.Logger.Printf("%s: listing instances: %v", d.User, err)
 		d.errf("internal error")
 		return 1
 	}
+	instNames := make(map[int64]string, len(instances))
+	instByID := make(map[int64]*models.ProxmoxInstance, len(instances))
 	for _, inst := range instances {
-		if inst.ID == guest.InstanceID {
-			fmt.Fprintln(out)
-			return d.attach(guest, inst)
-		}
+		instNames[inst.ID] = inst.Name
+		instByID[inst.ID] = inst
 	}
-	d.errf("proxmox instance for guest %q not found", guest.Name)
-	return 1
+
+	rows := newGuestRows(guests, instNames)
+
+	chosen, err := d.pick(rows)
+	if err != nil {
+		if errors.Is(err, errQuit) {
+			return 0
+		}
+		d.Logger.Printf("%s: picker: %v", d.User, err)
+		d.errf("%v", err)
+		return 1
+	}
+
+	inst, ok := instByID[chosen.guest.InstanceID]
+	if !ok {
+		d.errf("proxmox instance for guest %q not found", chosen.guest.Name)
+		return 1
+	}
+	return d.attach(chosen.guest, inst)
 }
 
-// errQuit signals that the user declined to pick a guest.
-var errQuit = fmt.Errorf("quit")
-
-// scanTerminalLines splits input on CR, LF or CRLF.
+// pick runs the interactive picker and returns the selected row.
 //
-// The session runs on a PTY in raw mode, which disables ICRNL, so pressing
-// Enter delivers a bare "\r". bufio.ScanLines only terminates a line on "\n"
-// and would block until EOF, hanging the picker on every real terminal.
-func scanTerminalLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
-	if atEOF && len(data) == 0 {
-		return 0, nil, nil
+// It uses a full-screen alternate-screen view when it has a raw-mode terminal
+// to drive, and falls back to a plain numbered prompt otherwise (no PTY, or
+// raw mode unavailable) so that scripted use and dumb clients keep working.
+func (d *Deps) pick(rows []guestRow) (guestRow, error) {
+	if d.Terminal == nil || !d.Terminal.Raw {
+		return d.pickNumbered(rows)
 	}
-	for i, b := range data {
-		if b != '\r' && b != '\n' {
-			continue
+	return d.pickInteractive(rows)
+}
+
+// pickNumbered is the non-interactive fallback: print the table once and read
+// a number.
+func (d *Deps) pickNumbered(rows []guestRow) (guestRow, error) {
+	out := d.Terminal.UIOut()
+	fmt.Fprintf(out, "proxpass — guests available to %s\n\n", d.User)
+	writeGuestTable(out, rows)
+	fmt.Fprintf(out, "\nSelect a guest [1-%d], or q to quit: ", len(rows))
+
+	choice, err := readChoice(d.Terminal.In, len(rows))
+	if err != nil {
+		fmt.Fprintln(out)
+		return guestRow{}, err
+	}
+	fmt.Fprintln(out)
+	row := rows[choice-1]
+	if !row.isRunning() {
+		return guestRow{}, fmt.Errorf("%s is %s and has no console",
+			row.guest.Name, row.guest.Status)
+	}
+	return row, nil
+}
+
+// writeGuestTable renders rows as an aligned, numbered table.
+func writeGuestTable(w io.Writer, rows []guestRow) {
+	if len(rows) == 0 {
+		fmt.Fprintln(w, "  (no guests available)")
+		return
+	}
+	widths := columnWidths(rows)
+	fmt.Fprintf(w, "  %*s  %-*s  %-*s  %s\n",
+		widths.num, "#", widths.id, "ID", widths.name, "NAME", "STATUS")
+	for i, r := range rows {
+		fmt.Fprintf(w, "  %*d  %-*s  %-*s  %s\n",
+			widths.num, i+1, widths.id, r.id, widths.name, r.guest.Name, r.guest.Status)
+	}
+}
+
+// colWidths are the column widths of the rendered guest table.
+type colWidths struct {
+	num  int
+	id   int
+	name int
+}
+
+// columnWidths measures the table columns.
+//
+// The widths are computed here rather than with text/tabwriter because
+// tabwriter buffers until Flush and writes its padding as tabs when the
+// output is not a terminal it can measure; on a raw PTY that produced a
+// misaligned table. Plain %-*s padding renders identically everywhere.
+func columnWidths(rows []guestRow) colWidths {
+	w := colWidths{num: len(fmt.Sprint(len(rows))), id: len("ID"), name: len("NAME")}
+	for _, r := range rows {
+		if n := displayWidth(r.id); n > w.id {
+			w.id = n
 		}
-		// Consume a following LF so CRLF yields a single empty-free token.
-		end := i + 1
-		if b == '\r' && end < len(data) && data[end] == '\n' {
-			end++
+		if n := displayWidth(r.guest.Name); n > w.name {
+			w.name = n
 		}
-		return end, data[:i], nil
 	}
-	if atEOF {
-		return len(data), data, nil
-	}
-	return 0, nil, nil // request more data
+	return w
 }
 
 // readChoice reads a selection in [1,max] from r.
 func readChoice(r io.Reader, maxChoice int) (int, error) {
-	scanner := bufio.NewScanner(r)
-	scanner.Split(scanTerminalLines)
-	if !scanner.Scan() {
+	line, err := readLine(r)
+	if err != nil {
 		// EOF: the client closed the input stream, e.g. ssh without a PTY.
 		return 0, errQuit
 	}
-	line := strings.TrimSpace(scanner.Text())
+	line = strings.TrimSpace(line)
 	if line == "" || strings.EqualFold(line, "q") || strings.EqualFold(line, "quit") {
 		return 0, errQuit
 	}
-	n, err := strconv.Atoi(line)
-	if err != nil || n < 1 || n > maxChoice {
+	n := 0
+	if _, err := fmt.Sscanf(line, "%d", &n); err != nil || n < 1 || n > maxChoice {
 		return 0, fmt.Errorf("invalid selection %q", line)
 	}
 	return n, nil
 }
 
-// writeGuestTable renders guests as an aligned, numbered table.
-func writeGuestTable(w io.Writer, guests []*models.Guest) {
-	if len(guests) == 0 {
-		fmt.Fprintln(w, "  (no guests available)")
-		return
+// readLine reads one line, accepting CR, LF or CRLF as the terminator.
+//
+// It reads a byte at a time rather than through bufio, because the same
+// io.Reader is handed to the guest console afterwards: a buffered reader
+// would swallow input that belongs to the console.
+func readLine(r io.Reader) (string, error) {
+	var (
+		b   [1]byte
+		out strings.Builder
+	)
+	for {
+		n, err := r.Read(b[:])
+		if n > 0 {
+			switch b[0] {
+			case '\r', '\n':
+				return out.String(), nil
+			default:
+				out.WriteByte(b[0])
+			}
+		}
+		if err != nil {
+			if out.Len() > 0 {
+				return out.String(), nil
+			}
+			return "", err
+		}
 	}
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "  #\tID\tNAME\tSTATUS")
-	for i, g := range guests {
-		fmt.Fprintf(tw, "  %d\t%s%d\t%s\t%s\n",
-			i+1, g.Type, g.ProxmoxID, g.Name, g.Status)
-	}
-	_ = tw.Flush()
 }

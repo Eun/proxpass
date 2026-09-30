@@ -49,9 +49,34 @@ docker run -d --name proxpass \
   -e PROXPASS_ADMIN_KEY="$(cat ~/.ssh/id_ed25519.pub)" \
   ghcr.io/eun/proxpass:latest
 
-# Connect as admin and view help
+# Connect as admin and pick a guest interactively.
+# Any login name works with an admin key; "admin" is just the canonical one.
 ssh -p 2222 admin@localhost
 ```
+
+## The guest picker
+
+Connecting without a command opens an interactive picker:
+
+```
+proxpass — guests available to admin
+
+  ID     NAME              STATUS
+▸ ct118  mautrix-whatsapp  running  pve
+  ct126  mautrix-telegram  running  pve
+  ct103  merge-with-label  running  pve
+
+  filter: m█  (3/50)
+  ↑/↓ move · type to filter · ⏎ connect · esc clear · ctrl+c quit
+```
+
+Typing filters the list as a fuzzy subsequence match, so `mw` finds
+`mautrix-whatsapp` and `118` finds `ct118`. Each of the name, the type+VMID
+and the instance name is matched on its own, and a hit on the name ranks
+highest.
+
+Without a PTY — `ssh host` with input redirected, for instance — the picker
+falls back to a plain numbered prompt so scripted use keeps working.
 
 ## Admin CLI
 
@@ -170,7 +195,22 @@ rather than configured in proxpass.
 ### Admin key
 
 `--admin-key` accepts a single SSH public key in `authorized_keys` format and
-authorizes the reserved `admin` login. It is never offered for a client login.
+authorizes the administrator. It is never offered for a client login.
+
+An admin key works under **any login name that is not a client**, so the name
+is a label rather than a credential:
+
+```bash
+ssh -p 2222 admin@proxpass guest ls     # the canonical name
+ssh -p 2222 tobias@proxpass guest ls    # equivalent: authorized by the key
+```
+
+The name still has to be a valid Unix login name (letters, digits, `_` and
+`-`, starting with a letter or underscore, at most 32 characters), because
+sshd resolves it through NSS before authenticating. A name that is already a
+client always resolves to that client, and only that client's own keys are
+accepted for it — an admin key never grants a client login, and a client key
+never grants an administrator login.
 
 > **It is stored in the database on startup, not held in memory.** sshd runs
 > `AuthorizedKeysCommand` with a scrubbed environment, so that process cannot
@@ -187,8 +227,9 @@ authorizes the reserved `admin` login. It is never offered for a client login.
 ### Users, groups and the database
 
 Clients are served to NSS as users whose uid is derived from their database
-id, all sharing the primary group `proxpass`. The `admin` login has its own
-group, `proxpass-admin`.
+id, all sharing the primary group `proxpass`. Administrator logins — `admin`
+and any other non-client name — share one uid and the group
+`proxpass-admin`.
 
 The id layout is configurable, because the usable range is a property of the
 deployment rather than of proxpass:

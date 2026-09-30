@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -108,10 +109,48 @@ func TestUserJSONKeysAreCapitalized(t *testing.T) {
 	}
 }
 
-func TestUnknownUserIs404(t *testing.T) {
+// A name that is not a client resolves to the administrator, sharing the
+// admin uid and gid. Without this sshd rejects the login as "Invalid user"
+// before it ever asks for a key, so an admin could only ever log in as
+// "admin" — proxpass used to accept any name when it ran its own SSH server.
+func TestUnknownUserIsServedAsAnAdminAlias(t *testing.T) {
 	h, _ := newTestServer(t)
-	if rec := get(t, h, "/user/name/nobody"); rec.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want 404", rec.Code)
+	ids := api.DefaultIDLayout()
+
+	rec := get(t, h, "/user/name/tobias")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var got api.User
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.User != "tobias" {
+		t.Errorf("User = %q, want %q", got.User, "tobias")
+	}
+	if got.Uid != ids.AdminUID || got.Gid != ids.AdminGroupGID {
+		t.Errorf("uid/gid = %d/%d, want the admin's %d/%d",
+			got.Uid, got.Gid, ids.AdminUID, ids.AdminGroupGID)
+	}
+}
+
+// A name that cannot be a Unix login name must still 404: it is echoed into a
+// passwd entry, so it must not be able to carry a colon or a newline.
+func TestUnservableLoginNameIs404(t *testing.T) {
+	h, _ := newTestServer(t)
+	for _, name := range []string{
+		"root:x:0:0",
+		"has space",
+		"1leading-digit",
+		"weird$char",
+		strings.Repeat("a", api.MaxLoginNameLen+1),
+	} {
+		// Escaped as a client would have to send it; the server sees the
+		// decoded name in r.URL.Path either way.
+		path := "/user/name/" + url.PathEscape(name)
+		if rec := get(t, h, path); rec.Code != http.StatusNotFound {
+			t.Errorf("name %q: status = %d, want 404", name, rec.Code)
+		}
 	}
 }
 
