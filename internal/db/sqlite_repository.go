@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite" // register sqlite3 driver
@@ -21,8 +22,20 @@ type sqliteRepo struct {
 	db *sql.DB
 }
 
+// busyTimeout is how long a writer waits for a competing lock before giving
+// up. Several processes share the database: "proxpass serve" writes on every
+// discovery pass while each "proxpass session" and "authorized-keys"
+// invocation reads. Without a timeout SQLite fails such a collision
+// immediately with SQLITE_BUSY, which surfaces as a failed login or a lost
+// discovery pass.
+const busyTimeout = 5 * time.Second
+
 func NewSQLiteRepository(dbPath string) (Repository, error) {
-	db, err := sql.Open("sqlite", dbPath)
+	// WAL lets readers proceed while a writer holds the lock, which is the
+	// normal case here: discovery writes while sessions read.
+	dsn := fmt.Sprintf("%s?_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)",
+		dbPath, busyTimeout.Milliseconds())
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
