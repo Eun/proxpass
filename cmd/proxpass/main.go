@@ -236,7 +236,12 @@ func runSession(ctx context.Context, cmd *ucli.Command) error {
 	}
 	defer func() { _ = repo.Close() }()
 
-	identity, err := session.ResolveIdentity(ctx, repo, user)
+	// The key, not the login name, says who this is. The name is an alias
+	// the caller chose -- the directory serves any unused one so sshd can
+	// reach the key check at all -- so it cannot be trusted to identify
+	// anybody. See ResolveIdentityByKey.
+	identity, err := session.ResolveIdentityByKey(
+		ctx, repo, user, session.AuthInfoPath(), cmd.String("admin-key"))
 	if err != nil {
 		return err
 	}

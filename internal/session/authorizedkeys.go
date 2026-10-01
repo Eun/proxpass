@@ -51,24 +51,37 @@ func WriteAuthorizedKeys(
 		return nil
 	}
 
-	client, err := repo.GetClientByName(ctx, user)
-	if err == nil && client != nil && user != AdminUser {
-		// A client: only its own keys, never an admin key.
-		writeKeys(w, client.PublicKeys)
-		return nil
-	}
-
-	// Not a client, so this is the administrator under some login name.
-	// proxpass used to authenticate purely by key and ignore the name, so
-	// "ssh tobias@host" worked with an admin key; the directory serves any
-	// unused name as an admin alias to keep that working. Authorization
-	// still comes from the admin key list alone.
+	// The login name does not select WHICH keys are acceptable, because it
+	// does not select who the caller is: the session resolves that from the
+	// key that actually authenticated (see ResolveIdentityByKey). So every
+	// key that could identify somebody is offered for every servable name,
+	// and sshd's job here is only "is this key known to proxpass at all".
+	//
+	// Filtering by name instead would make the name a second, weaker
+	// credential: "ssh alice@host" would accept only alice's keys, so the
+	// administrator could not log in under that name even though their key
+	// is strictly more privileged. It would also reintroduce the escalation
+	// this design removes, by letting the offered set imply an identity.
+	//
+	// This is safe ONLY in combination with key-based resolution. Were the
+	// session to fall back to trusting the name, offering client keys here
+	// would let any client authenticate under an unused name and be treated
+	// as the administrator. The two must change together, which is why the
+	// session refuses to start at all when ExposeAuthInfo is off.
 	writeKeys(w, []string{flagAdminKey})
 	keys, err := repo.ListAdminKeys(ctx)
 	if err != nil {
 		return fmt.Errorf("listing admin keys: %w", err)
 	}
 	writeKeys(w, keys)
+
+	clients, err := repo.ListClients(ctx)
+	if err != nil {
+		return fmt.Errorf("listing clients: %w", err)
+	}
+	for _, c := range clients {
+		writeKeys(w, c.PublicKeys)
+	}
 	return nil
 }
 

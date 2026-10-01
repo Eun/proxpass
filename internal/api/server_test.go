@@ -113,7 +113,7 @@ func TestUserJSONKeysAreCapitalized(t *testing.T) {
 // admin uid and gid. Without this sshd rejects the login as "Invalid user"
 // before it ever asks for a key, so an admin could only ever log in as
 // "admin" — proxpass used to accept any name when it ran its own SSH server.
-func TestUnknownUserIsServedAsAnAdminAlias(t *testing.T) {
+func TestUnknownUserIsServedAsAnUnprivilegedAlias(t *testing.T) {
 	h, _ := newTestServer(t)
 	ids := api.DefaultIDLayout()
 
@@ -136,9 +136,42 @@ func TestUnknownUserIsServedAsAnAdminAlias(t *testing.T) {
 	if got.User != "tobias" {
 		t.Errorf("User = %q, want %q", got.User, "tobias")
 	}
-	if got.Uid != ids.AdminUID || got.Gid != ids.AdminGroupGID {
-		t.Errorf("uid/gid = %d/%d, want the admin's %d/%d",
-			got.Uid, got.Gid, ids.AdminUID, ids.AdminGroupGID)
+	// An alias must carry the SHARED gid, not the admin one.
+	//
+	// The alias is reachable with any valid key, a client's included, since
+	// the name is not a credential. The admin gid can WRITE the database,
+	// so granting it here would let a client edit another client's access
+	// rules through the filesystem even though proxpass had correctly
+	// resolved it as a non-admin.
+	if got.Gid == ids.AdminGroupGID {
+		t.Errorf("alias was served the admin gid %d; it can write the database",
+			got.Gid)
+	}
+	if got.Gid != ids.SharedGroupGID {
+		t.Errorf("gid = %d, want the shared client gid %d",
+			got.Gid, ids.SharedGroupGID)
+	}
+	if got.Uid != ids.AdminUID {
+		t.Errorf("uid = %d, want %d", got.Uid, ids.AdminUID)
+	}
+}
+
+// The reserved admin login still gets the admin gid: the admin CLI has to be
+// able to write the database.
+func TestAdminLoginKeepsTheWritableGid(t *testing.T) {
+	h, _ := newTestServer(t)
+	ids := api.DefaultIDLayout()
+
+	rec := get(t, h, "/user/name/"+api.AdminUser)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var got api.User
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Gid != ids.AdminGroupGID {
+		t.Errorf("gid = %d, want the admin gid %d", got.Gid, ids.AdminGroupGID)
 	}
 }
 

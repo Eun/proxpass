@@ -75,19 +75,43 @@ func (l IDLayout) adminUser() User {
 	return l.adminUserAs(AdminUser)
 }
 
-// adminUserAs is the admin entry under an arbitrary login name.
+// aliasUser is the NSS entry for a login name that is not a configured
+// account.
 //
-// Any name that is not a client resolves to the administrator, which restores
-// the behavior proxpass had when it ran its own SSH server: the connection
-// was authenticated by the key alone and the login name was cosmetic, so
-// "ssh tobias@proxpass" worked with an admin key.
+// Serving such a name is what makes it usable at all: sshd resolves the
+// login through NSS and rejects an unknown one as "Invalid user" BEFORE it
+// consults AuthorizedKeysCommand, so an unserved name could never reach the
+// key check. The name itself means nothing -- the session identifies the
+// caller from the key that authenticated (see session.ResolveIdentityByKey).
 //
-// sshd cannot work that way, because it resolves the login name through NSS
-// and rejects an unknown one as "Invalid user" BEFORE it ever consults
-// AuthorizedKeysCommand. Serving the name is therefore what makes it usable
-// at all. It grants nothing on its own: every alias shares the admin uid and
-// gid, and only an admin key authorizes it -- see WriteAuthorizedKeys, which
-// offers admin keys and never a client's for such a name.
+// It is therefore served with the LEAST privilege that still works: the
+// shared client gid, which grants read access to the state directory and
+// nothing more. It must NOT carry the admin gid, which can write the
+// database: an alias is reachable with any valid key, including a client's,
+// so an admin-gid alias would let a client modify another client's access
+// rules from the filesystem even though proxpass itself had correctly
+// resolved them as a non-admin.
+//
+// The uid stays AdminUID because every alias shares it and no client row
+// derives it; it owns nothing, since write access comes from the gid.
+func (l IDLayout) aliasUser(name string) User {
+	return User{
+		User:     name,
+		Passwd:   shadowPasswd,
+		Name:     "proxpass login",
+		Dir:      HomeDir,
+		Shell:    LoginShell,
+		Uid:      l.AdminUID,
+		Gid:      l.SharedGroupGID,
+		AuthKeys: []string{},
+	}
+}
+
+// adminUserAs is the reserved admin login's entry.
+//
+// Unlike an alias this does carry the admin gid, because the database is
+// writable only by that group and the admin CLI has to write it. It is
+// served ONLY for the reserved name; see handleUserByName.
 func (l IDLayout) adminUserAs(name string) User {
 	return User{
 		User:     name,
@@ -254,7 +278,7 @@ func (s *Server) writeAdminAlias(w http.ResponseWriter, r *http.Request, name st
 		http.NotFound(w, r)
 		return
 	}
-	s.writeJSON(w, s.ids.adminUserAs(name))
+	s.writeJSON(w, s.ids.aliasUser(name))
 }
 
 func (s *Server) handleUserByUID(w http.ResponseWriter, r *http.Request) {
