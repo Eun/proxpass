@@ -34,6 +34,28 @@ type modeFilter struct {
 	// calls. A sequence can be split across reads at any byte, so state has
 	// to survive the call that saw only part of it.
 	partial []byte
+
+	// reset records that the guest reset the terminal, which discards the
+	// scroll region as well as the screen. It is latched here and cleared by
+	// TakeReset so the caller cannot miss it between observations.
+	reset bool
+}
+
+// TakeReset reports whether the terminal was reset since the last call, and
+// clears the flag.
+func (m *modeFilter) TakeReset() bool {
+	was := m.reset
+	m.reset = false
+	return was
+}
+
+// isFullReset reports whether seq is RIS ("\x1bc"), a full terminal reset.
+//
+// This is what "reset" and "tput reset" send. It clears the screen, the
+// scroll region, and every mode, so a bar has to reinstall its region rather
+// than just redraw its row.
+func isFullReset(seq []byte) bool {
+	return len(seq) == 2 && seq[0] == 0x1b && seq[1] == 'c'
 }
 
 // maxPartialEscape bounds the buffered prefix of an unterminated escape
@@ -46,8 +68,18 @@ type modeFilter struct {
 // and scanning resumes.
 const maxPartialEscape = 64
 
-// Observe inspects p for mode changes and reports whether the caller should
-// redraw. p is never modified.
+// Observe inspects p for changes that affect the bar and reports whether the
+// caller should redraw. p is never modified.
+//
+// Two kinds of sequence matter:
+//
+//   - A switch to or from the alternate screen, which changes whether a bar
+//     may be drawn at all.
+//   - Anything that erases the bar's row. A scroll region confines
+//     *scrolling* to the rows above the bar, but it does not protect the row
+//     from being erased: ED ("\x1b[2J") addresses the whole screen
+//     regardless. Ctrl+L is the common way to hit this -- the shell answers
+//     it with ED -- and the bar has to repaint rather than stay blank.
 func (m *modeFilter) Observe(p []byte) (redraw bool) {
 	buf := p
 	if len(m.partial) > 0 {
@@ -78,8 +110,19 @@ func (m *modeFilter) Observe(p []byte) (redraw bool) {
 			}
 			break
 		}
-		if alt, ok := parseAltScreen(seq); ok && alt != m.altScreen {
-			m.altScreen = alt
+		switch alt, ok := parseAltScreen(seq); {
+		case ok:
+			if alt != m.altScreen {
+				m.altScreen = alt
+				redraw = true
+			}
+		case isFullReset(seq):
+			// RIS resets everything, including the scroll region, so the
+			// region has to be reinstalled and not merely repainted.
+			m.reset = true
+			m.altScreen = false
+			redraw = true
+		case erasesBarRow(seq):
 			redraw = true
 		}
 		i += n
@@ -121,6 +164,40 @@ func scanEscape(b []byte) (seq []byte, n int, complete bool) {
 		}
 	}
 	return nil, 0, false
+}
+
+// erasesBarRow reports whether seq could have erased the bar's row.
+//
+// A scroll region keeps the guest's *scrolling* above the bar, but erasure is
+// not scrolling: these sequences address the screen directly and reach the
+// bar's row whatever the region is set to.
+//
+//	ED  "\x1b[J"   erase from the cursor to the end of the screen
+//	    "\x1b[0J"  same, explicitly
+//	    "\x1b[2J"  erase the whole screen -- what a shell sends for Ctrl+L
+//	    "\x1b[3J"  whole screen plus scrollback
+//
+// "\x1b[1J" erases from the start of the screen to the cursor. The cursor is
+// always inside the scroll region, above the bar, so that one cannot reach
+// the bar's row and is deliberately not matched.
+//
+// DECALN ("\x1b#8", the alignment test) also fills the whole screen, but it
+// is a diagnostic that no ordinary program emits, so it is not tracked.
+func erasesBarRow(seq []byte) bool {
+	if len(seq) < 3 || seq[1] != '[' {
+		return false
+	}
+	if seq[len(seq)-1] != 'J' {
+		return false
+	}
+	switch string(seq[2 : len(seq)-1]) {
+	case "", "0", "2", "3":
+		return true
+	default:
+		// Includes "1" (erase up to the cursor) and any private-marker or
+		// multi-parameter form, which no erase actually uses.
+		return false
+	}
 }
 
 // parseAltScreen reports whether seq is an alternate-screen mode change and

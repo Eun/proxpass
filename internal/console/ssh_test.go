@@ -569,3 +569,56 @@ func TestEscapeWorksWhileFullScreenAppOwnsTheScreen(t *testing.T) {
 		t.Fatal("Ctrl+A X did not disconnect while the bar was suppressed")
 	}
 }
+
+// Ctrl+L makes the shell erase the whole screen, which takes the status bar's
+// row with it. The bar has to come back; before this was handled it stayed
+// blank for the rest of the session.
+func TestConnectSSHBarSurvivesCtrlL(t *testing.T) {
+	t.Setenv(console.DisableStatusBarEnv, "")
+	mock, err := testenv.NewMockSSHServer()
+	if err != nil {
+		t.Fatalf("start mock: %v", err)
+	}
+	defer mock.Close()
+
+	pt := newPipeTerminal()
+	pt.term.Raw = true
+	guest := &models.Guest{Type: models.GuestTypeCT, Name: guestWeb, ProxmoxID: 100}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- console.DefaultProxier{}.Connect(
+			pt.term, guest, sshInstance(t, mock), discardLogger())
+	}()
+
+	waitFor(t, pt.out, "root@CT100")
+	waitFor(t, pt.out, console.EscapeHint) // the bar painted once
+	mark := len(pt.out.String())
+
+	// Ctrl+L: the shell answers with an erase that wipes the bar's row.
+	if _, err := pt.stdin.Write([]byte{0x0c}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// The bar must repaint itself afterwards.
+	deadline := time.Now().Add(5 * time.Second)
+	repainted := false
+	for time.Now().Before(deadline) {
+		if strings.Contains(pt.out.String()[mark:], console.EscapeHint) {
+			repainted = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	_, _ = pt.stdin.Write([]byte{0x01, 'X'})
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("console did not exit")
+	}
+
+	if !repainted {
+		t.Error("the status bar did not come back after Ctrl+L")
+	}
+}

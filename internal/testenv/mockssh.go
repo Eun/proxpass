@@ -330,6 +330,11 @@ func (m *MockSSHServer) lxcSession(ch gossh.Channel, vmid string) {
 					"[mock] %s: command not found\r\n", cmd)
 			}
 			_, _ = fmt.Fprintf(ch, "root@CT%s:~# ", vmid)
+		case 0x0c: // Ctrl+L: clear the screen, as a real shell does
+			// ED addresses the whole screen, including a reserved
+			// status-bar row, so this is what makes a bar vanish.
+			_, _ = fmt.Fprintf(ch, "\x1b[H\x1b[2J")
+			_, _ = fmt.Fprintf(ch, "root@CT%s:~# ", vmid)
 		case 0x7f, 0x08: // backspace / delete
 			if len(line) > 0 {
 				line = line[:len(line)-1]

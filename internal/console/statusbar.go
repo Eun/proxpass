@@ -191,17 +191,34 @@ func (b *StatusBar) Observe(p []byte) {
 		b.mu.Unlock()
 		return
 	}
+	// Something changed that the bar's own text does not reflect -- the row
+	// was erased, or the screen was handed over and taken back. Clearing
+	// lastBar forces the next draw to happen even though the text is the
+	// same, which is what the unchanged-repaint skip would otherwise
+	// suppress forever.
+	b.lastBar = ""
+
+	wasReset := b.modes.TakeReset()
 	alt := b.modes.AltScreen()
 	b.hidden = alt
-	if alt && b.active {
+	switch {
+	case alt && b.active:
 		// The application is taking the whole screen: drop the scroll
 		// region so it can use every row, and stop drawing.
 		fmt.Fprint(b.out, "\x1b[r")
-	} else if !alt && b.active {
-		// It exited: reinstate the region and force a repaint, because the
-		// application has very likely overwritten the bar row.
+	case b.active:
+		// Either a full-screen application exited, the guest erased the
+		// screen, or it reset the terminal. A reset discards the scroll
+		// region, and an alt-screen exit restores whatever region was in
+		// effect before, so the region is reinstalled in both cases rather
+		// than assumed to have survived.
 		fmt.Fprintf(b.out, "\x1b[1;%dr", b.guestRowsLocked())
-		b.lastBar = ""
+		if wasReset {
+			// A reset also returns the cursor to the top-left of a
+			// now-unrestricted screen. Put it back inside the region so the
+			// guest's next line does not land on the bar's row.
+			fmt.Fprint(b.out, "\x1b[1;1H")
+		}
 	}
 	b.mu.Unlock()
 	b.request()
