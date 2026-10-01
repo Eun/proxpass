@@ -38,6 +38,13 @@ func ResolveIdentity(ctx context.Context, repo db.Repository, user string) (*Ide
 	if user == "" {
 		return nil, fmt.Errorf("empty user name")
 	}
+	// A name proxpass would not serve cannot have been authenticated
+	// against it either, so refuse rather than resolve an identity for it.
+	// See WriteAuthorizedKeys for why sshd does not currently deliver such
+	// a name in the first place.
+	if !api.ValidLoginName(user) {
+		return nil, fmt.Errorf("invalid login name %q", user)
+	}
 	if user == AdminUser {
 		// Defense in depth: "admin" is reserved, and cli.ValidateClientName
 		// refuses to create a client with that name. If one exists anyway

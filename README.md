@@ -205,12 +205,16 @@ ssh -p 2222 admin@proxpass guest ls     # the canonical name
 ssh -p 2222 tobias@proxpass guest ls    # equivalent: authorized by the key
 ```
 
-The name still has to be a valid Unix login name (letters, digits, `_` and
-`-`, starting with a letter or underscore, at most 32 characters), because
-sshd resolves it through NSS before authenticating. A name that is already a
-client always resolves to that client, and only that client's own keys are
-accepted for it — an admin key never grants a client login, and a client key
-never grants an administrator login.
+Because the name is served over NSS rather than written to `/etc/passwd`,
+it is not bound by `useradd` policy: mixed case, a leading digit, dots and
+non-ASCII all work, so `Tobias`, `1st-box` and `tobías` are all valid. The
+only names refused are the ones that would not survive the lookup — a name
+longer than 32 characters, or one containing `:`, a newline, `/`, `%`, `?`,
+`#`, a space, or starting with `-`.
+
+A name that is already a client always resolves to that client, and only
+that client's own keys are accepted for it — an admin key never grants a
+client login, and a client key never grants an administrator login.
 
 > **It is stored in the database on startup, not held in memory.** sshd runs
 > `AuthorizedKeysCommand` with a scrubbed environment, so that process cannot

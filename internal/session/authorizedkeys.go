@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 
+	"proxpass/internal/api"
 	"proxpass/internal/db"
 )
 
@@ -27,6 +28,26 @@ func WriteAuthorizedKeys(
 ) error {
 	user = strings.TrimSpace(user)
 	if user == "" {
+		return nil
+	}
+
+	// Refuse a name proxpass would never serve as a login.
+	//
+	// In the current deployment sshd cannot actually reach this with a bad
+	// name: it resolves the login through NSS first, and nss_http builds its
+	// lookup URL by unescaped concatenation, so "alice?x" is looked up as
+	// "alice" and sshd adopts that truncated name for everything afterwards
+	// -- including the argument it passes here. Verified by logging the
+	// AuthorizedKeysCommand argv in the image: `ssh 'a?b@host'` invokes it
+	// with "a". The truncation is at least CONSISTENT, so it is a confusing
+	// alias rather than a mismatch: "alice?x" lands on the real client
+	// "alice" and is offered only that client's keys, not an admin key.
+	//
+	// The check is kept as a cheap invariant for the paths that do pass a
+	// name straight through -- a hand-run `proxpass authorized-keys`, and a
+	// future nss_http that escapes the name properly, where the full string
+	// would arrive here for the first time.
+	if !api.ValidLoginName(user) {
 		return nil
 	}
 

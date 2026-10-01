@@ -952,3 +952,71 @@ func TestAdminHelpGoesToTheSessionTerminalNotStdout(t *testing.T) {
 		t.Errorf("usage line leaks the internal command nesting: %q", got)
 	}
 }
+
+// A name proxpass would not serve as a login must be offered no keys.
+//
+// Note what this does NOT prove. sshd resolves the login through NSS before
+// calling AuthorizedKeysCommand, and nss_http concatenates the name into its
+// lookup URL unescaped, so "alice?x" is looked up as "alice" and sshd then
+// uses that truncated name everywhere -- including the argv here. Logging the
+// wrapper's argv in the image confirms it: `ssh 'a?b@host'` arrives as "a".
+//
+// So this guards the paths that pass a name through verbatim: a hand-run
+// `proxpass authorized-keys`, and a future nss_http that escapes properly.
+// The truncation itself is consistent across NSS, sshd and the session, so
+// it yields a confusing alias rather than a privilege mismatch -- "alice?x"
+// lands on the real client "alice" and gets only that client's keys.
+func TestAuthorizedKeysRefusesUnservableNames(t *testing.T) {
+	const adminKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ2H6djoN78rkj1En9yM7XsMUUDyFgiGWn3WZZqfI3JF admin"
+	repo := newRepo(t)
+
+	for _, name := range []string{
+		"alice?x",   // "?" starts the query: looked up as "alice"
+		"alice#x",   // "#" starts the fragment: same
+		"alice/x",   // adds a path segment
+		"alice%2fx", // an escape the server decodes differently
+		"alice:x",   // forges a passwd entry
+		"-alice",    // parsed as a flag by AuthorizedKeysCommand
+		"..",        // net/http redirects off the route
+	} {
+		var out bytes.Buffer
+		if err := session.WriteAuthorizedKeys(
+			t.Context(), &out, repo, name, adminKey); err != nil {
+			t.Fatalf("name %q: WriteAuthorizedKeys: %v", name, err)
+		}
+		if out.Len() != 0 {
+			t.Errorf("name %q was offered a key, so sshd would accept a login "+
+				"whose uid belongs to a different identity: %q", name, out.String())
+		}
+		if _, err := session.ResolveIdentity(t.Context(), repo, name); err == nil {
+			t.Errorf("name %q resolved to an identity, want it refused", name)
+		}
+	}
+}
+
+// The widened set must genuinely work: proxpass serves users over NSS, not
+// from /etc/passwd, so it is not bound by useradd's policy.
+func TestAuthorizedKeysAcceptsNamesUseraddWouldReject(t *testing.T) {
+	const adminKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ2H6djoN78rkj1En9yM7XsMUUDyFgiGWn3WZZqfI3JF admin"
+	repo := newRepo(t)
+
+	for _, name := range []string{"Tobias", "1st-box", "tobias.b", "tobías", "a@host"} {
+		var out bytes.Buffer
+		if err := session.WriteAuthorizedKeys(
+			t.Context(), &out, repo, name, adminKey); err != nil {
+			t.Fatalf("name %q: WriteAuthorizedKeys: %v", name, err)
+		}
+		if !strings.Contains(out.String(), adminKey) {
+			t.Errorf("name %q was refused the admin key, but it is serviceable "+
+				"over NSS", name)
+		}
+		id, err := session.ResolveIdentity(t.Context(), repo, name)
+		if err != nil {
+			t.Errorf("name %q: ResolveIdentity: %v", name, err)
+			continue
+		}
+		if !id.IsAdmin {
+			t.Errorf("name %q did not resolve to the administrator", name)
+		}
+	}
+}

@@ -117,6 +117,14 @@ func TestUnknownUserIsServedAsAnAdminAlias(t *testing.T) {
 	h, _ := newTestServer(t)
 	ids := api.DefaultIDLayout()
 
+	// Names that are not valid for useradd but are perfectly serviceable
+	// over NSS must work: proxpass is not reading /etc/passwd.
+	for _, name := range []string{"Tobias", "1st-box", "tobias.b", "tobías"} {
+		if !api.ValidLoginName(name) {
+			t.Errorf("ValidLoginName(%q) = false, want it served", name)
+		}
+	}
+
 	rec := get(t, h, "/user/name/tobias")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -139,10 +147,14 @@ func TestUnknownUserIsServedAsAnAdminAlias(t *testing.T) {
 func TestUnservableLoginNameIs404(t *testing.T) {
 	h, _ := newTestServer(t)
 	for _, name := range []string{
-		"root:x:0:0",
-		"has space",
-		"1leading-digit",
-		"weird$char",
+		"root:x:0:0", // forges a passwd entry
+		"has space",  // rejected by the HTTP request line
+		"alice\nbob", // forges a passwd record
+		"alice%2f",   // an escape the server would decode differently
+		"alice?x=1",  // resolved as "alice": a DIFFERENT user
+		"alice#frag", // same
+		"al/ice",     // adds a path segment
+		"-alice",     // parsed as a flag by AuthorizedKeysCommand
 		strings.Repeat("a", api.MaxLoginNameLen+1),
 	} {
 		// Escaped as a client would have to send it; the server sees the
@@ -150,6 +162,15 @@ func TestUnservableLoginNameIs404(t *testing.T) {
 		path := "/user/name/" + url.PathEscape(name)
 		if rec := get(t, h, path); rec.Code != http.StatusNotFound {
 			t.Errorf("name %q: status = %d, want 404", name, rec.Code)
+		}
+	}
+
+	// "." and ".." never reach the handler at all: net/http cleans the path
+	// and answers with a redirect, so the lookup lands somewhere else
+	// entirely. They must still be refused as login names.
+	for _, name := range []string{".", ".."} {
+		if api.ValidLoginName(name) {
+			t.Errorf("ValidLoginName(%q) = true, want it refused", name)
 		}
 	}
 }
