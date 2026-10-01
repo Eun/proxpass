@@ -76,7 +76,7 @@ func (d *Deps) pick(rows []guestRow) (guestRow, error) {
 // a number.
 func (d *Deps) pickNumbered(rows []guestRow) (guestRow, error) {
 	out := d.Terminal.UIOut()
-	fmt.Fprintf(out, "proxpass — guests available to %s\n\n", d.User)
+	fmt.Fprintf(out, "proxpass — guests available to %s\n\n", d.displayName())
 	writeGuestTable(out, rows)
 	fmt.Fprintf(out, "\nSelect a guest [1-%d], or q to quit: ", len(rows))
 

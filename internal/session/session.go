@@ -35,8 +35,16 @@ type Deps struct {
 	// Terminal is the local terminal provided by sshd.
 	Terminal *console.Terminal
 
-	// User is the authenticated login name, as reported by sshd.
+	// User is the authenticated login name, as reported by sshd. It is what
+	// the client typed, so it is used for the log, where the name that came
+	// in is what makes the entry an audit record.
 	User string
+	// DisplayName is the configured name behind User, which is what the UI
+	// shows the user; see Identity.DisplayName for why it can differ.
+	//
+	// It falls back to User when unset, so a caller that does not know the
+	// difference still shows something rather than an empty name.
+	DisplayName string
 	// IsAdmin grants access to the full admin CLI and to every guest.
 	IsAdmin bool
 	// ClientID is the database id of the authenticated client; 0 for admins.
@@ -267,8 +275,11 @@ func (d *Deps) writeHelp(ctx context.Context) int {
 
 	w := d.Terminal.UIErr()
 	fmt.Fprintf(w, "proxpass — connect to a Proxmox guest\n\n")
-	fmt.Fprintf(w, "  ssh %s@<host>              choose a guest interactively\n", d.User)
-	fmt.Fprintf(w, "  ssh -t %s@<host> <guest>   connect directly\n\n", d.User)
+	// The display name, not the login name: this is an instruction to be
+	// retyped, so it has to name an identity rather than echo back an
+	// alias that happens to have resolved this time.
+	fmt.Fprintf(w, "  ssh %s@<host>              choose a guest interactively\n", d.displayName())
+	fmt.Fprintf(w, "  ssh -t %s@<host> <guest>   connect directly\n\n", d.displayName())
 	fmt.Fprintf(w, "A guest may be named by VMID (100), type+VMID (ct100, vm200),\n")
 	fmt.Fprintf(w, "name (webserver), or instance-qualified (rome:ct101).\n\n")
 
@@ -286,6 +297,18 @@ func (d *Deps) writeHelp(ctx context.Context) int {
 	}
 	writeGuestTable(w, newGuestRows(guests, instNames))
 	return 0
+}
+
+// displayName is the name the UI shows for this session.
+//
+// Every user-facing mention of "who am I" goes through here rather than
+// reading DisplayName directly, so a caller that only set User -- a test, or
+// anything constructing Deps by hand -- still gets a name instead of a blank.
+func (d *Deps) displayName() string {
+	if d.DisplayName != "" {
+		return d.DisplayName
+	}
+	return d.User
 }
 
 // errf reports an error to the user on stderr.
