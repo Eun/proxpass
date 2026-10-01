@@ -414,3 +414,134 @@ func TestStatusBarUsesDECSCNotANSISYSCursorSave(t *testing.T) {
 		t.Errorf("bar uses ANSI.SYS cursor save/restore: %q", out)
 	}
 }
+
+// --- surviving things that wipe the bar's row ---
+
+// A scroll region confines scrolling, not erasure: ED addresses the whole
+// screen and takes the bar's row with it. Ctrl+L is the everyday way to hit
+// this, because the shell answers it with ED.
+func TestModeFilterDetectsEraseOfTheBarRow(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		seq  string
+		want bool
+	}{
+		{"ED 2J, what Ctrl+L produces", "\x1b[2J", true},
+		{"ED 0J, cursor to end of screen", "\x1b[0J", true},
+		{"ED with no parameter", "\x1b[J", true},
+		{"ED 3J, screen and scrollback", "\x1b[3J", true},
+		// 1J erases up to the cursor, which is always inside the scroll
+		// region and so above the bar.
+		{"ED 1J cannot reach the bar row", "\x1b[1J", false},
+		// EL erases within a line; the cursor cannot be on the bar's row.
+		{"EL 2K stays on the cursor's line", "\x1b[2K", false},
+		{"ordinary text", "hello world", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var m modeFilter
+			if got := m.Observe([]byte(tc.seq)); got != tc.want {
+				t.Errorf("Observe(%q) = %v, want %v", tc.seq, got, tc.want)
+			}
+		})
+	}
+}
+
+// The bar must come back after the guest erases the screen. Without this it
+// stays blank forever, because its text has not changed and the
+// unchanged-repaint skip suppresses the draw.
+func TestStatusBarRepaintsAfterEraseDisplay(t *testing.T) {
+	buf := &lockedBuffer{}
+	b := NewStatusBar(buf, 40, 24)
+	b.SetText(testLabel, testHint)
+	b.Start()
+	defer b.Stop()
+
+	waitForBar(t, buf, testLabel)
+	mark := len(buf.String())
+
+	// What a shell sends for Ctrl+L.
+	b.Observe([]byte("\x1b[H\x1b[2J"))
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(buf.String()[mark:], testLabel) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("bar did not repaint after an erase; wrote only %q", buf.String()[mark:])
+}
+
+// RIS resets the scroll region as well as the screen, so repainting the row
+// is not enough: the region has to be reinstalled or the guest will scroll
+// over the bar.
+func TestStatusBarReinstallsRegionAfterTerminalReset(t *testing.T) {
+	buf := &lockedBuffer{}
+	b := NewStatusBar(buf, 40, 24)
+	b.SetText(testLabel, testHint)
+	b.Start()
+	defer b.Stop()
+
+	waitForBar(t, buf, "\x1b[1;23r")
+	mark := len(buf.String())
+
+	// "reset" / "tput reset" in the guest.
+	b.Observe([]byte("\x1bc"))
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		after := buf.String()[mark:]
+		if strings.Contains(after, "\x1b[1;23r") && strings.Contains(after, testLabel) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("region was not reinstalled after a reset; wrote only %q",
+		buf.String()[mark:])
+}
+
+// A reset leaves the cursor at the top-left of an unrestricted screen, so it
+// has to be put back inside the region.
+func TestStatusBarHomesCursorAfterTerminalReset(t *testing.T) {
+	buf := &lockedBuffer{}
+	b := NewStatusBar(buf, 40, 24)
+	b.SetText(testLabel, testHint)
+	b.Start()
+	defer b.Stop()
+
+	waitForBar(t, buf, "\x1b[1;23r")
+	mark := len(buf.String())
+
+	b.Observe([]byte("\x1bc"))
+	waitForBar(t, buf, testLabel)
+
+	if after := buf.String()[mark:]; !strings.Contains(after, "\x1b[1;1H") {
+		t.Errorf("cursor was not homed into the region after a reset: %q", after)
+	}
+}
+
+// An erase while a full-screen application owns the screen must not bring the
+// bar back: the application is erasing its own screen, and the bar has no
+// row to draw on.
+func TestStatusBarStaysHiddenWhenFullScreenAppErases(t *testing.T) {
+	buf := &lockedBuffer{}
+	b := NewStatusBar(buf, 40, 24)
+	b.SetText(testLabel, testHint)
+	b.Start()
+	defer b.Stop()
+
+	waitForBar(t, buf, testLabel)
+	b.Observe([]byte("\x1b[?1049h"))
+	waitForBar(t, buf, "\x1b[r")
+	mark := len(buf.String())
+
+	// vim clearing and redrawing its own screen.
+	for range 5 {
+		b.Observe([]byte("\x1b[2J\x1b[H"))
+	}
+	time.Sleep(250 * time.Millisecond)
+
+	if after := buf.String()[mark:]; strings.Contains(after, testLabel) {
+		t.Errorf("bar drew while a full-screen application was erasing: %q", after)
+	}
+}
