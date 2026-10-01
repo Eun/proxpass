@@ -225,9 +225,6 @@ func sessionCommand() *ucli.Command {
 }
 
 func runSession(ctx context.Context, cmd *ucli.Command) error {
-	// Sessions log to stderr: stdout is the user's terminal stream.
-	logger := log.New(os.Stderr, "proxpass: ", log.LstdFlags)
-
 	user := cmd.String("user")
 	if user == "" {
 		return fmt.Errorf("no user; sshd should set $USER")
@@ -246,6 +243,13 @@ func runSession(ctx context.Context, cmd *ucli.Command) error {
 
 	term, restore := currentTerminal()
 	defer restore()
+
+	// Sessions log to stderr, which on an interactive login is the user's
+	// terminal: stdout carries the guest console. The log writer therefore
+	// has to go through UIErr as well, or raw mode turns each log line's
+	// newline into a bare LF and the messages staircase across whatever the
+	// session is drawing.
+	logger := log.New(term.UIErr(), "proxpass: ", log.LstdFlags)
 
 	code := session.Run(ctx, &session.Deps{
 		Repo:       repo,

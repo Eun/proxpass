@@ -92,39 +92,12 @@ func (d *Discovery) discoverInstance(ctx context.Context, inst *models.ProxmoxIn
 
 	d.logger.Printf("discovery: instance %s: found %d guests", inst.Name, len(guests))
 
-	// live collects the vmids this pass considers connectable, so that
-	// anything else belonging to this instance can be pruned afterwards.
-	live := make([]int, 0, len(guests))
-
-	for _, g := range guests {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		// Only store running guests: stopped guests cannot be entered via
-		// pct enter / qm terminal, so there is no point surfacing them.
-		if g.Status != models.StatusRunning {
-			continue
-		}
-		g.InstanceID = inst.ID
-		if err := d.repo.UpsertGuest(ctx, g); err != nil {
-			d.logger.Printf("discovery: upsert guest %s (proxmox_id=%d): %v", g.Name, g.ProxmoxID, err)
-			// Do not prune a guest whose upsert failed: treat it as live so
-			// a transient write error cannot delete a guest that is still
-			// running on the host.
-		}
-		live = append(live, g.ProxmoxID)
-	}
-
-	// Reconcile: drop guests that are no longer running or no longer exist.
-	// Without this the list only ever grows, and a stopped or destroyed
-	// guest keeps being offered until the database is wiped by hand.
-	removed, err := d.repo.RemoveGuestsNotIn(ctx, inst.ID, live)
+	stored, removed, err := StoreGuests(ctx, d.repo, inst, guests)
 	if err != nil {
-		return fmt.Errorf("prune stale guests on %s: %w", inst.Name, err)
+		return err
 	}
-	if removed > 0 {
-		d.logger.Printf("discovery: instance %s: removed %d stale guest(s)", inst.Name, removed)
-	}
+	d.logger.Printf("discovery: instance %s: stored %d running guest(s), removed %d stale",
+		inst.Name, stored, removed)
 
 	return nil
 }

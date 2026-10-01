@@ -72,8 +72,25 @@ const (
 
 // adminUser is the synthetic NSS entry for the reserved admin login.
 func (l IDLayout) adminUser() User {
+	return l.adminUserAs(AdminUser)
+}
+
+// adminUserAs is the admin entry under an arbitrary login name.
+//
+// Any name that is not a client resolves to the administrator, which restores
+// the behavior proxpass had when it ran its own SSH server: the connection
+// was authenticated by the key alone and the login name was cosmetic, so
+// "ssh tobias@proxpass" worked with an admin key.
+//
+// sshd cannot work that way, because it resolves the login name through NSS
+// and rejects an unknown one as "Invalid user" BEFORE it ever consults
+// AuthorizedKeysCommand. Serving the name is therefore what makes it usable
+// at all. It grants nothing on its own: every alias shares the admin uid and
+// gid, and only an admin key authorizes it -- see WriteAuthorizedKeys, which
+// offers admin keys and never a client's for such a name.
+func (l IDLayout) adminUserAs(name string) User {
 	return User{
-		User:     AdminUser,
+		User:     name,
 		Passwd:   shadowPasswd,
 		Name:     "proxpass administrator",
 		Dir:      HomeDir,
@@ -201,8 +218,9 @@ func (s *Server) handleUserByName(w http.ResponseWriter, r *http.Request) {
 	client, err := s.repo.GetClientByName(r.Context(), name)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		// Genuinely no such user.
-		http.NotFound(w, r)
+		// Not a client: serve it as an administrator alias so sshd gets far
+		// enough to ask for a key. See adminUserAs.
+		s.writeAdminAlias(w, r, name)
 	case err != nil:
 		// A real backend fault must NOT be reported as 404: nss_http reads
 		// 404 as "no such user", so sshd would reject the login pre-auth as
@@ -210,7 +228,7 @@ func (s *Server) handleUserByName(w http.ResponseWriter, r *http.Request) {
 		// account.
 		s.fail(w, fmt.Sprintf("user %q lookup", name), err)
 	case client == nil:
-		http.NotFound(w, r)
+		s.writeAdminAlias(w, r, name)
 	default:
 		user := s.ids.UserFor(client)
 		if !s.ids.InRange(user.Uid) {
@@ -223,6 +241,20 @@ func (s *Server) handleUserByName(w http.ResponseWriter, r *http.Request) {
 		}
 		s.writeJSON(w, user)
 	}
+}
+
+// writeAdminAlias serves name as an administrator alias, or 404s when the
+// name could not be a login name at all.
+//
+// Refusing a syntactically invalid name matters: the name is echoed into a
+// passwd entry, so it must not be able to carry a colon, a newline or a
+// shell metacharacter.
+func (s *Server) writeAdminAlias(w http.ResponseWriter, r *http.Request, name string) {
+	if !ValidLoginName(name) {
+		http.NotFound(w, r)
+		return
+	}
+	s.writeJSON(w, s.ids.adminUserAs(name))
 }
 
 func (s *Server) handleUserByUID(w http.ResponseWriter, r *http.Request) {

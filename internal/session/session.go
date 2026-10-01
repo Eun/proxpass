@@ -89,11 +89,11 @@ func (d *Deps) runAdmin(ctx context.Context, cmd string) int {
 	deps := &cli.Deps{
 		Repo:       d.Repo,
 		Discoverer: d.Discoverer,
-		Out:        d.Terminal.Out,
-		ErrOut:     d.Terminal.Err,
+		Out:        d.Terminal.UIOut(),
+		ErrOut:     d.Terminal.UIErr(),
 	}
 	argv := append([]string{"proxpass"}, splitArgs(cmd)...)
-	if err := cli.Build(deps).Run(ctx, argv); err != nil {
+	if err := cli.Build(deps).Run(detachValues(ctx), argv); err != nil {
 		d.errf("Error: %v", err)
 		return 1
 	}
@@ -241,14 +241,14 @@ func (d *Deps) writeHelp(ctx context.Context) int {
 		deps := &cli.Deps{
 			Repo:       d.Repo,
 			Discoverer: d.Discoverer,
-			Out:        d.Terminal.Err,
-			ErrOut:     d.Terminal.Err,
+			Out:        d.Terminal.UIErr(),
+			ErrOut:     d.Terminal.UIErr(),
 		}
-		_ = cli.Build(deps).Run(ctx, []string{"proxpass", "--help"})
+		_ = cli.Build(deps).Run(detachValues(ctx), []string{"proxpass", "--help"})
 		return 0
 	}
 
-	w := d.Terminal.Err
+	w := d.Terminal.UIErr()
 	fmt.Fprintf(w, "proxpass — connect to a Proxmox guest\n\n")
 	fmt.Fprintf(w, "  ssh %s@<host>              choose a guest interactively\n", d.User)
 	fmt.Fprintf(w, "  ssh -t %s@<host> <guest>   connect directly\n\n", d.User)
@@ -259,7 +259,15 @@ func (d *Deps) writeHelp(ctx context.Context) int {
 	if err != nil {
 		return 1
 	}
-	writeGuestTable(w, guests)
+	instances, err := d.Repo.ListProxmoxInstances(ctx)
+	if err != nil {
+		return 1
+	}
+	instNames := make(map[int64]string, len(instances))
+	for _, inst := range instances {
+		instNames[inst.ID] = inst.Name
+	}
+	writeGuestTable(w, newGuestRows(guests, instNames))
 	return 0
 }
 
@@ -267,7 +275,7 @@ func (d *Deps) writeHelp(ctx context.Context) int {
 func (d *Deps) errf(format string, args ...any) {
 	var w io.Writer = os.Stderr
 	if d.Terminal != nil && d.Terminal.Err != nil {
-		w = d.Terminal.Err
+		w = d.Terminal.UIErr()
 	}
 	fmt.Fprintf(w, format+"\n", args...)
 }

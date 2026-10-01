@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 
+	"proxpass/internal/api"
 	"proxpass/internal/db"
 )
 
@@ -30,23 +31,44 @@ func WriteAuthorizedKeys(
 		return nil
 	}
 
-	if user == AdminUser {
-		writeKeys(w, []string{flagAdminKey})
-		keys, err := repo.ListAdminKeys(ctx)
-		if err != nil {
-			return fmt.Errorf("listing admin keys: %w", err)
-		}
-		writeKeys(w, keys)
+	// Refuse a name proxpass would never serve as a login.
+	//
+	// In the current deployment sshd cannot actually reach this with a bad
+	// name: it resolves the login through NSS first, and nss_http builds its
+	// lookup URL by unescaped concatenation, so "alice?x" is looked up as
+	// "alice" and sshd adopts that truncated name for everything afterwards
+	// -- including the argument it passes here. Verified by logging the
+	// AuthorizedKeysCommand argv in the image: `ssh 'a?b@host'` invokes it
+	// with "a". The truncation is at least CONSISTENT, so it is a confusing
+	// alias rather than a mismatch: "alice?x" lands on the real client
+	// "alice" and is offered only that client's keys, not an admin key.
+	//
+	// The check is kept as a cheap invariant for the paths that do pass a
+	// name straight through -- a hand-run `proxpass authorized-keys`, and a
+	// future nss_http that escapes the name properly, where the full string
+	// would arrive here for the first time.
+	if !api.ValidLoginName(user) {
 		return nil
 	}
 
 	client, err := repo.GetClientByName(ctx, user)
-	if err != nil || client == nil {
-		// An unknown user is not an error: sshd asks about every login name
-		// it is offered, including ones that do not exist.
+	if err == nil && client != nil && user != AdminUser {
+		// A client: only its own keys, never an admin key.
+		writeKeys(w, client.PublicKeys)
 		return nil
 	}
-	writeKeys(w, client.PublicKeys)
+
+	// Not a client, so this is the administrator under some login name.
+	// proxpass used to authenticate purely by key and ignore the name, so
+	// "ssh tobias@host" worked with an admin key; the directory serves any
+	// unused name as an admin alias to keep that working. Authorization
+	// still comes from the admin key list alone.
+	writeKeys(w, []string{flagAdminKey})
+	keys, err := repo.ListAdminKeys(ctx)
+	if err != nil {
+		return fmt.Errorf("listing admin keys: %w", err)
+	}
+	writeKeys(w, keys)
 	return nil
 }
 

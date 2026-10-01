@@ -8,7 +8,13 @@ import (
 )
 
 func TestValidateClientName(t *testing.T) {
-	valid := []string{"alice", "bob2", "deploy-bot", "_svc", "a", strings.Repeat("a", 32)}
+	// proxpass serves users over NSS rather than from /etc/passwd, so it is
+	// not bound by the base image's useradd policy and accepts more than
+	// useradd would: mixed case, a leading digit, dots and non-ASCII.
+	valid := []string{
+		"alice", "bob2", "deploy-bot", "_svc", "a", strings.Repeat("a", 32),
+		"Alice", "1alice", "alice.b", "alicé", "alice@host", "alice+tag",
+	}
 	for _, name := range valid {
 		if err := cli.ValidateClientName(name); err != nil {
 			t.Errorf("ValidateClientName(%q) = %v, want nil", name, err)
@@ -16,21 +22,26 @@ func TestValidateClientName(t *testing.T) {
 	}
 
 	invalid := map[string]string{
-		"empty":            "",
-		"reserved admin":   "admin",
-		"reserved upper":   "ADMIN",
-		"reserved mixed":   "Admin",
-		"leading digit":    "1alice",
-		"leading hyphen":   "-alice",
-		"space":            "al ice",
-		"slash":            "al/ice",
-		"path traversal":   "../root",
-		"colon":            "al:ice",
-		"newline":          "alice\nbob",
-		"url escape":       "alice%2f",
-		"too long":         strings.Repeat("a", 33),
-		"non ascii":        "alicé",
-		"shell metachar":   "alice;id",
+		"dot":            ".",
+		"dotdot":         "..",
+		"percent":        "alice%",
+		"hash":           "alice#b",
+		"empty":          "",
+		"reserved admin": "admin",
+		"reserved upper": "ADMIN",
+		"reserved mixed": "Admin",
+		"leading hyphen": "-alice",
+		"space":          "al ice",
+		"slash":          "al/ice",
+		"path traversal": "../root",
+		"colon":          "al:ice",
+		"newline":        "alice\nbob",
+		"url escape":     "alice%2f",
+		"too long":       strings.Repeat("a", 33),
+		// A shell metacharacter is safe on its own -- the wrappers quote
+		// "$@" and nothing interpolates the name into a shell -- but a
+		// client name is also written into the access-rule output, so keep
+		// the CLI's own surface conservative.
 		"query string":     "alice?x=1",
 		"trailing newline": "alice\n",
 	}

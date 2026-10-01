@@ -41,6 +41,10 @@ func currentTerminal() (t *console.Terminal, restore func()) {
 		return t, func() {}
 	}
 
+	// Past this point the terminal no longer translates "\n" into "\r\n", so
+	// proxpass's own output has to do it itself; see Terminal.UIOut.
+	t.Raw = true
+
 	resizes := make(chan console.Size, 1)
 	t.Resizes = resizes
 	stopResizes := watchResizes(fd, resizes)

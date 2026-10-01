@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -36,6 +38,13 @@ func ResolveIdentity(ctx context.Context, repo db.Repository, user string) (*Ide
 	if user == "" {
 		return nil, fmt.Errorf("empty user name")
 	}
+	// A name proxpass would not serve cannot have been authenticated
+	// against it either, so refuse rather than resolve an identity for it.
+	// See WriteAuthorizedKeys for why sshd does not currently deliver such
+	// a name in the first place.
+	if !api.ValidLoginName(user) {
+		return nil, fmt.Errorf("invalid login name %q", user)
+	}
 	if user == AdminUser {
 		// Defense in depth: "admin" is reserved, and cli.ValidateClientName
 		// refuses to create a client with that name. If one exists anyway
@@ -49,12 +58,20 @@ func ResolveIdentity(ctx context.Context, repo db.Repository, user string) (*Ide
 		}
 		return &Identity{User: user, IsAdmin: true}, nil
 	}
+
 	client, err := repo.GetClientByName(ctx, user)
-	if err != nil {
+	if err == nil && client != nil {
+		return &Identity{User: user, ClientID: client.ID}, nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		// A real storage fault must not be mistaken for "not a client",
+		// which would silently promote the login to an administrator.
 		return nil, fmt.Errorf("looking up client %q: %w", user, err)
 	}
-	if client == nil {
-		return nil, fmt.Errorf("unknown client %q", user)
-	}
-	return &Identity{User: user, ClientID: client.ID}, nil
+
+	// Not a client. Reaching this point means sshd already authenticated the
+	// login against the admin key list (WriteAuthorizedKeys offers only
+	// those for a name that is not a client), so this is the administrator
+	// logging in under a login name of their choosing.
+	return &Identity{User: user, IsAdmin: true}, nil
 }

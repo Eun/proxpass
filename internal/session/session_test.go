@@ -2,11 +2,16 @@ package session_test
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"io"
 	"log"
+	"os"
 	"strings"
 	"testing"
 	"time"
+
+	ucli "github.com/urfave/cli/v3"
 
 	"proxpass/internal/console"
 	"proxpass/internal/db"
@@ -18,6 +23,9 @@ import (
 const (
 	userAlice  = "alice"
 	guestCT100 = "ct100"
+	pveAPIURL  = "https://pve:8006"
+	instPVE    = "pve"
+	cmdGuestLs = "guest ls"
 )
 
 func newRepo(t *testing.T) db.Repository {
@@ -168,10 +176,77 @@ func TestAuthorizedKeysNeverOffersAShadowedAdminClientKey(t *testing.T) {
 	}
 }
 
-func TestResolveIdentityUnknown(t *testing.T) {
+// A login name that is not a client belongs to the administrator.
+//
+// sshd has already authenticated it against the admin key list by the time
+// this runs: WriteAuthorizedKeys offers only admin keys for such a name. This
+// restores the behavior proxpass had with its own SSH server, where the key
+// authenticated the connection and the login name was cosmetic.
+func TestResolveIdentityTreatsANonClientNameAsTheAdmin(t *testing.T) {
 	repo := newRepo(t)
-	if _, err := session.ResolveIdentity(t.Context(), repo, "nobody"); err == nil {
-		t.Error("unknown user must be rejected")
+	id, err := session.ResolveIdentity(t.Context(), repo, "tobias")
+	if err != nil {
+		t.Fatalf("ResolveIdentity: %v", err)
+	}
+	if !id.IsAdmin {
+		t.Error("a non-client login name must resolve to the administrator")
+	}
+	if id.User != "tobias" {
+		t.Errorf("User = %q, want %q", id.User, "tobias")
+	}
+	if id.ClientID != 0 {
+		t.Errorf("ClientID = %d, want 0", id.ClientID)
+	}
+}
+
+// Only admin keys may be offered for a name that is not a client: a client's
+// key must never authorize an admin alias.
+func TestAuthorizedKeysOffersOnlyAdminKeysForANonClientName(t *testing.T) {
+	const (
+		adminKey  = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ2H6djoN78rkj1En9yM7XsMUUDyFgiGWn3WZZqfI3JF admin"
+		clientKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHixnSBaUZmAX3Qd4hYl71jjgr58KXAJTdKjFrax6FHN alice"
+	)
+	repo := newRepo(t)
+	addClient(t, repo, clientKey)
+
+	var out bytes.Buffer
+	if err := session.WriteAuthorizedKeys(
+		t.Context(), &out, repo, "tobias", adminKey); err != nil {
+		t.Fatalf("WriteAuthorizedKeys: %v", err)
+	}
+	if !strings.Contains(out.String(), adminKey) {
+		t.Errorf("the admin key was not offered for an alias: %q", out.String())
+	}
+	if strings.Contains(out.String(), clientKey) {
+		t.Errorf("a client's key was offered for an alias: %q", out.String())
+	}
+}
+
+// A client name must still resolve to that client, and must not be promoted
+// to an administrator.
+func TestAuthorizedKeysNeverOffersAnAdminKeyForAClient(t *testing.T) {
+	const (
+		adminKey  = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ2H6djoN78rkj1En9yM7XsMUUDyFgiGWn3WZZqfI3JF admin"
+		clientKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHixnSBaUZmAX3Qd4hYl71jjgr58KXAJTdKjFrax6FHN alice"
+	)
+	repo := newRepo(t)
+	addClient(t, repo, clientKey)
+
+	var out bytes.Buffer
+	if err := session.WriteAuthorizedKeys(
+		t.Context(), &out, repo, userAlice, adminKey); err != nil {
+		t.Fatalf("WriteAuthorizedKeys: %v", err)
+	}
+	if strings.Contains(out.String(), adminKey) {
+		t.Errorf("an admin key was offered for a client login: %q", out.String())
+	}
+
+	id, err := session.ResolveIdentity(t.Context(), repo, userAlice)
+	if err != nil {
+		t.Fatalf("ResolveIdentity: %v", err)
+	}
+	if id.IsAdmin {
+		t.Error("a client login must not resolve to the administrator")
 	}
 }
 
@@ -208,7 +283,7 @@ func newDeps(repo db.Repository, tb *terminalBuf, proxier console.Proxier) *sess
 func seedGuest(t *testing.T, repo db.Repository) *models.Guest {
 	t.Helper()
 	inst := &models.ProxmoxInstance{
-		Name: "pve", APIURL: "https://pve:8006", Node: "pve",
+		Name: instPVE, APIURL: pveAPIURL, Node: instPVE,
 		ConnectionType: models.ConnectionTypeTermProxy,
 	}
 	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
@@ -235,7 +310,7 @@ func TestClientCannotRunAdminCommands(t *testing.T) {
 	d := newDeps(repo, tb, &testenv.MockProxier{})
 	d.User = userAlice
 	d.ClientID = client.ID
-	d.Command = "guest ls"
+	d.Command = cmdGuestLs
 
 	if code := session.Run(t.Context(), d); code == 0 {
 		t.Error("multi-word command from a client must fail")
@@ -539,4 +614,409 @@ func nonEmptyLines(s string) []string {
 		}
 	}
 	return out
+}
+
+// --- interactive picker ------------------------------------------------
+
+// seedNamedGuest adds a running guest with a given name and vmid.
+func seedNamedGuest(t *testing.T, repo db.Repository, instID int64, name string, vmid int) {
+	t.Helper()
+	g := &models.Guest{
+		Type: models.GuestTypeCT, Name: name, Status: models.StatusRunning,
+		ProxmoxID: vmid, InstanceID: instID,
+	}
+	if err := repo.UpsertGuest(t.Context(), g); err != nil {
+		t.Fatalf("upsert guest %s: %v", name, err)
+	}
+}
+
+// Drives the interactive picker the way a real terminal does: raw mode, keys
+// arriving one at a time on a stream that stays open. Typing a filter and
+// pressing Enter must connect to the matching guest.
+//
+// This is the regression test for the picker losing its filter: with the
+// plain numbered prompt there was no way to narrow a 50-guest list at all.
+func TestInteractivePickerFiltersAndConnects(t *testing.T) {
+	repo := newRepo(t)
+	inst := &models.ProxmoxInstance{
+		Name: instPVE, APIURL: pveAPIURL, Node: instPVE,
+		ConnectionType: models.ConnectionTypeTermProxy,
+	}
+	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
+		t.Fatalf("add instance: %v", err)
+	}
+	seedNamedGuest(t, repo, inst.ID, "alpha", 100)
+	seedNamedGuest(t, repo, inst.ID, "mautrix-whatsapp", 101)
+	seedNamedGuest(t, repo, inst.ID, "zulu", 102)
+
+	proxier := &testenv.MockProxier{}
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { _ = pw.Close() })
+
+	tb := newTerminal("")
+	tb.term.In = pr
+	tb.term.Raw = true // a PTY in raw mode, as sshd hands us
+	d := newDeps(repo, tb, proxier)
+	d.User = session.AdminUser
+	d.IsAdmin = true
+
+	done := make(chan int, 1)
+	go func() { done <- session.Run(t.Context(), d) }()
+
+	// "mw" is a subsequence of "mautrix-whatsapp" and of nothing else.
+	go func() {
+		_, _ = pw.Write([]byte("mw"))
+		_, _ = pw.Write([]byte("\r"))
+		for i := 0; i < 200; i++ {
+			if len(proxierSessions(proxier)) > 0 {
+				_ = pw.Close()
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, tb.errb.String())
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the interactive picker hung")
+	}
+
+	sessions := proxierSessions(proxier)
+	if len(sessions) != 1 {
+		t.Fatalf("got %d console sessions, want 1", len(sessions))
+	}
+	if sessions[0].ProxmoxID != 101 {
+		t.Errorf("connected to vmid %d, want 101 (the filtered guest)",
+			sessions[0].ProxmoxID)
+	}
+}
+
+// Ctrl+C must exit the picker cleanly without connecting anywhere.
+func TestInteractivePickerQuitsOnCtrlC(t *testing.T) {
+	repo := newRepo(t)
+	seedGuest(t, repo)
+
+	proxier := &testenv.MockProxier{}
+	tb := newTerminal("\x03")
+	tb.term.Raw = true
+	d := newDeps(repo, tb, proxier)
+	d.User = session.AdminUser
+	d.IsAdmin = true
+
+	if code := session.Run(t.Context(), d); code != 0 {
+		t.Errorf("quitting must exit cleanly, got %d (stderr: %q)",
+			code, tb.errb.String())
+	}
+	if len(proxier.Sessions) != 0 {
+		t.Error("quitting must not open a console")
+	}
+}
+
+// The picker must leave the alternate screen and restore the cursor on every
+// exit path, or the user is left staring at a blank terminal.
+func TestInteractivePickerRestoresTheScreen(t *testing.T) {
+	repo := newRepo(t)
+	seedGuest(t, repo)
+
+	tb := newTerminal("\x03")
+	tb.term.Raw = true
+	d := newDeps(repo, tb, &testenv.MockProxier{})
+	d.User = session.AdminUser
+	d.IsAdmin = true
+
+	_ = session.Run(t.Context(), d)
+
+	out := tb.out.String()
+	if !strings.Contains(out, "\x1b[?1049h") {
+		t.Error("the picker never entered the alternate screen")
+	}
+	if !strings.Contains(out, "\x1b[?1049l") {
+		t.Error("the picker did not leave the alternate screen")
+	}
+	if !strings.Contains(out, "\x1b[?25h") {
+		t.Error("the picker did not restore the cursor")
+	}
+}
+
+// Without a PTY there is nothing to drive a full-screen UI, so the picker
+// must fall back to the numbered prompt. Scripted use depends on it.
+func TestPickerFallsBackToANumberedPromptWithoutAPTY(t *testing.T) {
+	repo := newRepo(t)
+	guest := seedGuest(t, repo)
+
+	proxier := &testenv.MockProxier{}
+	tb := newTerminal("1\n")
+	tb.term.Raw = false // no PTY
+	d := newDeps(repo, tb, proxier)
+	d.User = session.AdminUser
+	d.IsAdmin = true
+
+	if code := session.Run(t.Context(), d); code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, tb.errb.String())
+	}
+	out := tb.out.String()
+	if strings.Contains(out, "\x1b[?1049h") {
+		t.Error("the fallback must not use the alternate screen")
+	}
+	if !strings.Contains(out, "Select a guest") {
+		t.Errorf("output %q does not contain the numbered prompt", out)
+	}
+	sessions := proxierSessions(proxier)
+	if len(sessions) != 1 || sessions[0].ProxmoxID != guest.ProxmoxID {
+		t.Errorf("the numbered selection did not connect to the guest: %+v", sessions)
+	}
+}
+
+// assertNoBareLF fails when s contains a newline that is not preceded by a
+// carriage return. On a raw-mode PTY ONLCR is off, so such a newline moves
+// the cursor down without returning it to column 0 and every subsequent line
+// starts further right -- the staircase users reported.
+func assertNoBareLF(t *testing.T, what, s string) {
+	t.Helper()
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\n' {
+			continue
+		}
+		if i == 0 || s[i-1] != '\r' {
+			t.Fatalf("%s contains a bare LF at offset %d, which staircases on a raw PTY: %q",
+				what, i, s)
+		}
+	}
+}
+
+// Everything proxpass prints to a raw-mode terminal must be CRLF terminated.
+// The numbered guest table was the worst offender: text/tabwriter emitted
+// bare newlines and the list drifted further right with every row.
+func TestSessionOutputIsCRLFOnRawTerminals(t *testing.T) {
+	repo := newRepo(t)
+	inst := &models.ProxmoxInstance{
+		Name: instPVE, APIURL: pveAPIURL, Node: instPVE,
+		ConnectionType: models.ConnectionTypeTermProxy,
+	}
+	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
+		t.Fatalf("add instance: %v", err)
+	}
+	for i, name := range []string{"alpha", "beta", "gamma"} {
+		seedNamedGuest(t, repo, inst.ID, name, 100+i)
+	}
+
+	t.Run("help and guest table", func(t *testing.T) {
+		client := addClient(t, repo)
+		tb := newTerminal("")
+		tb.term.Raw = true
+		d := newDeps(repo, tb, &testenv.MockProxier{})
+		d.User = userAlice
+		d.ClientID = client.ID
+		d.Command = "--help"
+
+		if code := session.Run(t.Context(), d); code != 0 {
+			t.Fatalf("help exit code = %d, want 0", code)
+		}
+		assertNoBareLF(t, "help output", tb.errb.String())
+	})
+
+	t.Run("error messages", func(t *testing.T) {
+		tb := newTerminal("")
+		tb.term.Raw = true
+		d := newDeps(repo, tb, &testenv.MockProxier{})
+		d.User = session.AdminUser
+		d.IsAdmin = true
+		d.Command = "ct999"
+
+		if code := session.Run(t.Context(), d); code == 0 {
+			t.Fatal("an unknown guest must fail")
+		}
+		assertNoBareLF(t, "error output", tb.errb.String())
+	})
+
+	t.Run("admin CLI output", func(t *testing.T) {
+		tb := newTerminal("")
+		tb.term.Raw = true
+		d := newDeps(repo, tb, &testenv.MockProxier{})
+		d.User = session.AdminUser
+		d.IsAdmin = true
+		d.Command = cmdGuestLs
+
+		if code := session.Run(t.Context(), d); code != 0 {
+			t.Fatalf("%s exit code = %d, want 0 (stderr %q)", cmdGuestLs, code, tb.errb.String())
+		}
+		assertNoBareLF(t, cmdGuestLs+" output", tb.out.String())
+	})
+
+	t.Run("interactive picker frame", func(t *testing.T) {
+		tb := newTerminal("\x03")
+		tb.term.Raw = true
+		d := newDeps(repo, tb, &testenv.MockProxier{})
+		d.User = session.AdminUser
+		d.IsAdmin = true
+
+		_ = session.Run(t.Context(), d)
+		assertNoBareLF(t, "picker frame", tb.out.String())
+	})
+}
+
+// A cooked (non-raw) stream must NOT be given carriage returns: the terminal
+// driver adds them itself, and a captured "guest ls --json" must stay valid.
+func TestSessionOutputIsPlainOnCookedTerminals(t *testing.T) {
+	repo := newRepo(t)
+	tb := newTerminal("")
+	tb.term.Raw = false
+	d := newDeps(repo, tb, &testenv.MockProxier{})
+	d.User = session.AdminUser
+	d.IsAdmin = true
+	d.Command = cmdGuestLs
+
+	if code := session.Run(t.Context(), d); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if strings.Contains(tb.out.String(), "\r") {
+		t.Errorf("a cooked terminal must not receive carriage returns: %q",
+			tb.out.String())
+	}
+}
+
+// The admin CLI runs nested inside the "proxpass session" ucli command.
+// urfave/cli stores the running command in the context and adopts it as the
+// parent of any tree started with it, which sent help to Root().Writer --
+// the OUTER root, which has no writer, so the text went straight to
+// os.Stdout. It bypassed the session terminal entirely, which meant it
+// skipped the raw-mode CRLF translation and staircased down the screen.
+//
+// A plain buffer cannot catch that, because the escape happens at the
+// process level: this captures os.Stdout for the duration of the call.
+func TestAdminHelpGoesToTheSessionTerminalNotStdout(t *testing.T) {
+	realStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = realStdout })
+
+	captured := make(chan string, 1)
+	go func() {
+		var b strings.Builder
+		_, _ = io.Copy(&b, r)
+		captured <- b.String()
+	}()
+
+	repo := newRepo(t)
+	tb := newTerminal("")
+	tb.term.Raw = true
+	d := newDeps(repo, tb, &testenv.MockProxier{})
+	d.User = session.AdminUser
+	d.IsAdmin = true
+	d.Command = "help"
+
+	// The session must run with the context urfave/cli gives an Action, not
+	// a bare one: that context carries the running command, and it is what
+	// makes the nested admin CLI adopt it as a parent. Calling session.Run
+	// with a plain context cannot reproduce the bug at all.
+	outer := &ucli.Command{
+		Name: "proxpass",
+		Commands: []*ucli.Command{{
+			Name: "session",
+			Action: func(ctx context.Context, _ *ucli.Command) error {
+				if code := session.Run(ctx, d); code != 0 {
+					return fmt.Errorf("help exit code = %d, want 0", code)
+				}
+				return nil
+			},
+		}},
+	}
+	if err := outer.Run(t.Context(), []string{"proxpass", "session"}); err != nil {
+		t.Fatalf("session: %v", err)
+	}
+
+	_ = w.Close()
+	os.Stdout = realStdout
+	leaked := <-captured
+
+	if leaked != "" {
+		t.Errorf("admin help leaked %d bytes to os.Stdout, bypassing the "+
+			"session terminal and its CRLF translation: %q", len(leaked), leaked)
+	}
+	got := tb.errb.String()
+	if !strings.Contains(got, "ProxPass admin CLI") {
+		t.Fatalf("help did not reach the session terminal: %q", got)
+	}
+	assertNoBareLF(t, "admin help", got)
+
+	// The usage line must name the command the user actually types, not the
+	// internal nesting ("proxpass session proxpass ...").
+	if strings.Contains(got, "session proxpass") {
+		t.Errorf("usage line leaks the internal command nesting: %q", got)
+	}
+}
+
+// A name proxpass would not serve as a login must be offered no keys.
+//
+// Note what this does NOT prove. sshd resolves the login through NSS before
+// calling AuthorizedKeysCommand, and nss_http concatenates the name into its
+// lookup URL unescaped, so "alice?x" is looked up as "alice" and sshd then
+// uses that truncated name everywhere -- including the argv here. Logging the
+// wrapper's argv in the image confirms it: `ssh 'a?b@host'` arrives as "a".
+//
+// So this guards the paths that pass a name through verbatim: a hand-run
+// `proxpass authorized-keys`, and a future nss_http that escapes properly.
+// The truncation itself is consistent across NSS, sshd and the session, so
+// it yields a confusing alias rather than a privilege mismatch -- "alice?x"
+// lands on the real client "alice" and gets only that client's keys.
+func TestAuthorizedKeysRefusesUnservableNames(t *testing.T) {
+	const adminKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ2H6djoN78rkj1En9yM7XsMUUDyFgiGWn3WZZqfI3JF admin"
+	repo := newRepo(t)
+
+	for _, name := range []string{
+		"alice?x",   // "?" starts the query: looked up as "alice"
+		"alice#x",   // "#" starts the fragment: same
+		"alice/x",   // adds a path segment
+		"alice%2fx", // an escape the server decodes differently
+		"alice:x",   // forges a passwd entry
+		"-alice",    // parsed as a flag by AuthorizedKeysCommand
+		"..",        // net/http redirects off the route
+	} {
+		var out bytes.Buffer
+		if err := session.WriteAuthorizedKeys(
+			t.Context(), &out, repo, name, adminKey); err != nil {
+			t.Fatalf("name %q: WriteAuthorizedKeys: %v", name, err)
+		}
+		if out.Len() != 0 {
+			t.Errorf("name %q was offered a key, so sshd would accept a login "+
+				"whose uid belongs to a different identity: %q", name, out.String())
+		}
+		if _, err := session.ResolveIdentity(t.Context(), repo, name); err == nil {
+			t.Errorf("name %q resolved to an identity, want it refused", name)
+		}
+	}
+}
+
+// The widened set must genuinely work: proxpass serves users over NSS, not
+// from /etc/passwd, so it is not bound by useradd's policy.
+func TestAuthorizedKeysAcceptsNamesUseraddWouldReject(t *testing.T) {
+	const adminKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ2H6djoN78rkj1En9yM7XsMUUDyFgiGWn3WZZqfI3JF admin"
+	repo := newRepo(t)
+
+	for _, name := range []string{"Tobias", "1st-box", "tobias.b", "tobías", "a@host"} {
+		var out bytes.Buffer
+		if err := session.WriteAuthorizedKeys(
+			t.Context(), &out, repo, name, adminKey); err != nil {
+			t.Fatalf("name %q: WriteAuthorizedKeys: %v", name, err)
+		}
+		if !strings.Contains(out.String(), adminKey) {
+			t.Errorf("name %q was refused the admin key, but it is serviceable "+
+				"over NSS", name)
+		}
+		id, err := session.ResolveIdentity(t.Context(), repo, name)
+		if err != nil {
+			t.Errorf("name %q: ResolveIdentity: %v", name, err)
+			continue
+		}
+		if !id.IsAdmin {
+			t.Errorf("name %q did not resolve to the administrator", name)
+		}
+	}
 }

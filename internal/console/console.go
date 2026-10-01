@@ -29,6 +29,34 @@ type Terminal struct {
 	// Resizes yields new dimensions as the terminal is resized. It may be nil
 	// when the caller cannot observe resizes.
 	Resizes <-chan Size
+
+	// Raw reports whether Out/Err are a PTY that has been put into raw mode.
+	//
+	// Raw mode clears ONLCR, so the terminal stops translating "\n" into
+	// "carriage return + line feed" and text printed with bare newlines
+	// staircases down the screen. Anything writing proxpass's own UI must go
+	// through UIOut/UIErr, which add that translation back.
+	Raw bool
+}
+
+// UIOut returns the writer to use for proxpass's own output on this terminal.
+//
+// A guest console must keep writing to Out directly: its bytes are already
+// correctly terminated and may be binary escape sequences in which a 0x0a is
+// data rather than a line break.
+func (t *Terminal) UIOut() io.Writer { return t.uiWriter(t.Out) }
+
+// UIErr is UIOut for the error stream.
+func (t *Terminal) UIErr() io.Writer { return t.uiWriter(t.Err) }
+
+func (t *Terminal) uiWriter(w io.Writer) io.Writer {
+	if w == nil {
+		return io.Discard
+	}
+	if !t.Raw {
+		return w
+	}
+	return NewCRLFWriter(w)
 }
 
 // Size is a terminal dimension update.
