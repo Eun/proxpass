@@ -101,19 +101,22 @@ func writeGuestTable(w io.Writer, rows []guestRow) {
 		return
 	}
 	widths := columnWidths(rows)
-	fmt.Fprintf(w, "  %*s  %-*s  %-*s  %s\n",
-		widths.num, "#", widths.id, "ID", widths.name, "NAME", "STATUS")
+	fmt.Fprintf(w, "  %*s  %-*s  %-*s  %-*s  %s\n",
+		widths.num, "#", widths.id, colID, widths.name, colName,
+		widths.status, colStatus, colHost)
 	for i, r := range rows {
-		fmt.Fprintf(w, "  %*d  %-*s  %-*s  %s\n",
-			widths.num, i+1, widths.id, r.id, widths.name, r.guest.Name, r.guest.Status)
+		fmt.Fprintf(w, "  %*d  %-*s  %-*s  %-*s  %s\n",
+			widths.num, i+1, widths.id, r.id, widths.name, r.guest.Name,
+			widths.status, r.guest.Status, r.instName)
 	}
 }
 
 // colWidths are the column widths of the rendered guest table.
 type colWidths struct {
-	num  int
-	id   int
-	name int
+	num    int
+	id     int
+	name   int
+	status int
 }
 
 // columnWidths measures the table columns.
@@ -123,7 +126,12 @@ type colWidths struct {
 // output is not a terminal it can measure; on a raw PTY that produced a
 // misaligned table. Plain %-*s padding renders identically everywhere.
 func columnWidths(rows []guestRow) colWidths {
-	w := colWidths{num: len(fmt.Sprint(len(rows))), id: len("ID"), name: len("NAME")}
+	w := colWidths{
+		num:    len(fmt.Sprint(len(rows))),
+		id:     len(colID),
+		name:   len(colName),
+		status: len(colStatus),
+	}
 	for _, r := range rows {
 		if n := displayWidth(r.id); n > w.id {
 			w.id = n
@@ -131,9 +139,21 @@ func columnWidths(rows []guestRow) colWidths {
 		if n := displayWidth(r.guest.Name); n > w.name {
 			w.name = n
 		}
+		if n := displayWidth(string(r.guest.Status)); n > w.status {
+			w.status = n
+		}
 	}
 	return w
 }
+
+// Column headings, shared by the interactive picker and the numbered
+// fallback so the two cannot drift apart.
+const (
+	colID     = "ID"
+	colName   = "NAME"
+	colStatus = "STATUS"
+	colHost   = "HOST"
+)
 
 // readChoice reads a selection in [1,max] from r.
 func readChoice(r io.Reader, maxChoice int) (int, error) {

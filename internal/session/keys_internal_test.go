@@ -18,6 +18,8 @@ func TestReadKeyDecodesTerminalInput(t *testing.T) {
 		"enter as CR":    {"\r", key{kind: keyEnter}},
 		"enter as LF":    {"\n", key{kind: keyEnter}},
 		"ctrl+c":         {"\x03", key{kind: keyCtrlC}},
+		"tab":            {"\x09", key{kind: keyTab}},
+		"shift+tab":      {"\x1b[Z", key{kind: keyShiftTab}},
 		"ctrl+u":         {"\x15", key{kind: keyCtrlU}},
 		"backspace":      {"\x7f", key{kind: keyBackspace}},
 		"backspace 0x08": {"\x08", key{kind: keyBackspace}},

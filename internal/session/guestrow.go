@@ -27,9 +27,13 @@ type guestRow struct {
 	score int
 }
 
-// newGuestRows builds the picker's rows, sorted by name so the list has a
-// stable order the user can learn. Discovery returns guests in whatever order
-// the Proxmox API listed them, which changes between passes.
+// newGuestRows builds the picker's rows in the default sort order, so the
+// list has a stable order the user can learn. Discovery returns guests in
+// whatever order the Proxmox API listed them, which changes between passes.
+//
+// The order here must match sortRows(rows, sortByName), since that is what
+// the picker re-applies when a filter is cleared; sortRows is used directly
+// rather than a second comparison function so the two cannot disagree.
 func newGuestRows(guests []*models.Guest, instNames map[int64]string) []guestRow {
 	rows := make([]guestRow, 0, len(guests))
 	for _, g := range guests {
@@ -42,12 +46,7 @@ func newGuestRows(guests []*models.Guest, instNames map[int64]string) []guestRow
 			fields:   []string{g.Name, id, inst},
 		})
 	}
-	sort.Slice(rows, func(i, j int) bool {
-		if rows[i].guest.Name != rows[j].guest.Name {
-			return rows[i].guest.Name < rows[j].guest.Name
-		}
-		return rows[i].id < rows[j].id
-	})
+	sortRows(rows, sortByName)
 	return rows
 }
 

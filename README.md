@@ -61,22 +61,43 @@ Connecting without a command opens an interactive picker:
 ```
 proxpass — guests available to admin
 
-  ID     NAME              STATUS
-▸ ct118  mautrix-whatsapp  running  pve
-  ct126  mautrix-telegram  running  pve
-  ct103  merge-with-label  running  pve
+  ID     NAME ▲            STATUS   HOST
+▸ ct103  merge-with-label  running  pve1
+  ct126  mautrix-telegram  running  pve1
+  ct118  mautrix-whatsapp  running  pve2
 
-  filter: m█  (3/50)
-  ↑/↓ move · type to filter · ⏎ connect · esc clear · ctrl+c quit
+  50 guests · sort: name
+  ↑/↓ move · type to filter · ⏎ connect · tab sort · esc clear · ctrl+c quit
 ```
 
 Typing filters the list as a fuzzy subsequence match, so `mw` finds
 `mautrix-whatsapp` and `118` finds `ct118`. Each of the name, the type+VMID
-and the instance name is matched on its own, and a hit on the name ranks
-highest.
+and the host is matched on its own, and a hit on the name ranks highest.
+
+### Sorting
+
+**`Tab`** cycles the sort column and **`Shift+Tab`** goes back. The `▲` in
+the header marks the active column and the status line names it:
+
+| Column | Order |
+| --- | --- |
+| `NAME` | alphabetical (the default) |
+| `ID` | numeric by VMID, so `ct99` comes before `ct118` |
+| `STATUS` | running first, since those are the ones you can enter |
+| `HOST` | alphabetical by Proxmox host |
+
+Tab is used rather than a letter because every printable key goes into the
+filter — binding `s` would make it impossible to type a guest called
+`staging`.
+
+While a filter is active the list stays ordered by **match relevance**, which
+is the point of filtering, and the status line says `sort: best match`.
+Pressing `Tab` then still records your choice and applies it as soon as you
+clear the filter.
 
 Without a PTY — `ssh host` with input redirected, for instance — the picker
-falls back to a plain numbered prompt so scripted use keeps working.
+falls back to a plain numbered prompt so scripted use keeps working. That
+table shows the same four columns but has no hotkeys.
 
 ## The status bar
 

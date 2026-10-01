@@ -6,6 +6,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"proxpass/internal/models"
 )
 
 // Terminal control sequences. Written directly rather than through a terminfo
@@ -51,6 +53,10 @@ type pickerState struct {
 	height int
 	user   string
 	notice string
+	// sort is the column the unfiltered list is ordered by. While a filter
+	// is active the list is ordered by match relevance instead, because
+	// that is the whole point of filtering; see setFilter.
+	sort sortMode
 }
 
 // pickInteractive runs the full-screen picker.
@@ -192,6 +198,11 @@ func (s *pickerState) apply(k key) pickerAction {
 	case keyCtrlU:
 		s.setFilter("")
 
+	case keyTab:
+		s.cycleSort(true)
+	case keyShiftTab:
+		s.cycleSort(false)
+
 	case keyLeft, keyRight, keyUnknown:
 		// Horizontal movement has no meaning in a single-column list, and
 		// an unrecognized sequence must not land in the filter as text.
@@ -211,8 +222,60 @@ func (s *pickerState) apply(k key) pickerAction {
 func (s *pickerState) setFilter(f string) {
 	s.filter = f
 	s.shown = filterRows(s.all, f)
+	if f == "" {
+		// No filter: the chosen sort column decides the order. With a
+		// filter, filterRows has already ordered by relevance and
+		// re-sorting here would throw that away and make the filter much
+		// less useful.
+		sortRows(s.shown, s.sort)
+	}
 	s.cursor = 0
 	s.offset = 0
+}
+
+// cycleSort moves to the next or previous sort column and reorders the list.
+//
+// It keeps the highlighted guest selected across the reorder rather than
+// resetting to the top: the point of re-sorting is usually to find where a
+// guest sits under a different order, and losing it defeats that.
+func (s *pickerState) cycleSort(forward bool) {
+	if forward {
+		s.sort = s.sort.next()
+	} else {
+		s.sort = s.sort.prev()
+	}
+
+	if s.filter != "" {
+		// Relevance ordering stays in force while filtering, so the new
+		// mode cannot be applied yet. Say so rather than appear to do
+		// nothing.
+		s.notice = fmt.Sprintf("sort: %s (applies once the filter is cleared)", s.sort.label())
+		return
+	}
+
+	var selected *models.Guest
+	if s.cursor < len(s.shown) {
+		selected = s.shown[s.cursor].guest
+	}
+	sortRows(s.shown, s.sort)
+	s.restoreCursor(selected)
+}
+
+// restoreCursor puts the cursor back on guest after a reorder, and scrolls so
+// it is visible.
+func (s *pickerState) restoreCursor(guest *models.Guest) {
+	if guest == nil {
+		s.cursor, s.offset = 0, 0
+		return
+	}
+	for i := range s.shown {
+		if s.shown[i].guest == guest {
+			s.cursor = i
+			s.scrollToCursor()
+			return
+		}
+	}
+	s.cursor, s.offset = 0, 0
 }
 
 // move shifts the cursor by delta, clamped to the list.
@@ -274,8 +337,7 @@ func (s *pickerState) render(w io.Writer) {
 
 	widths := columnWidths(s.shown)
 	b.WriteString(styleHeader)
-	b.WriteString(truncate(fmt.Sprintf("  %-*s  %-*s  %s",
-		widths.id, "ID", widths.name, "NAME", "STATUS"), s.width))
+	b.WriteString(truncate("  "+s.headerRow(widths), s.width))
 	b.WriteString(seqReset + "\r\n")
 
 	rows := s.listRows()
@@ -297,11 +359,44 @@ func (s *pickerState) render(w io.Writer) {
 	b.WriteString("\r\n")
 	b.WriteString(styleHelp)
 	b.WriteString(truncate(
-		"  ↑/↓ move · type to filter · ⏎ connect · esc clear · ctrl+c quit", s.width))
+		"  ↑/↓ move · type to filter · ⏎ connect · tab sort · esc clear · ctrl+c quit",
+		s.width))
 	b.WriteString(seqReset)
 
 	_, _ = io.WriteString(w, b.String())
 }
+
+// headerRow renders the column headings, marking the one the list is
+// currently sorted by.
+//
+// The marker is an arrow appended to the active heading rather than a
+// separate line, so it costs no vertical space and sits where the user is
+// already looking. While a filter is active the list is ordered by relevance
+// instead, so no column is marked -- claiming otherwise would be a lie.
+func (s *pickerState) headerRow(widths colWidths) string {
+	active := s.sort
+	if s.filter != "" {
+		// Out of range of every real mode, so nothing is marked.
+		active = sortModeCount
+	}
+	return fmt.Sprintf("%-*s  %-*s  %-*s  %s",
+		widths.id, headerCell(colID, active == sortByID),
+		widths.name, headerCell(colName, active == sortByName),
+		widths.status, headerCell(colStatus, active == sortByStatus),
+		headerCell(colHost, active == sortByHost))
+}
+
+// headerCell appends the sort marker to a heading when it is the active one.
+func headerCell(label string, active bool) string {
+	if !active {
+		return label
+	}
+	return label + sortMarker
+}
+
+// sortMarker flags the column the list is sorted by. Ascending is the only
+// direction offered, so a single glyph suffices.
+const sortMarker = " ▲"
 
 // renderRow renders one guest line.
 func (s *pickerState) renderRow(r guestRow, widths colWidths, selected bool) string {
@@ -312,13 +407,11 @@ func (s *pickerState) renderRow(r guestRow, widths colWidths, selected bool) str
 
 	id := pad(highlight(r.id, s.filter), displayWidth(r.id), widths.id)
 	name := pad(highlight(r.guest.Name, s.filter), displayWidth(r.guest.Name), widths.name)
+	status := pad(string(r.guest.Status), displayWidth(string(r.guest.Status)), widths.status)
+	// The host is the last column, so it needs no padding of its own.
+	host := highlight(r.instName, s.filter)
 
-	status := string(r.guest.Status)
-	if r.instName != "" {
-		status += "  " + r.instName
-	}
-
-	body := fmt.Sprintf("%s%s  %s  %s", marker, id, name, status)
+	body := fmt.Sprintf("%s%s  %s  %s  %s", marker, id, name, status, host)
 
 	style := styleRunning
 	if !r.isRunning() {
@@ -336,11 +429,18 @@ func (s *pickerState) renderStatus(total int) string {
 		return styleWarn + truncate("  "+s.notice, s.width) + seqReset
 	}
 	if s.filter == "" {
-		return styleHelp + truncate(fmt.Sprintf("  %d guests", total), s.width) + seqReset
+		// The sort column is named here as well as marked in the header:
+		// the header marker says which column, this says it in words, and
+		// the two together make the Tab key discoverable.
+		return styleHelp + truncate(fmt.Sprintf("  %d guests · sort: %s",
+			total, s.sort.label()), s.width) + seqReset
 	}
 	// The block is a fake cursor: the real one is hidden so it cannot be
 	// left behind in the wrong place by a repaint.
-	return truncate(fmt.Sprintf("  filter: %s\u2588  (%d/%d)",
+	//
+	// "sort: best match" rather than the chosen column, because that is
+	// what the list is actually ordered by while filtering.
+	return truncate(fmt.Sprintf("  filter: %s\u2588  (%d/%d) · sort: best match",
 		s.filter, len(s.shown), total), s.width)
 }
 
