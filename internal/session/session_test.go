@@ -833,6 +833,34 @@ func TestSessionOutputIsCRLFOnRawTerminals(t *testing.T) {
 		assertNoBareLF(t, "error output", tb.errb.String())
 	})
 
+	// The connect banner announcing the Ctrl+A X escape prints immediately
+	// before the guest takes over the terminal, so it has to be translated
+	// like any other proxpass output.
+	t.Run("connect banner", func(t *testing.T) {
+		tb := newTerminal("")
+		tb.term.Raw = true
+		d := newDeps(repo, tb, &testenv.MockProxier{})
+		d.User = session.AdminUser
+		d.IsAdmin = true
+		d.Command = "ct100"
+
+		if code := session.Run(t.Context(), d); code != 0 {
+			t.Fatalf("connect exit code = %d, want 0 (stderr %q)", code, tb.errb.String())
+		}
+		out := tb.out.String()
+		// The escape hint is announced here only when no status bar will
+		// carry it. This terminal is raw and tall, so the bar takes over
+		// that job and the banner must not duplicate it.
+		if console.WillDrawBar(tb.term) {
+			if strings.Contains(out, console.EscapeHint) {
+				t.Errorf("hint duplicated while a status bar is drawn: %q", out)
+			}
+		} else if !strings.Contains(out, console.EscapeHint) {
+			t.Errorf("connect output does not announce the escape hatch: %q", out)
+		}
+		assertNoBareLF(t, "connect banner", out)
+	})
+
 	t.Run("admin CLI output", func(t *testing.T) {
 		tb := newTerminal("")
 		tb.term.Raw = true

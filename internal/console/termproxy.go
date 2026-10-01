@@ -120,9 +120,15 @@ func connectTermProxy(
 		}
 	}
 
-	// --- Step 6: send the initial size ---
+	// --- Step 6: reserve the bar's row and send the initial size ---
+	bar, guestOut, guestRows := startBar(term,
+		fmt.Sprintf("%s (%s%d) @ %s", guest.Name, guest.Type, guest.ProxmoxID, inst.Name),
+		EscapeHint)
+	if bar != nil {
+		defer bar.Stop()
+	}
 	if err := conn.Write(ctx, websocket.MessageBinary,
-		[]byte(fmt.Sprintf("1:%d:%d:", term.Width, term.Height))); err != nil {
+		[]byte(fmt.Sprintf("1:%d:%d:", term.Width, guestRows))); err != nil {
 		return fmt.Errorf("send initial resize: %w", err)
 	}
 
@@ -152,8 +158,14 @@ func connectTermProxy(
 					resizes = nil
 					continue
 				}
+				// Report the height the guest actually has, and repaint the
+				// bar at its new position.
+				rows := size.Height
+				if bar != nil {
+					rows = bar.Resize(size.Width, size.Height)
+				}
 				_ = conn.Write(ctx, websocket.MessageBinary,
-					[]byte(fmt.Sprintf("1:%d:%d:", size.Width, size.Height)))
+					[]byte(fmt.Sprintf("1:%d:%d:", size.Width, rows)))
 			}
 		}
 	}()
@@ -163,10 +175,14 @@ func connectTermProxy(
 	// The header and payload are concatenated as bytes rather than formatted
 	// with %s: routing the slice through a string would corrupt non-UTF-8
 	// input (arrow keys, escape sequences) and invalidate the declared length.
+	// Ctrl+A X reports EOF, and closing the WebSocket below is all the
+	// teardown this transport needs: the read loop then fails and returns.
+	// No signal is required because termproxy owns the guest-side process.
 	go func() {
+		src := newEscapeReader(term.In, nil)
 		buf := make([]byte, 4096)
 		for {
-			n, readErr := term.In.Read(buf)
+			n, readErr := src.Read(buf)
 			if n > 0 {
 				msg := append([]byte(fmt.Sprintf("0:%d:", n)), buf[:n]...)
 				if writeErr := conn.Write(ctx, websocket.MessageBinary, msg); writeErr != nil {
@@ -189,7 +205,7 @@ func connectTermProxy(
 		if readErr != nil {
 			break
 		}
-		if _, writeErr := term.Out.Write(data); writeErr != nil {
+		if _, writeErr := guestOut.Write(data); writeErr != nil {
 			break
 		}
 	}

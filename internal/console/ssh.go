@@ -53,8 +53,19 @@ func connectSSH(
 	}
 	defer func() { _ = session.Close() }()
 
+	// Reserve the bottom row for the status bar and request a PTY one row
+	// shorter, so the guest never writes into it. guestOut is where the
+	// guest's output goes: the bar's observer when there is a bar, the
+	// terminal directly when there is not.
+	bar, guestOut, guestRows := startBar(term,
+		fmt.Sprintf("%s (%s%d) @ %s", guest.Name, guest.Type, guest.ProxmoxID, inst.Name),
+		EscapeHint)
+	if bar != nil {
+		defer bar.Stop()
+	}
+
 	// pct enter and qm terminal both misbehave without a PTY.
-	if err := session.RequestPty(term.Term, term.Height, term.Width, gossh.TerminalModes{}); err != nil {
+	if err := session.RequestPty(term.Term, guestRows, term.Width, gossh.TerminalModes{}); err != nil {
 		return fmt.Errorf("requesting remote pty: %w", err)
 	}
 
@@ -82,6 +93,11 @@ func connectSSH(
 	done := make(chan struct{})
 	var wg sync.WaitGroup
 
+	// escaped is closed when the user presses Ctrl+A X, so the session is
+	// torn down without waiting for the guest to exit on its own.
+	escaped := make(chan struct{})
+	var escapeOnce sync.Once
+
 	// Forward terminal resizes for as long as the session lives.
 	wg.Add(1)
 	go func() {
@@ -94,7 +110,15 @@ func connectSSH(
 				if !ok {
 					return
 				}
-				_ = session.WindowChange(size.Height, size.Width)
+				// Tell the guest about the height it actually has, and
+				// repaint the bar at its new position. shox resizes without
+				// redrawing (terminal.go:112-130), which leaves a stale bar
+				// on screen until its next idle tick.
+				rows := size.Height
+				if bar != nil {
+					rows = bar.Resize(size.Width, size.Height)
+				}
+				_ = session.WindowChange(rows, size.Width)
 			}
 		}
 	}()
@@ -103,13 +127,38 @@ func connectSSH(
 	// read from the terminal blocks until the user types, so waiting for it
 	// would hang the session teardown after the guest exits.
 	go func() {
-		_, _ = io.Copy(remoteStdin, term.In)
+		src := newEscapeReader(term.In, func() {
+			escapeOnce.Do(func() { close(escaped) })
+		})
+		_, _ = io.Copy(remoteStdin, src)
 		_ = remoteStdin.Close()
+	}()
+
+	// Terminate the session when the user escapes.
+	//
+	// Closing stdin above is not sufficient by itself. A healthy shell does
+	// exit on stdin EOF, but the escape hatch exists precisely for guests
+	// that are not healthy -- a wedged process, a full-screen application,
+	// or a shell with IGNOREEOF set will sit there and session.Wait would
+	// block until it exited on its own.
+	//
+	// Closing the channel is the part that reliably ends it. The signal is
+	// sent first as a courtesy so the remote command can tidy up, but it is
+	// best-effort: OpenSSH's sshd does not implement the "signal" channel
+	// request, so against a real Proxmox host this is usually a no-op.
+	go func() {
+		select {
+		case <-done:
+		case <-escaped:
+			logger.Printf("console: guest %q disconnected by Ctrl+A X", guest.Name)
+			_ = session.Signal(gossh.SIGTERM)
+			_ = session.Close()
+		}
 	}()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(term.Out, remoteStdout)
+		_, _ = io.Copy(guestOut, remoteStdout)
 	}()
 	wg.Add(1)
 	go func() {
@@ -121,6 +170,14 @@ func connectSSH(
 	close(done)
 	_ = remoteStdin.Close()
 	wg.Wait()
+
+	// Escaping is a deliberate disconnect, so it is not an error even though
+	// it forced the remote command down.
+	select {
+	case <-escaped:
+		return nil
+	default:
+	}
 
 	// An interactive console almost always ends with the remote command
 	// exiting non-zero or being killed by a signal; that is an ordinary

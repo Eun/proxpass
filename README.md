@@ -78,6 +78,50 @@ highest.
 Without a PTY — `ssh host` with input redirected, for instance — the picker
 falls back to a plain numbered prompt so scripted use keeps working.
 
+## The status bar
+
+While you are attached to a guest console, the bottom row shows which guest
+you are on and how to leave it:
+
+```
+ webserver (ct100) @ pve1                      Ctrl+A X: disconnect
+```
+
+proxpass reserves that row with a **scroll region** (`DECSTBM`) and asks the
+guest for a PTY one row shorter, so the terminal scrolls the guest's output
+natively and never touches the bar. Guest output is forwarded verbatim —
+proxpass does not re-render it — and the bar itself is repainted only when
+its text changes, at most once per 50 ms.
+
+That matters because of how this used to work: the previous implementation
+parsed all guest output through a VT100 emulator and redrew the whole screen
+on every write, which measured **26 MB/s** and made watching logs unusable.
+The current approach measures **~5 GB/s**, roughly 190× faster, so there is
+no longer a throughput reason to turn it off.
+
+When a full-screen application takes over — vim, top, less — the bar detects
+the switch to the alternate screen, releases the scroll region and stops
+drawing, so the application gets the whole terminal. It comes back when the
+application exits.
+
+Set `PROXPASS_DISABLE_STATUSBAR=1` to turn the bar off; the guest then gets
+the full terminal height. The bar also disables itself without a PTY or on a
+terminal shorter than four rows.
+
+## Leaving a guest console
+
+Normally you leave a console the way you would any shell: `exit`, `logout`,
+or `Ctrl+D`. When that is not possible — a wedged process, a full-screen
+application that has swallowed your keys — press **`Ctrl+A X`** to disconnect.
+The sequence is handled by proxpass rather than the guest, so it works even
+when the guest has stopped responding. The status bar shows the reminder; when
+there is no bar, proxpass prints it once as you connect.
+
+Note that `Ctrl+A` is also start-of-line in most shells and the default
+prefix for `screen` and `tmux`. A lone `Ctrl+A` is passed through to the
+guest unchanged, so only the two-key sequence disconnects, but if you run
+`screen` or `tmux` inside a guest you will be nesting prefixes.
+
 ## Admin CLI
 
 The admin CLI is accessed over SSH. Commands are passed as the SSH exec command:

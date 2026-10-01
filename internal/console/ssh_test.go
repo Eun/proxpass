@@ -185,6 +185,209 @@ func TestConnectSSHHandlesResize(t *testing.T) {
 	}
 }
 
+// Ctrl+A X must end the console even when the guest will not exit on its own.
+//
+// This is the whole point of the escape hatch, so the guest here ignores its
+// stdin entirely: closing stdin is not enough to end it, and without the
+// escape the session would hang until the client was killed externally.
+func TestConnectSSHEscapeDisconnectsWedgedGuest(t *testing.T) {
+	mock, err := testenv.NewMockSSHServer()
+	if err != nil {
+		t.Fatalf("start mock proxmox host: %v", err)
+	}
+	defer mock.Close()
+
+	pt := newPipeTerminal()
+	guest := &models.Guest{
+		Type: models.GuestTypeCT, Name: guestWeb, ProxmoxID: testenv.WedgedVMID,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- console.DefaultProxier{}.Connect(
+			pt.term, guest, sshInstance(t, mock), discardLogger())
+	}()
+
+	waitFor(t, pt.out, "entering LXC container")
+
+	// Ordinary input reaches a wedged guest but cannot end it.
+	if _, err := pt.stdin.Write([]byte("exit\r\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("console exited before the escape was sent: %v", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	// Ctrl+A X must end it.
+	if _, err := pt.stdin.Write([]byte{0x01, 'X'}); err != nil {
+		t.Fatalf("write escape: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		// A deliberate disconnect is a clean exit, not an error.
+		if err != nil {
+			t.Fatalf("Connect returned %v, want nil after Ctrl+A X", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Ctrl+A X did not disconnect the console")
+	}
+}
+
+// The escape bytes must not reach the guest, which echoes what it receives.
+func TestConnectSSHEscapeBytesDoNotReachTheGuest(t *testing.T) {
+	mock, err := testenv.NewMockSSHServer()
+	if err != nil {
+		t.Fatalf("start mock proxmox host: %v", err)
+	}
+	defer mock.Close()
+
+	pt := newPipeTerminal()
+	guest := &models.Guest{Type: models.GuestTypeCT, Name: guestWeb, ProxmoxID: 100}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- console.DefaultProxier{}.Connect(
+			pt.term, guest, sshInstance(t, mock), discardLogger())
+	}()
+
+	waitFor(t, pt.out, "root@CT100")
+	before := pt.out.String()
+
+	if _, err := pt.stdin.Write([]byte{0x01, 'X'}); err != nil {
+		t.Fatalf("write escape: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Ctrl+A X did not disconnect the console")
+	}
+
+	// The mock echoes input, so an X arriving at the guest would come back.
+	after := strings.TrimPrefix(pt.out.String(), before)
+	if strings.ContainsAny(after, "\x01Xx") {
+		t.Errorf("escape bytes were forwarded to the guest: %q", after)
+	}
+}
+
+// A lone Ctrl+A is a real keystroke (start-of-line in a shell) and must still
+// reach the guest rather than being held back or swallowed.
+func TestConnectSSHForwardsLoneCtrlA(t *testing.T) {
+	mock, err := testenv.NewMockSSHServer()
+	if err != nil {
+		t.Fatalf("start mock proxmox host: %v", err)
+	}
+	defer mock.Close()
+
+	pt := newPipeTerminal()
+	guest := &models.Guest{Type: models.GuestTypeCT, Name: guestWeb, ProxmoxID: 100}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- console.DefaultProxier{}.Connect(
+			pt.term, guest, sshInstance(t, mock), discardLogger())
+	}()
+
+	waitFor(t, pt.out, "root@CT100")
+
+	// Ctrl+A then a printable character: the mock echoes both.
+	if _, err := pt.stdin.Write([]byte{0x01, 'z'}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	waitFor(t, pt.out, "\x01z")
+
+	// The session must still be alive.
+	select {
+	case err := <-done:
+		t.Fatalf("console exited on a lone Ctrl+A: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	_, _ = pt.stdin.Write([]byte{0x04})
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("console did not exit")
+	}
+}
+
+// A status bar must reserve a row by requesting a shorter PTY and setting a
+// scroll region, and must release both when a full-screen application takes
+// over the screen.
+func TestConnectSSHStatusBarYieldsToFullScreenApp(t *testing.T) {
+	t.Setenv(console.DisableStatusBarEnv, "")
+	mock, err := testenv.NewMockSSHServer()
+	if err != nil {
+		t.Fatalf("start mock proxmox host: %v", err)
+	}
+	defer mock.Close()
+
+	pt := newPipeTerminal()
+	pt.term.Raw = true // a bar is only drawn on a raw PTY
+	guest := &models.Guest{
+		Type: models.GuestTypeCT, Name: guestWeb, ProxmoxID: testenv.AltScreenVMID,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- console.DefaultProxier{}.Connect(
+			pt.term, guest, sshInstance(t, mock), discardLogger())
+	}()
+
+	// One row is reserved: 24 rows of terminal, 23 for the guest.
+	waitFor(t, pt.out, "\x1b[1;23r")
+	// The guest declared the alternate screen, so the region is released.
+	waitFor(t, pt.out, "\x1b[r")
+
+	// Leave the application, then the console.
+	if _, err := pt.stdin.Write([]byte("q")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := pt.stdin.Write([]byte{0x01, 'X'}); err != nil {
+		t.Fatalf("write escape: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("console did not exit")
+	}
+}
+
+// With the bar disabled the guest must get the full terminal height and the
+// terminal must see no scroll-region escapes at all.
+func TestConnectSSHWithoutStatusBarLeavesTerminalAlone(t *testing.T) {
+	t.Setenv(console.DisableStatusBarEnv, "1")
+	mock, err := testenv.NewMockSSHServer()
+	if err != nil {
+		t.Fatalf("start mock proxmox host: %v", err)
+	}
+	defer mock.Close()
+
+	pt := newPipeTerminal()
+	pt.term.Raw = true
+	guest := &models.Guest{Type: models.GuestTypeCT, Name: guestWeb, ProxmoxID: 100}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- console.DefaultProxier{}.Connect(
+			pt.term, guest, sshInstance(t, mock), discardLogger())
+	}()
+
+	waitFor(t, pt.out, "root@CT100")
+	_, _ = pt.stdin.Write([]byte{0x04})
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("console did not exit")
+	}
+
+	if got := pt.out.String(); strings.Contains(got, "\x1b[1;23r") {
+		t.Errorf("a scroll region was installed even though the bar is disabled: %q", got)
+	}
+}
+
 // An unreachable Proxmox host must surface an error rather than hanging.
 func TestConnectSSHUnreachableHost(t *testing.T) {
 	mock, err := testenv.NewMockSSHServer()
@@ -254,5 +457,115 @@ func TestConnectSSHUnknownGuestType(t *testing.T) {
 	if err := (console.DefaultProxier{}).Connect(
 		pt.term, guest, sshInstance(t, mock), discardLogger()); err == nil {
 		t.Fatal("an unknown guest type must be rejected")
+	}
+}
+
+// Ctrl+A X must disconnect a wedged guest in every bar configuration: bar on,
+// bar off via the env var, and no bar because the terminal is not a raw PTY
+// or is too short to reserve a row.
+func TestEscapeWorksInEveryBarConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		disable string
+		raw     bool
+		height  int
+		wantBar bool
+	}{
+		{"bar drawn", "", true, 24, true},
+		{"bar disabled by env", "1", true, 24, false},
+		{"no bar: not a raw pty", "", false, 24, false},
+		{"no bar: terminal too short", "", true, 3, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(console.DisableStatusBarEnv, tc.disable)
+			mock, err := testenv.NewMockSSHServer()
+			if err != nil {
+				t.Fatalf("start mock: %v", err)
+			}
+			defer mock.Close()
+
+			pt := newPipeTerminal()
+			pt.term.Raw = tc.raw
+			pt.term.Height = tc.height
+
+			if got := console.WillDrawBar(pt.term); got != tc.wantBar {
+				t.Fatalf("WillDrawBar = %v, want %v", got, tc.wantBar)
+			}
+
+			guest := &models.Guest{
+				Type: models.GuestTypeCT, Name: "web", ProxmoxID: testenv.WedgedVMID,
+			}
+			done := make(chan error, 1)
+			go func() {
+				done <- console.DefaultProxier{}.Connect(
+					pt.term, guest, sshInstance(t, mock), discardLogger())
+			}()
+
+			waitFor(t, pt.out, "entering LXC container")
+
+			// The guest ignores stdin, so nothing but the escape can end it.
+			if _, err := pt.stdin.Write([]byte("exit\r\n\x04")); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("ended without the escape: %v", err)
+			case <-time.After(400 * time.Millisecond):
+			}
+
+			if _, err := pt.stdin.Write([]byte{0x01, 'X'}); err != nil {
+				t.Fatalf("write escape: %v", err)
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("Connect returned %v, want nil", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatalf("Ctrl+A X did not disconnect (bar drawn=%v)", tc.wantBar)
+			}
+		})
+	}
+}
+
+// The escape must still work while a full-screen application owns the screen
+// and the bar has suppressed itself. That is the scenario it matters most in:
+// the application has the terminal, and it may be ignoring the keys that
+// would normally end the session.
+func TestEscapeWorksWhileFullScreenAppOwnsTheScreen(t *testing.T) {
+	t.Setenv(console.DisableStatusBarEnv, "")
+	mock, err := testenv.NewMockSSHServer()
+	if err != nil {
+		t.Fatalf("start mock: %v", err)
+	}
+	defer mock.Close()
+
+	pt := newPipeTerminal()
+	pt.term.Raw = true
+	guest := &models.Guest{
+		Type: models.GuestTypeCT, Name: guestWeb, ProxmoxID: testenv.AltScreenVMID,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- console.DefaultProxier{}.Connect(
+			pt.term, guest, sshInstance(t, mock), discardLogger())
+	}()
+
+	// Wait until the bar has yielded the scroll region to the application.
+	waitFor(t, pt.out, "\x1b[1;23r")
+	waitFor(t, pt.out, "\x1b[r")
+
+	// Escape without sending the application's own quit key.
+	if _, err := pt.stdin.Write([]byte{0x01, 'X'}); err != nil {
+		t.Fatalf("write escape: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Connect returned %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Ctrl+A X did not disconnect while the bar was suppressed")
 	}
 }
