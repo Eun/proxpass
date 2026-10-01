@@ -51,6 +51,9 @@ type pickerState struct {
 	offset int
 	width  int
 	height int
+	// user is the name shown in the title: the name the identity was
+	// defined under, not the login name that was typed. See
+	// Identity.DisplayName.
 	user   string
 	notice string
 	// sort is the column the unfiltered list is ordered by. While a filter
@@ -72,7 +75,7 @@ func (d *Deps) pickInteractive(rows []guestRow) (guestRow, error) {
 	s := &pickerState{
 		all:    rows,
 		shown:  rows,
-		user:   d.User,
+		user:   d.displayName(),
 		width:  t.Width,
 		height: t.Height,
 	}

@@ -252,15 +252,16 @@ func runSession(ctx context.Context, cmd *ucli.Command) error {
 	logger := log.New(term.UIErr(), "proxpass: ", log.LstdFlags)
 
 	code := session.Run(ctx, &session.Deps{
-		Repo:       repo,
-		Discoverer: proxmox.DefaultDiscovererFactory,
-		Proxier:    console.DefaultProxier{},
-		Logger:     logger,
-		Terminal:   term,
-		User:       identity.User,
-		IsAdmin:    identity.IsAdmin,
-		ClientID:   identity.ClientID,
-		Command:    cmd.String("command"),
+		Repo:        repo,
+		Discoverer:  proxmox.DefaultDiscovererFactory,
+		Proxier:     console.DefaultProxier{},
+		Logger:      logger,
+		Terminal:    term,
+		User:        identity.User,
+		DisplayName: identity.DisplayName,
+		IsAdmin:     identity.IsAdmin,
+		ClientID:    identity.ClientID,
+		Command:     cmd.String("command"),
 	})
 	// The session already reported any problem to the user, so surface the
 	// status without printing a second, redundant error. Restore the

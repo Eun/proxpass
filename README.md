@@ -277,9 +277,16 @@ only names refused are the ones that would not survive the lookup — a name
 longer than 32 characters, or one containing `:`, a newline, `/`, `%`, `?`,
 `#`, a space, or starting with `-`.
 
+Because such a name is only a label, the UI names the identity behind it
+rather than echoing it back: logging in as `tobias@` with an admin key shows
+`guests available to admin`, since `tobias` is not an account that was
+defined anywhere. The login name as typed is what gets logged, so the log
+still records what actually came in.
+
 A name that is already a client always resolves to that client, and only
 that client's own keys are accepted for it — an admin key never grants a
-client login, and a client key never grants an administrator login.
+client login, and a client key never grants an administrator login. A client
+is shown under the name it was created with.
 
 > **It is stored in the database on startup, not held in memory.** sshd runs
 > `AuthorizedKeysCommand` with a scrubbed environment, so that process cannot

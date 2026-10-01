@@ -21,7 +21,10 @@ import (
 )
 
 const (
-	userAlice  = "alice"
+	userAlice = "alice"
+	// userAlias is a login name that is not a client, so it resolves to the
+	// administrator rather than to an account of its own.
+	userAlias  = "tobias"
 	guestCT100 = "ct100"
 	pveAPIURL  = "https://pve:8006"
 	instPVE    = "pve"
@@ -138,6 +141,51 @@ func TestResolveIdentityClient(t *testing.T) {
 	}
 }
 
+// The UI must name the identity the user was defined as, not the login name
+// they happened to type.
+//
+// Any unused name is served as an administrator alias, so "ssh tobias@host"
+// with an admin key logs in as the administrator. Showing "tobias" back
+// claims an account that was never defined: the name is an alias, it grants
+// nothing of its own and it is not what any configuration calls this user.
+func TestResolveIdentityDisplayNameIsTheConfiguredName(t *testing.T) {
+	repo := newRepo(t)
+	addClient(t, repo)
+
+	tests := []struct {
+		name  string
+		login string
+		want  string
+	}{
+		{"the admin login itself", session.AdminUser, session.AdminUser},
+		{"an arbitrary admin alias", userAlias, session.AdminUser},
+		// A second alias: were DisplayName simply echoing the login name,
+		// the case above would pass for one name and this one would show a
+		// different "identity" for the very same administrator.
+		{"a different admin alias", "someone-else", session.AdminUser},
+		{"a client", userAlice, userAlice},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			id, err := session.ResolveIdentity(t.Context(), repo, tc.login)
+			if err != nil {
+				t.Fatalf("ResolveIdentity(%q): %v", tc.login, err)
+			}
+			if id.DisplayName != tc.want {
+				t.Errorf("login %q: DisplayName = %q, want %q",
+					tc.login, id.DisplayName, tc.want)
+			}
+			// The login name is still carried separately: it is the audit
+			// record of what actually came in, so collapsing the two would
+			// lose it from the log.
+			if id.User != tc.login {
+				t.Errorf("login %q: User = %q, want the name as given",
+					tc.login, id.User)
+			}
+		})
+	}
+}
+
 // A client named "admin" would otherwise be routed as an administrator.
 // cli.ValidateClientName prevents creating one, and this is the second line
 // of defense for a database that predates that check.
@@ -184,15 +232,15 @@ func TestAuthorizedKeysNeverOffersAShadowedAdminClientKey(t *testing.T) {
 // authenticated the connection and the login name was cosmetic.
 func TestResolveIdentityTreatsANonClientNameAsTheAdmin(t *testing.T) {
 	repo := newRepo(t)
-	id, err := session.ResolveIdentity(t.Context(), repo, "tobias")
+	id, err := session.ResolveIdentity(t.Context(), repo, userAlias)
 	if err != nil {
 		t.Fatalf("ResolveIdentity: %v", err)
 	}
 	if !id.IsAdmin {
 		t.Error("a non-client login name must resolve to the administrator")
 	}
-	if id.User != "tobias" {
-		t.Errorf("User = %q, want %q", id.User, "tobias")
+	if id.User != userAlias {
+		t.Errorf("User = %q, want %q", id.User, userAlias)
 	}
 	if id.ClientID != 0 {
 		t.Errorf("ClientID = %d, want 0", id.ClientID)
@@ -211,7 +259,7 @@ func TestAuthorizedKeysOffersOnlyAdminKeysForANonClientName(t *testing.T) {
 
 	var out bytes.Buffer
 	if err := session.WriteAuthorizedKeys(
-		t.Context(), &out, repo, "tobias", adminKey); err != nil {
+		t.Context(), &out, repo, userAlias, adminKey); err != nil {
 		t.Fatalf("WriteAuthorizedKeys: %v", err)
 	}
 	if !strings.Contains(out.String(), adminKey) {
@@ -713,6 +761,129 @@ func TestInteractivePickerQuitsOnCtrlC(t *testing.T) {
 	}
 	if len(proxier.Sessions) != 0 {
 		t.Error("quitting must not open a console")
+	}
+}
+
+// The picker's title must name the configured identity, not the login name
+// the user typed.
+//
+// This goes through session.Run so it covers the wiring as well as the
+// formatting: the title is built from Deps.DisplayName, which cmd/proxpass
+// fills from Identity.DisplayName.
+func TestPickerTitleNamesTheConfiguredIdentity(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  bool
+	}{
+		// Both renderers draw their own title, so each needs checking:
+		// fixing one and leaving the other was the easy mistake here.
+		{"interactive", true},
+		{"numbered fallback", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newRepo(t)
+			seedGuest(t, repo)
+
+			// Ctrl+C for the interactive picker, "q" for the numbered
+			// prompt: the title is written before either is read, so the
+			// input only needs to make the picker exit without connecting.
+			input := "q\n"
+			if tc.raw {
+				input = "\x03"
+			}
+			tb := newTerminal(input)
+			tb.term.Raw = tc.raw
+			d := newDeps(repo, tb, &testenv.MockProxier{})
+			// An admin logged in under a name of their choosing: the login
+			// name is the alias, but the identity is the administrator.
+			d.User = userAlias
+			d.DisplayName = session.AdminUser
+			d.IsAdmin = true
+
+			_ = session.Run(t.Context(), d)
+
+			out := tb.out.String()
+			want := "guests available to " + session.AdminUser
+			if !strings.Contains(out, want) {
+				t.Errorf("title does not name the identity: want %q in %q", want, out)
+			}
+			if strings.Contains(out, "available to "+userAlias) {
+				t.Errorf("the title echoed the login name back: %q", out)
+			}
+		})
+	}
+}
+
+// A client's title must show the name the client was defined under.
+//
+// This is the case where DisplayName and the login name agree, so it guards
+// the opposite failure from the test above: a fix that always printed
+// "admin" would pass that one and break this.
+func TestPickerTitleNamesTheClient(t *testing.T) {
+	repo := newRepo(t)
+	client := addClient(t, repo)
+	guest := seedGuest(t, repo)
+	if err := repo.GrantClientAccess(
+		t.Context(), client.ID, []int64{guest.ID}); err != nil {
+		t.Fatalf("grant access: %v", err)
+	}
+
+	tb := newTerminal("\x03")
+	tb.term.Raw = true
+	d := newDeps(repo, tb, &testenv.MockProxier{})
+	d.User = userAlice
+	d.DisplayName = userAlice
+	d.ClientID = client.ID
+
+	_ = session.Run(t.Context(), d)
+
+	if out := tb.out.String(); !strings.Contains(out, "guests available to "+userAlice) {
+		t.Errorf("title does not name the client: %q", out)
+	}
+}
+
+// Deps built without a DisplayName must still show a name rather than a
+// blank, since the title is assembled from whatever the caller supplied.
+func TestPickerTitleFallsBackToTheLoginName(t *testing.T) {
+	repo := newRepo(t)
+	seedGuest(t, repo)
+
+	tb := newTerminal("\x03")
+	tb.term.Raw = true
+	d := newDeps(repo, tb, &testenv.MockProxier{})
+	d.User = session.AdminUser
+	d.IsAdmin = true
+	// DisplayName deliberately left unset.
+
+	_ = session.Run(t.Context(), d)
+
+	if out := tb.out.String(); !strings.Contains(out, "guests available to "+session.AdminUser) {
+		t.Errorf("title is missing a name entirely: %q", out)
+	}
+}
+
+// The log must keep recording the login name that actually came in: it is
+// the audit record of what was attempted, and the display name would hide a
+// login under an unexpected alias.
+func TestLogRecordsTheLoginNameNotTheDisplayName(t *testing.T) {
+	repo := newRepo(t)
+	seedGuest(t, repo)
+
+	var logb bytes.Buffer
+	tb := newTerminal("")
+	d := newDeps(repo, tb, &testenv.MockProxier{})
+	d.Logger = log.New(&logb, "", 0)
+	d.User = userAlias
+	d.DisplayName = session.AdminUser
+	d.IsAdmin = true
+	d.Command = guestCT100
+
+	if code := session.Run(t.Context(), d); code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, tb.errb.String())
+	}
+	if !strings.Contains(logb.String(), userAlias) {
+		t.Errorf("the log does not record the login name: %q", logb.String())
 	}
 }
 

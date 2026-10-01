@@ -22,9 +22,23 @@ const AdminUser = api.AdminUser
 
 // Identity is the resolved identity behind an authenticated login name.
 type Identity struct {
-	User     string
-	IsAdmin  bool
-	ClientID int64
+	// User is the login name sshd authenticated. For an administrator this
+	// is whatever name they chose, since any unused name resolves to the
+	// admin; it is kept for the log, where the name that actually came in
+	// is the audit record.
+	User string
+	// DisplayName is the configured name of the identity behind User, as
+	// opposed to the name the client typed: AdminUser for an
+	// administrator, and the client's stored name for a client.
+	//
+	// These differ because a login name is not a configured account. Any
+	// unused name is served as an administrator alias, so "ssh
+	// whatever@host" with an admin key logs in as the administrator --
+	// showing "whatever" back would present a name that nothing was ever
+	// defined under.
+	DisplayName string
+	IsAdmin     bool
+	ClientID    int64
 }
 
 // ResolveIdentity maps the login name sshd authenticated to a proxpass
@@ -56,12 +70,15 @@ func ResolveIdentity(ctx context.Context, repo db.Repository, user string) (*Ide
 				"a client named %q exists and shadows the administrator login; rename or remove it",
 				user)
 		}
-		return &Identity{User: user, IsAdmin: true}, nil
+		return &Identity{User: user, DisplayName: AdminUser, IsAdmin: true}, nil
 	}
 
 	client, err := repo.GetClientByName(ctx, user)
 	if err == nil && client != nil {
-		return &Identity{User: user, ClientID: client.ID}, nil
+		// The stored name rather than the name looked up, so the display
+		// name is the one the client was defined under even if the lookup
+		// matched some other spelling of it.
+		return &Identity{User: user, DisplayName: client.Name, ClientID: client.ID}, nil
 	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		// A real storage fault must not be mistaken for "not a client",
@@ -72,6 +89,8 @@ func ResolveIdentity(ctx context.Context, repo db.Repository, user string) (*Ide
 	// Not a client. Reaching this point means sshd already authenticated the
 	// login against the admin key list (WriteAuthorizedKeys offers only
 	// those for a name that is not a client), so this is the administrator
-	// logging in under a login name of their choosing.
-	return &Identity{User: user, IsAdmin: true}, nil
+	// logging in under a login name of their choosing. The chosen name is
+	// an alias for the administrator and is not itself defined anywhere,
+	// so the display name is the administrator's.
+	return &Identity{User: user, DisplayName: AdminUser, IsAdmin: true}, nil
 }
