@@ -96,10 +96,14 @@ func (r *sqliteRepo) AddProxmoxInstance(ctx context.Context, inst *models.Proxmo
 
 func (r *sqliteRepo) ListProxmoxInstances(ctx context.Context) ([]*models.ProxmoxInstance, error) {
 	rows, err := r.db.QueryContext(ctx,
+		// Ordered by id so the listing is stable. Without ORDER BY the order
+		// is whatever SQLite happens to return, which is usually insertion
+		// order but is not promised and changes after a row is deleted and
+		// its rowid reused.
 		`SELECT id, name, api_url, api_token_id, api_token_secret,
 		connection_type, node,
 		ssh_host, ssh_port, ssh_user, ssh_key_path, ssh_key
-		FROM proxmox_instances`)
+		FROM proxmox_instances ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
