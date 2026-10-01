@@ -260,10 +260,11 @@ rather than configured in proxpass.
 ### Admin key
 
 `--admin-key` accepts a single SSH public key in `authorized_keys` format and
-authorizes the administrator. It is never offered for a client login.
+authorizes the administrator.
 
-An admin key works under **any login name that is not a client**, so the name
-is a label rather than a credential:
+An admin key works under **any login name**, because the key is what grants
+admin — the name is a label, not a credential. Equally, a client's key never
+grants admin, even under the name `admin`:
 
 ```bash
 ssh -p 2222 admin@proxpass guest ls     # the canonical name
@@ -277,16 +278,27 @@ only names refused are the ones that would not survive the lookup — a name
 longer than 32 characters, or one containing `:`, a newline, `/`, `%`, `?`,
 `#`, a space, or starting with `-`.
 
-Because such a name is only a label, the UI names the identity behind it
-rather than echoing it back: logging in as `tobias@` with an admin key shows
-`guests available to admin`, since `tobias` is not an account that was
-defined anywhere. The login name as typed is what gets logged, so the log
-still records what actually came in.
+Because such a name is only a label, the UI names the identity the key
+resolves to rather than echoing it back: logging in as `tobias@` with an
+admin key shows `guests available to admin`. The login name as typed is what
+gets logged, so the log still records what actually came in.
 
-A name that is already a client always resolves to that client, and only
-that client's own keys are accepted for it — an admin key never grants a
-client login, and a client key never grants an administrator login. A client
-is shown under the name it was created with.
+### How identity is decided
+
+sshd is configured with `ExposeAuthInfo yes`, which tells the session which
+key authenticated it. proxpass matches that key against the admin keys and
+every client's keys:
+
+| Outcome | Result |
+|---|---|
+| matches one admin key | administrator |
+| matches one client | that client |
+| matches nothing | **refused** |
+| matches two identities | **refused** — a key must name exactly one |
+
+This is why the login name can be anything: it never decides who you are. It
+is also why `ExposeAuthInfo` is required rather than optional — with it off,
+the session has only the name, so it refuses to start instead of guessing.
 
 > **It is stored in the database on startup, not held in memory.** sshd runs
 > `AuthorizedKeysCommand` with a scrubbed environment, so that process cannot
@@ -358,9 +370,22 @@ runtime embedded in `libnss_http.so.2`.
 
 ## Client Connections
 
-Log in as your client name. The guest identifier is passed as the SSH command;
-with no command you get an interactive picker. A PTY (`-t`) is required when
-naming a guest directly.
+**Your key identifies you — the login name does not matter.** proxpass looks
+up the key that authenticated and resolves it to a client (or to the
+administrator); the name before the `@` is ignored. So all of these are the
+same client:
+
+```bash
+ssh -p 2222 proxpass-host           # whatever your local username is
+ssh -p 2222 alice@proxpass-host     # your client name
+ssh -p 2222 anything@proxpass-host  # any name at all
+```
+
+A key that matches no client and no admin key is refused outright: proxpass
+never falls back to trusting the name.
+
+The guest identifier is passed as the SSH command; with no command you get an
+interactive picker. A PTY (`-t`) is required when naming a guest directly.
 
 ```bash
 # Interactive picker

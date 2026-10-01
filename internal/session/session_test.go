@@ -99,77 +99,65 @@ func TestAuthorizedKeysAdminUsesFlagKey(t *testing.T) {
 	}
 }
 
-// A client must never be offered the admin key.
-func TestAuthorizedKeysFlagKeyIsAdminOnly(t *testing.T) {
+// The admin key never makes its holder into a client.
+//
+// The key IS offered under a client's name -- the name no longer filters
+// the key set, since it no longer selects an identity -- but presenting it
+// resolves to the administrator, not to that client. The old behavior
+// (withholding it) had the perverse effect that an administrator could not
+// log in under a name a client happened to own.
+func TestAdminKeyUnderAClientNameStaysAdmin(t *testing.T) {
 	repo := newRepo(t)
-	addClient(t, repo, "ssh-ed25519 AAAAalice alice")
-	const flagKey = "ssh-ed25519 AAAAflag admin"
+	addNamedClient(t, repo, userAlice, keyAlice)
 
-	var out bytes.Buffer
-	_ = session.WriteAuthorizedKeys(t.Context(), &out, repo, userAlice, flagKey)
-	if strings.Contains(out.String(), flagKey) {
-		t.Error("client was offered the admin key")
+	id, err := session.ResolveIdentityByKey(
+		t.Context(), repo, userAlice, writeAuthInfo(t, keyAdmin), keyAdmin)
+	if err != nil {
+		t.Fatalf("ResolveIdentityByKey: %v", err)
+	}
+	if !id.IsAdmin {
+		t.Error("the admin key must stay admin under a client's name")
+	}
+	if id.ClientID != 0 {
+		t.Errorf("ClientID = %d, want 0", id.ClientID)
 	}
 }
 
 // --- identity ----------------------------------------------------------
 
-func TestResolveIdentityAdmin(t *testing.T) {
-	repo := newRepo(t)
-	id, err := session.ResolveIdentity(t.Context(), repo, session.AdminUser)
-	if err != nil {
-		t.Fatalf("ResolveIdentity: %v", err)
-	}
-	if !id.IsAdmin {
-		t.Error("admin user must resolve to an admin identity")
-	}
-}
-
-func TestResolveIdentityClient(t *testing.T) {
-	repo := newRepo(t)
-	client := addClient(t, repo)
-
-	id, err := session.ResolveIdentity(t.Context(), repo, userAlice)
-	if err != nil {
-		t.Fatalf("ResolveIdentity: %v", err)
-	}
-	if id.IsAdmin {
-		t.Error("client must not be an admin")
-	}
-	if id.ClientID != client.ID {
-		t.Errorf("ClientID = %d, want %d", id.ClientID, client.ID)
-	}
-}
-
-// The UI must name the identity the user was defined as, not the login name
-// they happened to type.
+// The UI must name the identity the KEY resolves to, never the login name.
 //
-// Any unused name is served as an administrator alias, so "ssh tobias@host"
-// with an admin key logs in as the administrator. Showing "tobias" back
-// claims an account that was never defined: the name is an alias, it grants
-// nothing of its own and it is not what any configuration calls this user.
-func TestResolveIdentityDisplayNameIsTheConfiguredName(t *testing.T) {
+// The login name is an alias chosen by the caller, so showing it back would
+// claim an account that was never defined. The same key must also produce
+// the same display name under every name it arrives under.
+func TestDisplayNameIsTheConfiguredName(t *testing.T) {
 	repo := newRepo(t)
-	addClient(t, repo)
+	addNamedClient(t, repo, userAlice, keyAlice)
 
 	tests := []struct {
 		name  string
 		login string
+		key   string
 		want  string
 	}{
-		{"the admin login itself", session.AdminUser, session.AdminUser},
-		{"an arbitrary admin alias", userAlias, session.AdminUser},
-		// A second alias: were DisplayName simply echoing the login name,
-		// the case above would pass for one name and this one would show a
-		// different "identity" for the very same administrator.
-		{"a different admin alias", "someone-else", session.AdminUser},
-		{"a client", userAlice, userAlice},
+		{"admin key, admin name", session.AdminUser, keyAdmin, session.AdminUser},
+		{"admin key, an alias", userAlias, keyAdmin, session.AdminUser},
+		// A second alias: were DisplayName echoing the login name, the
+		// case above would pass while this one showed a different
+		// "identity" for the very same administrator.
+		{"admin key, another alias", "someone-else", keyAdmin, session.AdminUser},
+		{"client key, own name", userAlice, keyAlice, userAlice},
+		// The key wins: alice's key under the admin name is still alice.
+		{"client key, admin name", session.AdminUser, keyAlice, userAlice},
+		{"client key, an alias", userAlias, keyAlice, userAlice},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			id, err := session.ResolveIdentity(t.Context(), repo, tc.login)
+			id, err := session.ResolveIdentityByKey(
+				t.Context(), repo, tc.login,
+				writeAuthInfo(t, tc.key), keyAdmin)
 			if err != nil {
-				t.Fatalf("ResolveIdentity(%q): %v", tc.login, err)
+				t.Fatalf("ResolveIdentityByKey(%q): %v", tc.login, err)
 			}
 			if id.DisplayName != tc.want {
 				t.Errorf("login %q: DisplayName = %q, want %q",
@@ -198,14 +186,21 @@ func TestResolveIdentityRefusesShadowedAdmin(t *testing.T) {
 		t.Fatalf("add client: %v", err)
 	}
 
-	if _, err := session.ResolveIdentity(t.Context(), repo, session.AdminUser); err == nil {
+	if _, err := session.ResolveIdentityByKey(
+		t.Context(), repo, session.AdminUser,
+		writeAuthInfo(t, keyAdmin), keyAdmin); err == nil {
 		t.Fatal("a client shadowing the admin login must be refused")
 	}
 }
 
-// Even with such a client present, its keys must never be offered for the
-// admin login.
-func TestAuthorizedKeysNeverOffersAShadowedAdminClientKey(t *testing.T) {
+// A client shadowing the admin name must not gain admin.
+//
+// The defense is no longer that the key is withheld -- every key is offered
+// for a name that is not a client's, because the name cannot identify
+// anyone. It is that the SESSION resolves identity from the key, and that
+// key belongs to a client row, so it can only ever produce a client
+// identity. ResolveIdentity additionally refuses the shadowed name outright.
+func TestAShadowingClientKeyNeverResolvesToAdmin(t *testing.T) {
 	repo := newRepo(t)
 	const attacker = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ2H6djoN78rkj1En9yM7XsMUUDyFgiGWn3WZZqfI3JF attacker"
 	if err := repo.AddClient(t.Context(), &models.Client{
@@ -214,42 +209,44 @@ func TestAuthorizedKeysNeverOffersAShadowedAdminClientKey(t *testing.T) {
 		t.Fatalf("add client: %v", err)
 	}
 
-	var out bytes.Buffer
-	if err := session.WriteAuthorizedKeys(
-		t.Context(), &out, repo, session.AdminUser, ""); err != nil {
-		t.Fatalf("WriteAuthorizedKeys: %v", err)
+	// The login is refused outright. A client row named "admin" makes two
+	// identities answer to one name, which is a misconfiguration rather
+	// than a login to resolve -- so proxpass stops instead of deciding
+	// which one was meant.
+	id, err := session.ResolveIdentityByKey(
+		t.Context(), repo, session.AdminUser, writeAuthInfo(t, attacker), "")
+	if err == nil {
+		t.Fatalf("a shadowed admin name must be refused, got admin=%v client=%d",
+			id.IsAdmin, id.ClientID)
 	}
-	if strings.Contains(out.String(), "attacker") {
-		t.Errorf("the shadowing client's key was offered for the admin login: %q", out.String())
+	if !strings.Contains(err.Error(), "shadows") {
+		t.Errorf("error does not explain the shadowing: %v", err)
 	}
-}
 
-// A login name that is not a client belongs to the administrator.
-//
-// sshd has already authenticated it against the admin key list by the time
-// this runs: WriteAuthorizedKeys offers only admin keys for such a name. This
-// restores the behavior proxpass had with its own SSH server, where the key
-// authenticated the connection and the login name was cosmetic.
-func TestResolveIdentityTreatsANonClientNameAsTheAdmin(t *testing.T) {
-	repo := newRepo(t)
-	id, err := session.ResolveIdentity(t.Context(), repo, userAlias)
+	// The property that must hold regardless: that key never yields admin.
+	// Here it cannot even reach a decision, but the same key under a
+	// non-shadowed database resolves to its client.
+	repo2 := newRepo(t)
+	c := addNamedClient(t, repo2, userAlice, attacker)
+	id2, err := session.ResolveIdentityByKey(
+		t.Context(), repo2, session.AdminUser, writeAuthInfo(t, attacker), "")
 	if err != nil {
-		t.Fatalf("ResolveIdentity: %v", err)
+		t.Fatalf("ResolveIdentityByKey: %v", err)
 	}
-	if !id.IsAdmin {
-		t.Error("a non-client login name must resolve to the administrator")
-	}
-	if id.User != userAlias {
-		t.Errorf("User = %q, want %q", id.User, userAlias)
-	}
-	if id.ClientID != 0 {
-		t.Errorf("ClientID = %d, want 0", id.ClientID)
+	if id2.IsAdmin || id2.ClientID != c.ID {
+		t.Errorf("a client key under the admin name resolved to admin=%v client=%d",
+			id2.IsAdmin, id2.ClientID)
 	}
 }
 
-// Only admin keys may be offered for a name that is not a client: a client's
-// key must never authorize an admin alias.
-func TestAuthorizedKeysOffersOnlyAdminKeysForANonClientName(t *testing.T) {
+// A name that is not a client's is offered EVERY key, because the name
+// identifies nobody and the session decides from the key.
+//
+// Withholding client keys here used to be the defense against a client
+// reaching admin. That job now belongs to ResolveIdentityByKey, which is
+// what makes it safe to let a client authenticate under any name -- and is
+// what lets a client connect without spelling its own name out.
+func TestAuthorizedKeysOffersEveryKeyForANonClientName(t *testing.T) {
 	const (
 		adminKey  = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ2H6djoN78rkj1En9yM7XsMUUDyFgiGWn3WZZqfI3JF admin"
 		clientKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHixnSBaUZmAX3Qd4hYl71jjgr58KXAJTdKjFrax6FHN alice"
@@ -265,33 +262,36 @@ func TestAuthorizedKeysOffersOnlyAdminKeysForANonClientName(t *testing.T) {
 	if !strings.Contains(out.String(), adminKey) {
 		t.Errorf("the admin key was not offered for an alias: %q", out.String())
 	}
-	if strings.Contains(out.String(), clientKey) {
-		t.Errorf("a client's key was offered for an alias: %q", out.String())
+	if !strings.Contains(out.String(), clientKey) {
+		t.Errorf("the client key was not offered for an alias, so the client "+
+			"cannot log in without naming itself: %q", out.String())
+	}
+
+	// The security property that matters: presenting the CLIENT key under
+	// that alias yields the client, not the administrator.
+	id, err := session.ResolveIdentityByKey(
+		t.Context(), repo, userAlias, writeAuthInfo(t, clientKey), adminKey)
+	if err != nil {
+		t.Fatalf("ResolveIdentityByKey: %v", err)
+	}
+	if id.IsAdmin {
+		t.Error("a client key under an alias resolved to the administrator")
+	}
+	if id.DisplayName != userAlice {
+		t.Errorf("DisplayName = %q, want %q", id.DisplayName, userAlice)
 	}
 }
 
-// A client name must still resolve to that client, and must not be promoted
-// to an administrator.
-func TestAuthorizedKeysNeverOffersAnAdminKeyForAClient(t *testing.T) {
-	const (
-		adminKey  = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ2H6djoN78rkj1En9yM7XsMUUDyFgiGWn3WZZqfI3JF admin"
-		clientKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHixnSBaUZmAX3Qd4hYl71jjgr58KXAJTdKjFrax6FHN alice"
-	)
+// A client's key resolves to that client and is never promoted to admin,
+// whatever name it arrives under.
+func TestClientKeyIsNeverPromotedToAdmin(t *testing.T) {
 	repo := newRepo(t)
-	addClient(t, repo, clientKey)
+	addNamedClient(t, repo, userAlice, keyAlice)
 
-	var out bytes.Buffer
-	if err := session.WriteAuthorizedKeys(
-		t.Context(), &out, repo, userAlice, adminKey); err != nil {
-		t.Fatalf("WriteAuthorizedKeys: %v", err)
-	}
-	if strings.Contains(out.String(), adminKey) {
-		t.Errorf("an admin key was offered for a client login: %q", out.String())
-	}
-
-	id, err := session.ResolveIdentity(t.Context(), repo, userAlice)
+	id, err := session.ResolveIdentityByKey(
+		t.Context(), repo, userAlice, writeAuthInfo(t, keyAlice), keyAdmin)
 	if err != nil {
-		t.Fatalf("ResolveIdentity: %v", err)
+		t.Fatalf("ResolveIdentityByKey: %v", err)
 	}
 	if id.IsAdmin {
 		t.Error("a client login must not resolve to the administrator")
@@ -1187,7 +1187,11 @@ func TestAuthorizedKeysRefusesUnservableNames(t *testing.T) {
 			t.Errorf("name %q was offered a key, so sshd would accept a login "+
 				"whose uid belongs to a different identity: %q", name, out.String())
 		}
-		if _, err := session.ResolveIdentity(t.Context(), repo, name); err == nil {
+		// The name is also refused at the session, so a hand-run
+		// `proxpass session' cannot act on one either.
+		if _, err := session.ResolveIdentityByKey(
+			t.Context(), repo, name, writeAuthInfo(t, adminKey), adminKey,
+		); err == nil {
 			t.Errorf("name %q resolved to an identity, want it refused", name)
 		}
 	}
@@ -1209,9 +1213,10 @@ func TestAuthorizedKeysAcceptsNamesUseraddWouldReject(t *testing.T) {
 			t.Errorf("name %q was refused the admin key, but it is serviceable "+
 				"over NSS", name)
 		}
-		id, err := session.ResolveIdentity(t.Context(), repo, name)
+		id, err := session.ResolveIdentityByKey(
+			t.Context(), repo, name, writeAuthInfo(t, adminKey), adminKey)
 		if err != nil {
-			t.Errorf("name %q: ResolveIdentity: %v", name, err)
+			t.Errorf("name %q: ResolveIdentityByKey: %v", name, err)
 			continue
 		}
 		if !id.IsAdmin {
