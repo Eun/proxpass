@@ -2,13 +2,19 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"proxpass/internal/models"
 )
 
-const testKey = "key"
+const (
+	testKey         = "key"
+	testTokenID     = "user@pam!token"
+	testTokenSecret = "secret"
+)
 
 func newTestRepo(t *testing.T) Repository {
 	t.Helper()
@@ -34,8 +40,8 @@ func TestProxmoxInstances(t *testing.T) {
 	inst := &models.ProxmoxInstance{
 		Name:           "pve1",
 		APIURL:         "https://pve1.local:8006",
-		APITokenID:     "user@pam!token",
-		APITokenSecret: "secret",
+		APITokenID:     testTokenID,
+		APITokenSecret: testTokenSecret,
 		SSHHost:        "pve1.local",
 		SSHPort:        22,
 		SSHUser:        "root",
@@ -73,6 +79,110 @@ func TestProxmoxInstances(t *testing.T) {
 	if len(list) != 0 {
 		t.Fatal("expected empty list after remove")
 	}
+}
+
+// Instances must come back ordered by id, so the listing is stable rather
+// than whatever order SQLite happened to return.
+//
+// The names here are deliberately in the reverse of their id order: sorting
+// by id and sorting by name would otherwise be indistinguishable, and a test
+// that cannot tell them apart would pass against either.
+//
+// Honest limitation: this test cannot detect ORDER BY being dropped
+// altogether, because SQLite returns rows in rowid order for a simple table
+// scan and so happens to agree. It pins the order against a *wrong* order
+// (by name, or descending), which is the realistic regression. The guarantee
+// against no ORDER BY is the SQL itself: the order is unspecified without
+// it, and a later index or query-plan change could expose that.
+func TestListProxmoxInstancesIsOrderedByID(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+
+	for _, name := range []string{"zulu", "yankee", "xray", "whiskey"} {
+		inst := &models.ProxmoxInstance{
+			Name:           name,
+			APIURL:         "https://" + name + ":8006",
+			APITokenID:     testTokenID,
+			APITokenSecret: testTokenSecret,
+			Node:           name,
+		}
+		if err := repo.AddProxmoxInstance(ctx, inst); err != nil {
+			t.Fatalf("add %s: %v", name, err)
+		}
+	}
+
+	list, err := repo.ListProxmoxInstances(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 4 {
+		t.Fatalf("got %d instances, want 4", len(list))
+	}
+	for i := 1; i < len(list); i++ {
+		if list[i-1].ID >= list[i].ID {
+			t.Errorf("not ordered by id: index %d has id %d, index %d has id %d",
+				i-1, list[i-1].ID, i, list[i].ID)
+		}
+	}
+	// Insertion order and id order coincide here, so the names pin down
+	// which order was actually applied.
+	want := []string{"zulu", "yankee", "xray", "whiskey"}
+	for i, w := range want {
+		if list[i].Name != w {
+			t.Errorf("position %d = %q, want %q (full order: %s)",
+				i, list[i].Name, w, instanceNames(list))
+		}
+	}
+}
+
+// Removing an instance must not disturb the order of the rest. SQLite can
+// reuse a freed rowid for the next insert, which is the case where an
+// unordered query visibly reorders itself.
+func TestListProxmoxInstancesStaysOrderedAfterRemoval(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+
+	ids := make([]int64, 0, 3)
+	for _, name := range []string{"alpha", "bravo", "charlie"} {
+		inst := &models.ProxmoxInstance{
+			Name: name, APIURL: "https://" + name + ":8006",
+			APITokenID: testTokenID, APITokenSecret: testTokenSecret, Node: name,
+		}
+		if err := repo.AddProxmoxInstance(ctx, inst); err != nil {
+			t.Fatalf("add %s: %v", name, err)
+		}
+		ids = append(ids, inst.ID)
+	}
+
+	// Drop the middle one and add another, which may take the freed rowid.
+	if err := repo.RemoveProxmoxInstance(ctx, ids[1]); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	added := &models.ProxmoxInstance{
+		Name: "delta", APIURL: "https://delta:8006",
+		APITokenID: testTokenID, APITokenSecret: testTokenSecret, Node: "delta",
+	}
+	if err := repo.AddProxmoxInstance(ctx, added); err != nil {
+		t.Fatalf("add delta: %v", err)
+	}
+
+	list, err := repo.ListProxmoxInstances(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i < len(list); i++ {
+		if list[i-1].ID >= list[i].ID {
+			t.Errorf("not ordered by id after removal (%s)", instanceNames(list))
+		}
+	}
+}
+
+func instanceNames(list []*models.ProxmoxInstance) string {
+	names := make([]string, 0, len(list))
+	for _, i := range list {
+		names = append(names, fmt.Sprintf("%d:%s", i.ID, i.Name))
+	}
+	return strings.Join(names, " ")
 }
 
 func TestGuestUpsert(t *testing.T) {
