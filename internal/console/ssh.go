@@ -53,8 +53,19 @@ func connectSSH(
 	}
 	defer func() { _ = session.Close() }()
 
+	// Reserve the bottom row for the status bar and request a PTY one row
+	// shorter, so the guest never writes into it. guestOut is where the
+	// guest's output goes: the bar's observer when there is a bar, the
+	// terminal directly when there is not.
+	bar, guestOut, guestRows := startBar(term,
+		fmt.Sprintf("%s (%s%d) @ %s", guest.Name, guest.Type, guest.ProxmoxID, inst.Name),
+		EscapeHint)
+	if bar != nil {
+		defer bar.Stop()
+	}
+
 	// pct enter and qm terminal both misbehave without a PTY.
-	if err := session.RequestPty(term.Term, term.Height, term.Width, gossh.TerminalModes{}); err != nil {
+	if err := session.RequestPty(term.Term, guestRows, term.Width, gossh.TerminalModes{}); err != nil {
 		return fmt.Errorf("requesting remote pty: %w", err)
 	}
 
@@ -99,7 +110,15 @@ func connectSSH(
 				if !ok {
 					return
 				}
-				_ = session.WindowChange(size.Height, size.Width)
+				// Tell the guest about the height it actually has, and
+				// repaint the bar at its new position. shox resizes without
+				// redrawing (terminal.go:112-130), which leaves a stale bar
+				// on screen until its next idle tick.
+				rows := size.Height
+				if bar != nil {
+					rows = bar.Resize(size.Width, size.Height)
+				}
+				_ = session.WindowChange(rows, size.Width)
 			}
 		}
 	}()
@@ -139,7 +158,7 @@ func connectSSH(
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(term.Out, remoteStdout)
+		_, _ = io.Copy(guestOut, remoteStdout)
 	}()
 	wg.Add(1)
 	go func() {

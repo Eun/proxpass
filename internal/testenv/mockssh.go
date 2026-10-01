@@ -228,9 +228,12 @@ func (m *MockSSHServer) handleExecCommand(ch gossh.Channel, cmd string) {
 				"Type 'exit' or press Ctrl+D to disconnect.\r\n"+
 				"\r\n"+
 				"root@CT%s:~# ", vmid, vmid)
-		if vmid == strconv.Itoa(WedgedVMID) {
+		switch vmid {
+		case strconv.Itoa(WedgedVMID):
 			m.wedgedSession(ch)
-		} else {
+		case strconv.Itoa(AltScreenVMID):
+			m.altScreenSession(ch)
+		default:
 			m.lxcSession(ch, vmid)
 		}
 
@@ -258,6 +261,32 @@ func (m *MockSSHServer) handleExecCommand(ch gossh.Channel, cmd string) {
 // Only closing the channel ends it, which is what the Ctrl+A X escape hatch
 // has to do to be worth anything.
 const WedgedVMID = 999
+
+// AltScreenVMID is a guest whose console immediately switches to the
+// alternate screen buffer, as vim, top and less do. It stands in for a
+// full-screen application so the status bar's hiding behavior can be tested
+// without one installed in the mock.
+const AltScreenVMID = 998
+
+// altScreenSession enters the alternate screen, echoes input, and leaves it
+// when the user sends "q".
+func (m *MockSSHServer) altScreenSession(ch gossh.Channel) {
+	// Switch to the alternate screen and draw something, the way a
+	// full-screen application would.
+	_, _ = fmt.Fprintf(ch, "\x1b[?1049h\x1b[H\x1b[2J[fullscreen app] press q to quit\r\n")
+	buf := make([]byte, 1)
+	for {
+		n, err := ch.Read(buf)
+		if err != nil || n == 0 {
+			break
+		}
+		if buf[0] == 'q' {
+			break
+		}
+	}
+	// Restore the primary screen on exit.
+	_, _ = fmt.Fprintf(ch, "\x1b[?1049l\r\n[left fullscreen]\r\n")
+}
 
 // wedgedSession blocks until the channel is closed, discarding input.
 func (m *MockSSHServer) wedgedSession(ch gossh.Channel) {

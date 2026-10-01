@@ -848,7 +848,14 @@ func TestSessionOutputIsCRLFOnRawTerminals(t *testing.T) {
 			t.Fatalf("connect exit code = %d, want 0 (stderr %q)", code, tb.errb.String())
 		}
 		out := tb.out.String()
-		if !strings.Contains(out, console.EscapeHint) {
+		// The escape hint is announced here only when no status bar will
+		// carry it. This terminal is raw and tall, so the bar takes over
+		// that job and the banner must not duplicate it.
+		if console.WillDrawBar(tb.term) {
+			if strings.Contains(out, console.EscapeHint) {
+				t.Errorf("hint duplicated while a status bar is drawn: %q", out)
+			}
+		} else if !strings.Contains(out, console.EscapeHint) {
 			t.Errorf("connect output does not announce the escape hatch: %q", out)
 		}
 		assertNoBareLF(t, "connect banner", out)

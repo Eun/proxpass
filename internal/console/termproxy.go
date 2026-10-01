@@ -120,9 +120,15 @@ func connectTermProxy(
 		}
 	}
 
-	// --- Step 6: send the initial size ---
+	// --- Step 6: reserve the bar's row and send the initial size ---
+	bar, guestOut, guestRows := startBar(term,
+		fmt.Sprintf("%s (%s%d) @ %s", guest.Name, guest.Type, guest.ProxmoxID, inst.Name),
+		EscapeHint)
+	if bar != nil {
+		defer bar.Stop()
+	}
 	if err := conn.Write(ctx, websocket.MessageBinary,
-		[]byte(fmt.Sprintf("1:%d:%d:", term.Width, term.Height))); err != nil {
+		[]byte(fmt.Sprintf("1:%d:%d:", term.Width, guestRows))); err != nil {
 		return fmt.Errorf("send initial resize: %w", err)
 	}
 
@@ -152,8 +158,14 @@ func connectTermProxy(
 					resizes = nil
 					continue
 				}
+				// Report the height the guest actually has, and repaint the
+				// bar at its new position.
+				rows := size.Height
+				if bar != nil {
+					rows = bar.Resize(size.Width, size.Height)
+				}
 				_ = conn.Write(ctx, websocket.MessageBinary,
-					[]byte(fmt.Sprintf("1:%d:%d:", size.Width, size.Height)))
+					[]byte(fmt.Sprintf("1:%d:%d:", size.Width, rows)))
 			}
 		}
 	}()
@@ -193,7 +205,7 @@ func connectTermProxy(
 		if readErr != nil {
 			break
 		}
-		if _, writeErr := term.Out.Write(data); writeErr != nil {
+		if _, writeErr := guestOut.Write(data); writeErr != nil {
 			break
 		}
 	}

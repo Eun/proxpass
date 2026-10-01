@@ -313,6 +313,81 @@ func TestConnectSSHForwardsLoneCtrlA(t *testing.T) {
 	}
 }
 
+// A status bar must reserve a row by requesting a shorter PTY and setting a
+// scroll region, and must release both when a full-screen application takes
+// over the screen.
+func TestConnectSSHStatusBarYieldsToFullScreenApp(t *testing.T) {
+	t.Setenv(console.DisableStatusBarEnv, "")
+	mock, err := testenv.NewMockSSHServer()
+	if err != nil {
+		t.Fatalf("start mock proxmox host: %v", err)
+	}
+	defer mock.Close()
+
+	pt := newPipeTerminal()
+	pt.term.Raw = true // a bar is only drawn on a raw PTY
+	guest := &models.Guest{
+		Type: models.GuestTypeCT, Name: guestWeb, ProxmoxID: testenv.AltScreenVMID,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- console.DefaultProxier{}.Connect(
+			pt.term, guest, sshInstance(t, mock), discardLogger())
+	}()
+
+	// One row is reserved: 24 rows of terminal, 23 for the guest.
+	waitFor(t, pt.out, "\x1b[1;23r")
+	// The guest declared the alternate screen, so the region is released.
+	waitFor(t, pt.out, "\x1b[r")
+
+	// Leave the application, then the console.
+	if _, err := pt.stdin.Write([]byte("q")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := pt.stdin.Write([]byte{0x01, 'X'}); err != nil {
+		t.Fatalf("write escape: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("console did not exit")
+	}
+}
+
+// With the bar disabled the guest must get the full terminal height and the
+// terminal must see no scroll-region escapes at all.
+func TestConnectSSHWithoutStatusBarLeavesTerminalAlone(t *testing.T) {
+	t.Setenv(console.DisableStatusBarEnv, "1")
+	mock, err := testenv.NewMockSSHServer()
+	if err != nil {
+		t.Fatalf("start mock proxmox host: %v", err)
+	}
+	defer mock.Close()
+
+	pt := newPipeTerminal()
+	pt.term.Raw = true
+	guest := &models.Guest{Type: models.GuestTypeCT, Name: guestWeb, ProxmoxID: 100}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- console.DefaultProxier{}.Connect(
+			pt.term, guest, sshInstance(t, mock), discardLogger())
+	}()
+
+	waitFor(t, pt.out, "root@CT100")
+	_, _ = pt.stdin.Write([]byte{0x04})
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("console did not exit")
+	}
+
+	if got := pt.out.String(); strings.Contains(got, "\x1b[1;23r") {
+		t.Errorf("a scroll region was installed even though the bar is disabled: %q", got)
+	}
+}
+
 // An unreachable Proxmox host must surface an error rather than hanging.
 func TestConnectSSHUnreachableHost(t *testing.T) {
 	mock, err := testenv.NewMockSSHServer()
