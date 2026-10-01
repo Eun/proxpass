@@ -23,6 +23,8 @@ const (
 	keyBackspace
 	keyCtrlC
 	keyCtrlU
+	keyTab
+	keyShiftTab
 	keyUnknown
 )
 
@@ -41,6 +43,7 @@ const (
 	byteLF        = 0x0a
 	byteBackspace = 0x08
 	byteDelete    = 0x7f
+	byteTab       = 0x09
 )
 
 // readKey reads and decodes a single keystroke.
@@ -69,6 +72,11 @@ func readKey(r io.Reader) (key, error) {
 		return key{kind: keyEnter}, nil
 	case byteBackspace, byteDelete:
 		return key{kind: keyBackspace}, nil
+	case byteTab:
+		// Tab is free to be a hotkey precisely because it is not a
+		// printable rune: it can never be something the user meant to type
+		// into the filter.
+		return key{kind: keyTab}, nil
 	case byteEsc:
 		return readEscape(r)
 	}
@@ -124,6 +132,11 @@ func readEscape(r io.Reader) (key, error) {
 		return key{kind: keyHome}, nil
 	case 'F':
 		return key{kind: keyEnd}, nil
+	case 'Z':
+		// CSI Z is Shift+Tab (back-tab). Terminals that do not send it
+		// simply leave the user cycling forward, which still reaches every
+		// mode, so this degrades without breaking anything.
+		return key{kind: keyShiftTab}, nil
 	}
 
 	// "\x1b[<n>~" — Home/End/PgUp/PgDn on the terminals that use it.
