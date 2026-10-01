@@ -78,6 +78,20 @@ highest.
 Without a PTY — `ssh host` with input redirected, for instance — the picker
 falls back to a plain numbered prompt so scripted use keeps working.
 
+## Leaving a guest console
+
+Normally you leave a console the way you would any shell: `exit`, `logout`,
+or `Ctrl+D`. When that is not possible — a wedged process, a full-screen
+application that has swallowed your keys — press **`Ctrl+A X`** to disconnect.
+The sequence is handled by proxpass rather than the guest, so it works even
+when the guest has stopped responding; proxpass prints it as a reminder each
+time you connect.
+
+Note that `Ctrl+A` is also start-of-line in most shells and the default
+prefix for `screen` and `tmux`. A lone `Ctrl+A` is passed through to the
+guest unchanged, so only the two-key sequence disconnects, but if you run
+`screen` or `tmux` inside a guest you will be nesting prefixes.
+
 ## Admin CLI
 
 The admin CLI is accessed over SSH. Commands are passed as the SSH exec command:

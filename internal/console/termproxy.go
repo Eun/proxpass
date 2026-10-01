@@ -163,10 +163,14 @@ func connectTermProxy(
 	// The header and payload are concatenated as bytes rather than formatted
 	// with %s: routing the slice through a string would corrupt non-UTF-8
 	// input (arrow keys, escape sequences) and invalidate the declared length.
+	// Ctrl+A X reports EOF, and closing the WebSocket below is all the
+	// teardown this transport needs: the read loop then fails and returns.
+	// No signal is required because termproxy owns the guest-side process.
 	go func() {
+		src := newEscapeReader(term.In, nil)
 		buf := make([]byte, 4096)
 		for {
-			n, readErr := term.In.Read(buf)
+			n, readErr := src.Read(buf)
 			if n > 0 {
 				msg := append([]byte(fmt.Sprintf("0:%d:", n)), buf[:n]...)
 				if writeErr := conn.Write(ctx, websocket.MessageBinary, msg); writeErr != nil {

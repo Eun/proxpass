@@ -129,6 +129,16 @@ func (d *Deps) connect(ctx context.Context, target string) int {
 func (d *Deps) attach(guest *models.Guest, inst *models.ProxmoxInstance) int {
 	d.Logger.Printf("%s: connecting to %s (%s%d) on %s",
 		d.User, guest.Name, guest.Type, guest.ProxmoxID, inst.Name)
+
+	// Announce the escape sequence before handing the terminal to the guest.
+	// It used to live in a persistent status bar; that was removed with the
+	// old SSH server, and an escape hatch nobody knows about is no use when
+	// the guest has stopped responding. One line at connect time is the
+	// cheapest honest replacement -- it costs the guest no screen rows and
+	// needs no output rewriting.
+	fmt.Fprintf(d.Terminal.UIOut(), "connecting to %s (%s) -- %s\n",
+		guest.Name, inst.Name, console.EscapeHint)
+
 	if err := d.Proxier.Connect(d.Terminal, guest, inst, d.Logger); err != nil {
 		d.Logger.Printf("%s: console error: %v", d.User, err)
 		d.errf("console error: %v", err)

@@ -185,6 +185,134 @@ func TestConnectSSHHandlesResize(t *testing.T) {
 	}
 }
 
+// Ctrl+A X must end the console even when the guest will not exit on its own.
+//
+// This is the whole point of the escape hatch, so the guest here ignores its
+// stdin entirely: closing stdin is not enough to end it, and without the
+// escape the session would hang until the client was killed externally.
+func TestConnectSSHEscapeDisconnectsWedgedGuest(t *testing.T) {
+	mock, err := testenv.NewMockSSHServer()
+	if err != nil {
+		t.Fatalf("start mock proxmox host: %v", err)
+	}
+	defer mock.Close()
+
+	pt := newPipeTerminal()
+	guest := &models.Guest{
+		Type: models.GuestTypeCT, Name: guestWeb, ProxmoxID: testenv.WedgedVMID,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- console.DefaultProxier{}.Connect(
+			pt.term, guest, sshInstance(t, mock), discardLogger())
+	}()
+
+	waitFor(t, pt.out, "entering LXC container")
+
+	// Ordinary input reaches a wedged guest but cannot end it.
+	if _, err := pt.stdin.Write([]byte("exit\r\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("console exited before the escape was sent: %v", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	// Ctrl+A X must end it.
+	if _, err := pt.stdin.Write([]byte{0x01, 'X'}); err != nil {
+		t.Fatalf("write escape: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		// A deliberate disconnect is a clean exit, not an error.
+		if err != nil {
+			t.Fatalf("Connect returned %v, want nil after Ctrl+A X", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Ctrl+A X did not disconnect the console")
+	}
+}
+
+// The escape bytes must not reach the guest, which echoes what it receives.
+func TestConnectSSHEscapeBytesDoNotReachTheGuest(t *testing.T) {
+	mock, err := testenv.NewMockSSHServer()
+	if err != nil {
+		t.Fatalf("start mock proxmox host: %v", err)
+	}
+	defer mock.Close()
+
+	pt := newPipeTerminal()
+	guest := &models.Guest{Type: models.GuestTypeCT, Name: guestWeb, ProxmoxID: 100}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- console.DefaultProxier{}.Connect(
+			pt.term, guest, sshInstance(t, mock), discardLogger())
+	}()
+
+	waitFor(t, pt.out, "root@CT100")
+	before := pt.out.String()
+
+	if _, err := pt.stdin.Write([]byte{0x01, 'X'}); err != nil {
+		t.Fatalf("write escape: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Ctrl+A X did not disconnect the console")
+	}
+
+	// The mock echoes input, so an X arriving at the guest would come back.
+	after := strings.TrimPrefix(pt.out.String(), before)
+	if strings.ContainsAny(after, "\x01Xx") {
+		t.Errorf("escape bytes were forwarded to the guest: %q", after)
+	}
+}
+
+// A lone Ctrl+A is a real keystroke (start-of-line in a shell) and must still
+// reach the guest rather than being held back or swallowed.
+func TestConnectSSHForwardsLoneCtrlA(t *testing.T) {
+	mock, err := testenv.NewMockSSHServer()
+	if err != nil {
+		t.Fatalf("start mock proxmox host: %v", err)
+	}
+	defer mock.Close()
+
+	pt := newPipeTerminal()
+	guest := &models.Guest{Type: models.GuestTypeCT, Name: guestWeb, ProxmoxID: 100}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- console.DefaultProxier{}.Connect(
+			pt.term, guest, sshInstance(t, mock), discardLogger())
+	}()
+
+	waitFor(t, pt.out, "root@CT100")
+
+	// Ctrl+A then a printable character: the mock echoes both.
+	if _, err := pt.stdin.Write([]byte{0x01, 'z'}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	waitFor(t, pt.out, "\x01z")
+
+	// The session must still be alive.
+	select {
+	case err := <-done:
+		t.Fatalf("console exited on a lone Ctrl+A: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	_, _ = pt.stdin.Write([]byte{0x04})
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("console did not exit")
+	}
+}
+
 // An unreachable Proxmox host must surface an error rather than hanging.
 func TestConnectSSHUnreachableHost(t *testing.T) {
 	mock, err := testenv.NewMockSSHServer()

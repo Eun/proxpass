@@ -82,6 +82,11 @@ func connectSSH(
 	done := make(chan struct{})
 	var wg sync.WaitGroup
 
+	// escaped is closed when the user presses Ctrl+A X, so the session is
+	// torn down without waiting for the guest to exit on its own.
+	escaped := make(chan struct{})
+	var escapeOnce sync.Once
+
 	// Forward terminal resizes for as long as the session lives.
 	wg.Add(1)
 	go func() {
@@ -103,8 +108,33 @@ func connectSSH(
 	// read from the terminal blocks until the user types, so waiting for it
 	// would hang the session teardown after the guest exits.
 	go func() {
-		_, _ = io.Copy(remoteStdin, term.In)
+		src := newEscapeReader(term.In, func() {
+			escapeOnce.Do(func() { close(escaped) })
+		})
+		_, _ = io.Copy(remoteStdin, src)
 		_ = remoteStdin.Close()
+	}()
+
+	// Terminate the session when the user escapes.
+	//
+	// Closing stdin above is not sufficient by itself. A healthy shell does
+	// exit on stdin EOF, but the escape hatch exists precisely for guests
+	// that are not healthy -- a wedged process, a full-screen application,
+	// or a shell with IGNOREEOF set will sit there and session.Wait would
+	// block until it exited on its own.
+	//
+	// Closing the channel is the part that reliably ends it. The signal is
+	// sent first as a courtesy so the remote command can tidy up, but it is
+	// best-effort: OpenSSH's sshd does not implement the "signal" channel
+	// request, so against a real Proxmox host this is usually a no-op.
+	go func() {
+		select {
+		case <-done:
+		case <-escaped:
+			logger.Printf("console: guest %q disconnected by Ctrl+A X", guest.Name)
+			_ = session.Signal(gossh.SIGTERM)
+			_ = session.Close()
+		}
 	}()
 	wg.Add(1)
 	go func() {
@@ -121,6 +151,14 @@ func connectSSH(
 	close(done)
 	_ = remoteStdin.Close()
 	wg.Wait()
+
+	// Escaping is a deliberate disconnect, so it is not an error even though
+	// it forced the remote command down.
+	select {
+	case <-escaped:
+		return nil
+	default:
+	}
 
 	// An interactive console almost always ends with the remote command
 	// exiting non-zero or being killed by a signal; that is an ordinary
