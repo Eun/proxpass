@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -27,6 +28,25 @@ func ResolveGuestAndInstance(
 	instName string,
 	guests []*models.Guest,
 	instances []*models.ProxmoxInstance,
+) (*models.Guest, *models.ProxmoxInstance, error) {
+	// An unqualified target may be qualified, so suggesting the prefix is
+	// useful advice.
+	return ResolveGuestAndInstanceHinted(
+		identifier, instName, guests, instances, instName == "")
+}
+
+// ResolveGuestAndInstanceHinted is ResolveGuestAndInstance with explicit
+// control over the disambiguation hint.
+//
+// hintInstance must be false where the caller's syntax cannot express an
+// instance prefix -- a login name cannot contain a colon -- so that an
+// ambiguity error does not advise something impossible.
+func ResolveGuestAndInstanceHinted(
+	identifier string,
+	instName string,
+	guests []*models.Guest,
+	instances []*models.ProxmoxInstance,
+	hintInstance bool,
 ) (*models.Guest, *models.ProxmoxInstance, error) {
 	// Build instance lookup map by ID.
 	instByID := make(map[int64]*models.ProxmoxInstance, len(instances))
@@ -62,7 +82,11 @@ func ResolveGuestAndInstance(
 		pool = guests
 	}
 
-	guest, err := ResolveGuest(identifier, pool, instName == "" /* hintInstance*/)
+	instNames := make(map[int64]string, len(instances))
+	for _, inst := range instances {
+		instNames[inst.ID] = inst.Name
+	}
+	guest, err := resolveGuest(identifier, pool, instNames, hintInstance)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -79,11 +103,20 @@ func ResolveGuestAndInstance(
 //
 // hintInstance controls whether error messages suggest using the
 // instance:identifier format to disambiguate.
-//
-//nolint:gocognit,nestif // sequential resolution tiers require nested checks
 func ResolveGuest(
 	identifier string,
 	guests []*models.Guest,
+	hintInstance bool,
+) (*models.Guest, error) {
+	return resolveGuest(identifier, guests, nil, hintInstance)
+}
+
+// resolveGuest is ResolveGuest with the instance names used to describe an
+// ambiguity; see ambiguousError.
+func resolveGuest(
+	identifier string,
+	guests []*models.Guest,
+	instNames map[int64]string,
 	hintInstance bool,
 ) (*models.Guest, error) {
 	lower := strings.ToLower(identifier)
@@ -100,31 +133,40 @@ func ResolveGuest(
 			return matches[0], nil
 		}
 		if len(matches) > 1 {
-			if hintInstance {
-				return nil, fmt.Errorf(
-					"VMID %d matches %d guests; use instance:identifier (see 'guest ls')",
-					vmid, len(matches))
-			}
-			return nil, fmt.Errorf(
-				"VMID %d matches %d guests; use type+id instead (e.g. %s%d)",
-				vmid, len(matches), matches[0].Type, vmid)
+			return nil, ambiguousError(identifier, matches, instNames, hintInstance)
 		}
 		// No match by VMID; fall through to other methods.
 	}
 
 	// --- 2. Try type+VMID (e.g. "ct100", "vm200") ---
+	//
+	// A VMID is unique per instance but NOT across them, so "ct100" can match
+	// a guest on two different instances. This used to return whichever came
+	// first, silently connecting to an arbitrary one of them; it now reports
+	// the ambiguity like the other two tiers do.
 	for _, prefix := range []models.GuestType{
 		models.GuestTypeCT, models.GuestTypeVM,
 	} {
 		p := string(prefix)
-		if strings.HasPrefix(lower, p) {
-			if vmid, err := strconv.Atoi(lower[len(p):]); err == nil {
-				for _, g := range guests {
-					if g.Type == prefix && g.ProxmoxID == vmid {
-						return g, nil
-					}
-				}
+		if !strings.HasPrefix(lower, p) {
+			continue
+		}
+		vmid, err := strconv.Atoi(lower[len(p):])
+		if err != nil {
+			continue
+		}
+		var matches []*models.Guest
+		for _, g := range guests {
+			if g.Type == prefix && g.ProxmoxID == vmid {
+				matches = append(matches, g)
 			}
+		}
+		if len(matches) == 1 {
+			return matches[0], nil
+		}
+		if len(matches) > 1 {
+			return nil, ambiguousError(
+				fmt.Sprintf("%s%d", p, vmid), matches, instNames, hintInstance)
 		}
 	}
 
@@ -139,19 +181,52 @@ func ResolveGuest(
 		return matches[0], nil
 	}
 	if len(matches) > 1 {
-		if hintInstance {
-			return nil, fmt.Errorf(
-				"name %q matches %d guests; use instance:identifier (see 'guest ls')",
-				identifier, len(matches))
-		}
-		var hints []string
-		for _, g := range matches {
-			hints = append(hints, fmt.Sprintf("%s%d", g.Type, g.ProxmoxID))
-		}
-		return nil, fmt.Errorf(
-			"name %q matches %d guests; use a unique id: %s",
-			identifier, len(matches), strings.Join(hints, ", "))
+		return nil, ambiguousError(identifier, matches, instNames, hintInstance)
 	}
 
-	return nil, fmt.Errorf("guest %q not found", identifier)
+	return nil, fmt.Errorf("%w: %q", ErrGuestNotFound, identifier)
+}
+
+// ErrGuestNotFound reports that an identifier matched no guest at all, as
+// opposed to matching several.
+//
+// The distinction matters where a miss is not a failure: a login name that
+// happens not to name a guest falls back to the picker, while an ambiguous
+// one has to be reported rather than guessed at. See
+// session.connectByLoginName.
+var ErrGuestNotFound = errors.New("guest not found")
+
+// ambiguousError reports that identifier matched more than one guest, and
+// suggests how to narrow it down.
+//
+// When the caller accepts an "instance:identifier" target, that prefix is
+// the advice: a VMID and a type+VMID are already as specific as a bare
+// identifier gets, so nothing else would help.
+//
+// Otherwise the hint has to name the alternatives concretely. It lists
+// "instance:typeVMID" per match, because the distinguishing part may be the
+// instance: listing bare ids for an ambiguous "ct100" would print "ct100,
+// ct100" and tell the user nothing. instNames may be nil, in which case
+// only the ids are listed.
+func ambiguousError(
+	identifier string,
+	matches []*models.Guest,
+	instNames map[int64]string,
+	hintInstance bool,
+) error {
+	if hintInstance {
+		return fmt.Errorf(
+			"%q matches %d guests; use instance:identifier (see 'guest ls')",
+			identifier, len(matches))
+	}
+	hints := make([]string, 0, len(matches))
+	for _, g := range matches {
+		id := fmt.Sprintf("%s%d", g.Type, g.ProxmoxID)
+		if inst := instNames[g.InstanceID]; inst != "" {
+			id = inst + ":" + id
+		}
+		hints = append(hints, id)
+	}
+	return fmt.Errorf("%q matches %d guests: %s",
+		identifier, len(matches), strings.Join(hints, ", "))
 }

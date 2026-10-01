@@ -12,7 +12,7 @@ protocol, and proxpass supplies the users, the keys and the session.
 - **Public Key Authentication** — The only supported method; password authentication is disabled
 - **Auto-Discovery** — Periodically reconciles the guest list against the configured Proxmox hosts via the REST API: guests that start are added, and guests that stop or are destroyed are removed
 - **Admin CLI over SSH** — Full command-line interface for managing instances, clients, groups, access rules, and admin keys
-- **Flexible Guest Resolution** — Connect by VMID (`100`), type+VMID (`ct100`), name (`webserver`), or instance-qualified (`rome:ct101`)
+- **Flexible Guest Resolution** — Connect by VMID (`100`), type+VMID (`ct100`), name (`webserver`), or instance-qualified (`rome:ct101`) — as an argument (`ssh host ct100`) or as the login name (`ssh ct100@host`)
 - **Access Control** — Per-client and per-group access rules with a global default policy fallback
 - **SQLite Storage** — Single-file embedded database, no external dependencies
 
@@ -404,6 +404,38 @@ ssh -t -p 2222 alice@proxpass-host webserver
 # With an instance prefix (when the same VMID exists on multiple nodes)
 ssh -t -p 2222 alice@proxpass-host rome:ct101
 ```
+
+### Guest name as the login name
+
+A guest identifier also works as the **login name**, which is shorter to
+type and needs no `-t`:
+
+```bash
+ssh -p 2222 ct100@proxpass-host        # same as: ssh -t … alice@host ct100
+ssh -p 2222 100@proxpass-host
+ssh -p 2222 webserver@proxpass-host
+```
+
+A name that matches no guest is just a login name, so `ssh admin@host` and
+`ssh alice@host` still open the picker.
+
+Three limitations follow from it being a login name rather than an argument:
+
+- **Only guests you may already reach.** The name is resolved against the
+  guests your key grants access to, so it is a shortcut, never a way in. A
+  guest that exists but is not yours is treated exactly like one that does
+  not exist — you get the picker, not an error — so the login name cannot be
+  used to probe for machines.
+- **Reserved names still mean "browse".** `admin` and any client name open
+  the picker even if a guest happens to share that name, since guest names
+  come from Proxmox and proxpass does not control them.
+- **No instance prefix.** A colon cannot appear in a login name, so
+  `rome:ct101@host` is not possible. If an identifier matches guests on more
+  than one instance, proxpass refuses it rather than picking one, and lists
+  the alternatives. Use the argument form for those.
+- **Names longer than 32 characters** are rejected, as are names containing
+  `/`, `%`, `?`, `#` or a space. Guests named that way remain reachable via
+  the argument form and the picker.
 
 Add this to `~/.ssh/config` to avoid typing `-t` every time:
 

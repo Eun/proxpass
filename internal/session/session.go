@@ -63,8 +63,9 @@ func Run(ctx context.Context, d *Deps) int {
 		return d.writeHelp(ctx)
 
 	case cmd == "":
-		// No command: let the user choose a guest.
-		return d.runPicker(ctx)
+		// No command. The login name may itself name a guest -- "ssh
+		// ct100@host" -- so try that before falling back to the picker.
+		return d.connectByLoginName(ctx)
 
 	case d.IsAdmin:
 		return d.runAdmin(ctx, cmd)
@@ -162,7 +163,13 @@ func (d *Deps) attach(guest *models.Guest, inst *models.ProxmoxInstance) int {
 	return 0
 }
 
-// resolve turns a user-supplied target into a guest and its instance.
+// resolve turns a user-supplied target into a guest and its instance. The
+// target may be qualified as "instance:identifier".
+//
+// This resolves against EVERY guest, not just the reachable ones, because
+// it serves an explicit request: naming a guest that exists but is out of
+// reach must say "access denied" rather than "not found". The login-name
+// path deliberately does the opposite; see connectByLoginName.
 func (d *Deps) resolve(ctx context.Context, target string) (*models.Guest, *models.ProxmoxInstance, error) {
 	instName, identifier := cli.ParseGuestTarget(target)
 	guests, err := d.Repo.ListGuests(ctx)
