@@ -18,7 +18,9 @@ import (
 // key, and a non-zero exit is logged as an error on every failed probe.
 //
 // flagAdminKey, when non-empty, is an additional admin key supplied at
-// startup; it is offered for the reserved admin user only.
+// startup. Like every other key it is offered for any servable name that is
+// not a client's own, because the name does not decide who the caller is --
+// the key does, at the session. See ResolveIdentityByKey.
 func WriteAuthorizedKeys(
 	ctx context.Context,
 	w io.Writer,

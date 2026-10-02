@@ -7,11 +7,163 @@ import (
 	"io"
 	"strings"
 
+	"proxpass/internal/cli"
 	"proxpass/internal/models"
 )
 
 // errQuit signals that the user declined to pick a guest.
 var errQuit = errors.New("quit")
+
+// reservedLoginNames are login names that must never be treated as a guest
+// identifier, whatever a guest happens to be called.
+//
+// A guest name is not under proxpass's control -- it comes from Proxmox
+// discovery -- so a guest called "admin" would otherwise hijack the
+// documented browse login. A client's own name is reserved for the same
+// reason: "ssh alice@host" must keep meaning "log in as alice and browse",
+// not "connect to a machine someone named alice".
+func (d *Deps) isReservedLoginName(ctx context.Context, name string) (bool, error) {
+	if strings.EqualFold(name, AdminUser) {
+		return true, nil
+	}
+	// Any configured client name is reserved, not just this session's own:
+	// the set of names that mean "browse" must not depend on who is asking,
+	// or the same command would do different things for different callers.
+	clients, err := d.Repo.ListClients(ctx)
+	if err != nil {
+		return false, fmt.Errorf("listing clients: %w", err)
+	}
+	for _, c := range clients {
+		if strings.EqualFold(c.Name, name) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// connectByLoginName connects to the guest named by the login name, or runs
+// the picker when the login name does not name one.
+//
+// "ssh ct100@host" is the shorthand for "ssh -t host ct100": the login name
+// is resolved as a guest identifier (VMID, type+VMID or name). This is why
+// the directory serves any unused name -- see api.aliasUser.
+//
+// Resolution is deliberately scoped to the guests this session may REACH,
+// not to every guest that exists. The login name is attacker-chosen and
+// costs nothing to try, so resolving against all guests would turn this
+// into an enumeration oracle: "access denied" for a guest that exists
+// against the picker for one that does not, repeated, maps out the estate.
+// Scoping also means an ambiguity can only ever name guests the caller is
+// already entitled to see, so the disambiguation hint leaks nothing.
+//
+// Three outcomes, each deliberate:
+//
+//   - no match: NOT an error. Logging in to browse is the ordinary case
+//     ("ssh admin@host", "ssh alice@host"), so a miss falls through to the
+//     picker. A guest that exists but is out of reach is indistinguishable
+//     from one that does not exist, which is the point.
+//   - one match: connect, after the access check below. That check is
+//     redundant with the scoping and is kept anyway, so that a future
+//     change to either one alone cannot open a hole.
+//   - several: report them rather than guess, because connecting to an
+//     arbitrary one would put the caller on the wrong machine.
+//
+// A consequence of the scoping worth being deliberate about: when two
+// instances both have a "ct100" and the caller may reach only one, the name
+// is unambiguous FOR THEM and connects, while an administrator typing the
+// same thing gets an ambiguity error. Two people running one command can
+// therefore reach different machines. That is accepted, because the
+// alternative -- reporting an ambiguity against a guest the caller may not
+// see -- is precisely the disclosure this scoping exists to prevent.
+//
+// The identity doing all this comes from the KEY, never from the login name
+// (see ResolveIdentityByKey), so naming a guest grants nothing: a client
+// reaches exactly the guests its access rules already allow.
+func (d *Deps) connectByLoginName(ctx context.Context) int {
+	name := strings.TrimSpace(d.User)
+	if name == "" {
+		return d.runPicker(ctx)
+	}
+
+	// A reserved name means "browse", even if a guest shares it.
+	reserved, err := d.isReservedLoginName(ctx, name)
+	if err != nil {
+		d.Logger.Printf("%s: %v", d.User, err)
+		d.errf("internal error")
+		return 1
+	}
+	if reserved {
+		return d.runPicker(ctx)
+	}
+
+	// Only the guests this session may reach, so that a name it may not
+	// reach is simply "not a guest" -- see the enumeration note above.
+	guests, err := d.accessibleGuests(ctx)
+	if err != nil {
+		d.Logger.Printf("%s: %v", d.User, err)
+		d.errf("internal error")
+		return 1
+	}
+	instances, err := d.Repo.ListProxmoxInstances(ctx)
+	if err != nil {
+		d.Logger.Printf("%s: listing instances: %v", d.User, err)
+		d.errf("internal error")
+		return 1
+	}
+
+	// hintInstance is false: the resolver's usual advice is to qualify the
+	// target as "instance:identifier", but a login name cannot carry a
+	// colon (api.ValidLoginName rejects it, because it is the passwd field
+	// separator), so that hint would describe something impossible here.
+	// The unqualified form lists the concrete ids instead, which is what a
+	// login name can actually express -- and, because the pool is already
+	// filtered, only ones this caller may see.
+	guest, inst, err := cli.ResolveGuestAndInstanceHinted(
+		name, "", guests, instances, false /* hintInstance */)
+	switch {
+	case errors.Is(err, cli.ErrGuestNotFound):
+		// Just a login name, not a guest this session can reach: browse.
+		return d.runPicker(ctx)
+	case err != nil:
+		// Ambiguous, or a storage fault. Either way, say so rather than
+		// connecting to an arbitrary match or silently showing the picker.
+		d.Logger.Printf("%s: login name as guest: %v", d.User, err)
+		d.errf("%v", err)
+		d.errf("or log in by name and pick from the list: ssh %s@<host>",
+			d.pickerLoginHint())
+		return 1
+	}
+
+	// Redundant after the scoping above, and kept on purpose: this is the
+	// check that must hold even if the pool is ever widened again.
+	allowed, err := d.hasAccess(ctx, guest)
+	if err != nil {
+		d.Logger.Printf("%s: access check failed: %v", d.User, err)
+		d.errf("internal error")
+		return 1
+	}
+	if !allowed {
+		d.Logger.Printf("%s: access denied to guest %s", d.User, guest.Name)
+		d.errf("access denied")
+		return 1
+	}
+	return d.attach(guest, inst)
+}
+
+// pickerLoginHint is a login name the caller can actually use to reach the
+// picker.
+//
+// Suggesting "admin" to a client would be advice it cannot follow, since
+// that name grants nothing without an admin key; its own name always works.
+func (d *Deps) pickerLoginHint() string {
+	if d.IsAdmin {
+		return AdminUser
+	}
+	if n := d.displayName(); n != "" {
+		return n
+	}
+	return AdminUser
+}
 
 // runPicker lists the guests the session may reach and connects to the one
 // the user selects.

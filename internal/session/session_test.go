@@ -26,9 +26,15 @@ const (
 	// administrator rather than to an account of its own.
 	userAlias  = "tobias"
 	guestCT100 = "ct100"
-	pveAPIURL  = "https://pve:8006"
-	instPVE    = "pve"
-	cmdGuestLs = "guest ls"
+	// guestWeb is the name of the guest seedGuest creates (ct100).
+	guestWeb = "web"
+	// guestMine / guestSecret: one guest the client may reach and one it
+	// may not, for the disclosure tests.
+	guestMine   = "mine"
+	guestSecret = "secret"
+	pveAPIURL   = "https://pve:8006"
+	instPVE     = "pve"
+	cmdGuestLs  = "guest ls"
 )
 
 func newRepo(t *testing.T) db.Repository {
@@ -338,7 +344,7 @@ func seedGuest(t *testing.T, repo db.Repository) *models.Guest {
 		t.Fatalf("add instance: %v", err)
 	}
 	guest := &models.Guest{
-		Type: models.GuestTypeCT, Name: "web", Status: models.StatusRunning,
+		Type: models.GuestTypeCT, Name: guestWeb, Status: models.StatusRunning,
 		ProxmoxID: 100, InstanceID: inst.ID,
 	}
 	if err := repo.UpsertGuest(t.Context(), guest); err != nil {
@@ -346,6 +352,426 @@ func seedGuest(t *testing.T, repo db.Repository) *models.Guest {
 	}
 	guests, _ := repo.ListGuests(t.Context())
 	return guests[0]
+}
+
+// --- login name as a guest identifier ----------------------------------
+
+// seedGuestOn adds a guest to an existing instance.
+func seedGuestOn(
+	t *testing.T, repo db.Repository, instID int64,
+	typ models.GuestType, vmid int, name string,
+) {
+	t.Helper()
+	if err := repo.UpsertGuest(t.Context(), &models.Guest{
+		Type: typ, Name: name, Status: models.StatusRunning,
+		ProxmoxID: vmid, InstanceID: instID,
+	}); err != nil {
+		t.Fatalf("upsert guest %s%d: %v", typ, vmid, err)
+	}
+}
+
+// "ssh ct100@host" connects straight to the guest: the login name is itself
+// a guest identifier, in every form the resolver accepts.
+//
+// This is the shorthand that predates the sshd rework. It is reachable only
+// because the directory serves any unused name over NSS, so sshd gets far
+// enough to run the session at all.
+func TestLoginNameConnectsToTheGuest(t *testing.T) {
+	for _, login := range []string{guestCT100, "100", guestWeb, "CT100", "Web"} {
+		t.Run(login, func(t *testing.T) {
+			repo := newRepo(t)
+			guest := seedGuest(t, repo)
+
+			proxier := &testenv.MockProxier{}
+			tb := newTerminal("")
+			d := newDeps(repo, tb, proxier)
+			d.User = login
+			d.IsAdmin = true
+			// No command at all: this is a bare "ssh <name>@host".
+			d.Command = ""
+
+			if code := session.Run(t.Context(), d); code != 0 {
+				t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, tb.errb.String())
+			}
+			sessions := proxierSessions(proxier)
+			if len(sessions) != 1 {
+				t.Fatalf("login %q opened %d consoles, want 1 (stderr: %q)",
+					login, len(sessions), tb.errb.String())
+			}
+			if sessions[0].ProxmoxID != guest.ProxmoxID {
+				t.Errorf("connected to vmid %d, want %d",
+					sessions[0].ProxmoxID, guest.ProxmoxID)
+			}
+			// The picker must not have been drawn: the name was understood.
+			if strings.Contains(tb.out.String(), "guests available to") {
+				t.Errorf("the picker was shown for a guest login name: %q", tb.out.String())
+			}
+		})
+	}
+}
+
+// A login name that names no guest still reaches the picker.
+//
+// This is the common case -- "ssh admin@host" or any admin alias -- so a
+// miss must not be an error. Were it one, resolving the login name would
+// have broken every browsing login.
+func TestNonGuestLoginNameShowsThePicker(t *testing.T) {
+	for _, login := range []string{session.AdminUser, "tobias", "nosuchguest"} {
+		t.Run(login, func(t *testing.T) {
+			repo := newRepo(t)
+			seedGuest(t, repo)
+
+			proxier := &testenv.MockProxier{}
+			tb := newTerminal("\x03") // Ctrl+C: quit the picker
+			tb.term.Raw = true
+			d := newDeps(repo, tb, proxier)
+			d.User = login
+			d.IsAdmin = true
+
+			if code := session.Run(t.Context(), d); code != 0 {
+				t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, tb.errb.String())
+			}
+			if !strings.Contains(tb.out.String(), "guests available to") {
+				t.Errorf("login %q did not reach the picker: %q", login, tb.out.String())
+			}
+			if len(proxier.Sessions) != 0 {
+				t.Error("quitting the picker must not open a console")
+			}
+		})
+	}
+}
+
+// An ambiguous login name must be reported, never guessed at.
+//
+// "ct100" can exist on two instances, and a login name has no room for an
+// instance prefix (a colon cannot appear in one -- see api.ValidLoginName),
+// so this is a dead end by design. Connecting to an arbitrary match would
+// put the user on the wrong machine; falling back to the picker would hide
+// that the name meant something.
+func TestAmbiguousLoginNameIsReported(t *testing.T) {
+	repo := newRepo(t)
+	first := seedGuest(t, repo) // ct100 "web" on instance pve
+
+	// A distinct API URL: the schema requires it to be unique.
+	second := &models.ProxmoxInstance{
+		Name: "rome", APIURL: "https://rome:8006", Node: "rome",
+		ConnectionType: models.ConnectionTypeTermProxy,
+	}
+	if err := repo.AddProxmoxInstance(t.Context(), second); err != nil {
+		t.Fatalf("add instance: %v", err)
+	}
+	seedGuestOn(t, repo, second.ID, models.GuestTypeCT, first.ProxmoxID, first.Name)
+
+	for _, login := range []string{guestCT100, "100", guestWeb} {
+		t.Run(login, func(t *testing.T) {
+			proxier := &testenv.MockProxier{}
+			tb := newTerminal("\x03")
+			tb.term.Raw = true
+			d := newDeps(repo, tb, proxier)
+			d.User = login
+			d.IsAdmin = true
+
+			if code := session.Run(t.Context(), d); code == 0 {
+				t.Errorf("an ambiguous login name must fail, got 0 (out: %q)", tb.out.String())
+			}
+			if len(proxier.Sessions) != 0 {
+				t.Errorf("an ambiguous name must not connect anywhere: %+v",
+					proxierSessions(proxier))
+			}
+			// It must say what is wrong, not silently show the picker.
+			if !strings.Contains(tb.errb.String(), "matches") {
+				t.Errorf("stderr does not explain the ambiguity: %q", tb.errb.String())
+			}
+			// The advice must be something a login name can express. The
+			// resolver's usual "use instance:identifier" cannot be typed
+			// here at all, because a colon is not a legal login name
+			// character -- so the message must offer the concrete ids and
+			// the picker instead.
+			if strings.Contains(tb.errb.String(), "instance:identifier") {
+				t.Errorf("suggested a prefix a login name cannot carry: %q",
+					tb.errb.String())
+			}
+			// The alternatives must be distinguishable. Listing bare ids
+			// for an ambiguous "ct100" would print "ct100, ct100", so the
+			// instance name has to be part of each one.
+			for _, want := range []string{"pve:ct100", "rome:ct100"} {
+				if !strings.Contains(tb.errb.String(), want) {
+					t.Errorf("stderr does not list %q among the alternatives: %q",
+						want, tb.errb.String())
+				}
+			}
+			if !strings.Contains(tb.errb.String(), "pick from the list") {
+				t.Errorf("stderr does not offer the picker as a way out: %q",
+					tb.errb.String())
+			}
+			if strings.Contains(tb.out.String(), "guests available to") {
+				t.Errorf("an ambiguous name must not fall back to the picker: %q",
+					tb.out.String())
+			}
+		})
+	}
+}
+
+// The access check is enforced on the login-name path too.
+//
+// A client cannot actually reach this in the shipped image: a guest name is
+// not a client name, so the directory serves it as an admin alias and
+// WriteAuthorizedKeys offers only admin keys for it -- sshd rejects a
+// client's key before the session starts (verified against the running
+// image). The check is still required here, because that is an
+// authentication property rather than one of this function, and Deps is
+// also constructed by other callers.
+func TestLoginNameRespectsClientAccess(t *testing.T) {
+	t.Run("granted", func(t *testing.T) {
+		repo := newRepo(t)
+		client := addClient(t, repo)
+		guest := seedGuest(t, repo)
+		if err := repo.GrantClientAccess(
+			t.Context(), client.ID, []int64{guest.ID}); err != nil {
+			t.Fatalf("grant access: %v", err)
+		}
+
+		proxier := &testenv.MockProxier{}
+		tb := newTerminal("")
+		d := newDeps(repo, tb, proxier)
+		// A client connecting under a guest's name rather than its own.
+		d.User = guestCT100
+		d.ClientID = client.ID
+
+		if code := session.Run(t.Context(), d); code != 0 {
+			t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, tb.errb.String())
+		}
+		if len(proxierSessions(proxier)) != 1 {
+			t.Error("a permitted client must reach the guest by login name")
+		}
+	})
+
+	// A guest the client may NOT reach must be indistinguishable from one
+	// that does not exist.
+	//
+	// The login name is attacker-chosen and free to try, so answering
+	// "access denied" for a real guest and showing the picker for an
+	// invented one would be an enumeration oracle: repeat it and the whole
+	// estate falls out, including guests and instance names the caller was
+	// never entitled to know about. Both cases must look the same.
+	t.Run("no access is indistinguishable from no such guest", func(t *testing.T) {
+		repo := newRepo(t)
+		client := addClient(t, repo)
+		// A second guest the client CAN reach, so the picker has content
+		// and both branches render the same frame.
+		inst := &models.ProxmoxInstance{
+			Name: instPVE, APIURL: pveAPIURL, Node: instPVE,
+			ConnectionType: models.ConnectionTypeTermProxy,
+		}
+		if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
+			t.Fatalf("add instance: %v", err)
+		}
+		seedGuestOn(t, repo, inst.ID, models.GuestTypeCT, 100, guestSecret)
+		seedGuestOn(t, repo, inst.ID, models.GuestTypeVM, 200, guestMine)
+		guests, _ := repo.ListGuests(t.Context())
+		for _, g := range guests {
+			if g.Name == guestMine {
+				if err := repo.GrantClientAccess(
+					t.Context(), client.ID, []int64{g.ID}); err != nil {
+					t.Fatalf("grant: %v", err)
+				}
+			}
+		}
+
+		outputs := make(map[string]string, 2)
+		for _, login := range []string{guestSecret, "nosuchguest"} {
+			proxier := &testenv.MockProxier{}
+			tb := newTerminal("\x03")
+			tb.term.Raw = true
+			d := newDeps(repo, tb, proxier)
+			d.User = login
+			d.DisplayName = userAlice
+			d.ClientID = client.ID
+
+			_ = session.Run(t.Context(), d)
+
+			if len(proxier.Sessions) != 0 {
+				t.Errorf("login %q reached a console it has no access to", login)
+			}
+			if strings.Contains(tb.errb.String(), "access denied") {
+				t.Errorf("login %q revealed that the guest exists: %q",
+					login, tb.errb.String())
+			}
+			if strings.Contains(tb.out.String(), guestSecret) {
+				t.Errorf("login %q leaked an inaccessible guest name: %q",
+					login, tb.out.String())
+			}
+			outputs[login] = tb.out.String()
+		}
+
+		// The decisive assertion: the two cases must be byte-identical.
+		if outputs[guestSecret] != outputs["nosuchguest"] {
+			t.Errorf("an existing but inaccessible guest is distinguishable "+
+				"from a nonexistent one:\n existing: %q\n absent:   %q",
+				outputs[guestSecret], outputs["nosuchguest"])
+		}
+	})
+}
+
+// An ambiguity must only ever name guests the caller may already see.
+//
+// The hint lists qualified ids like "pve:ct100, rome:ct100", which includes
+// INSTANCE names. Resolving against every guest would therefore disclose
+// both guests and Proxmox instances the caller has no access to, just by
+// logging in under a colliding name.
+func TestAmbiguityHintOnlyNamesAccessibleGuests(t *testing.T) {
+	repo := newRepo(t)
+	client := addClient(t, repo)
+
+	// Same name "web" on two instances; the client may reach only one.
+	mine := &models.ProxmoxInstance{
+		Name: "mine", APIURL: "https://mine:8006", Node: "mine",
+		ConnectionType: models.ConnectionTypeTermProxy,
+	}
+	secret := &models.ProxmoxInstance{
+		Name: "secretnode", APIURL: "https://secret:8006", Node: "secretnode",
+		ConnectionType: models.ConnectionTypeTermProxy,
+	}
+	for _, i := range []*models.ProxmoxInstance{mine, secret} {
+		if err := repo.AddProxmoxInstance(t.Context(), i); err != nil {
+			t.Fatalf("add instance: %v", err)
+		}
+	}
+	seedGuestOn(t, repo, mine.ID, models.GuestTypeCT, 100, "web")
+	seedGuestOn(t, repo, secret.ID, models.GuestTypeCT, 100, "web")
+	guests, _ := repo.ListGuests(t.Context())
+	for _, g := range guests {
+		if g.InstanceID == mine.ID {
+			if err := repo.GrantClientAccess(
+				t.Context(), client.ID, []int64{g.ID}); err != nil {
+				t.Fatalf("grant: %v", err)
+			}
+		}
+	}
+
+	proxier := &testenv.MockProxier{}
+	tb := newTerminal("")
+	d := newDeps(repo, tb, proxier)
+	d.User = "web"
+	d.DisplayName = userAlice
+	d.ClientID = client.ID
+
+	// Only ONE "web" is reachable, so this must connect, not report an
+	// ambiguity: the inaccessible twin is not the caller's business.
+	if code := session.Run(t.Context(), d); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr %q)", code, tb.errb.String())
+	}
+	all := tb.out.String() + tb.errb.String()
+	if strings.Contains(all, "secretnode") {
+		t.Errorf("leaked an instance the client cannot see: %q", all)
+	}
+	if strings.Contains(all, "matches 2 guests") {
+		t.Errorf("reported an ambiguity against an inaccessible guest: %q", all)
+	}
+	sessions := proxierSessions(proxier)
+	if len(sessions) != 1 {
+		t.Fatalf("want exactly one console, got %d", len(sessions))
+	}
+}
+
+// A guest must never hijack a reserved login name.
+//
+// Guest names come from Proxmox discovery, so proxpass does not control
+// them. A guest called "admin" -- or named after a client -- would
+// otherwise steal the documented browse login from whoever it belongs to.
+func TestReservedLoginNamesAreNeverTreatedAsGuests(t *testing.T) {
+	for _, reserved := range []string{session.AdminUser, userAlice} {
+		t.Run(reserved, func(t *testing.T) {
+			repo := newRepo(t)
+			addClient(t, repo) // a client named "alice"
+			inst := &models.ProxmoxInstance{
+				Name: instPVE, APIURL: pveAPIURL, Node: instPVE,
+				ConnectionType: models.ConnectionTypeTermProxy,
+			}
+			if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
+				t.Fatalf("add instance: %v", err)
+			}
+			// A guest named exactly like the reserved login name.
+			seedGuestOn(t, repo, inst.ID, models.GuestTypeCT, 100, reserved)
+
+			proxier := &testenv.MockProxier{}
+			tb := newTerminal("\x03")
+			tb.term.Raw = true
+			d := newDeps(repo, tb, proxier)
+			d.User = reserved
+			d.DisplayName = session.AdminUser
+			d.IsAdmin = true
+
+			if code := session.Run(t.Context(), d); code != 0 {
+				t.Fatalf("exit = %d, want 0 (stderr %q)", code, tb.errb.String())
+			}
+			if len(proxier.Sessions) != 0 {
+				t.Errorf("login %q connected to a guest instead of browsing", reserved)
+			}
+			if !strings.Contains(tb.out.String(), "guests available to") {
+				t.Errorf("login %q did not reach the picker: %q", reserved, tb.out.String())
+			}
+		})
+	}
+}
+
+// Reserved names are matched case-insensitively, since guest resolution is
+// too: a guest called "Admin" must not slip through.
+func TestReservedLoginNameMatchIsCaseInsensitive(t *testing.T) {
+	repo := newRepo(t)
+	inst := &models.ProxmoxInstance{
+		Name: instPVE, APIURL: pveAPIURL, Node: instPVE,
+		ConnectionType: models.ConnectionTypeTermProxy,
+	}
+	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
+		t.Fatalf("add instance: %v", err)
+	}
+	seedGuestOn(t, repo, inst.ID, models.GuestTypeCT, 100, "Admin")
+
+	proxier := &testenv.MockProxier{}
+	tb := newTerminal("\x03")
+	tb.term.Raw = true
+	d := newDeps(repo, tb, proxier)
+	d.User = "Admin"
+	d.DisplayName = session.AdminUser
+	d.IsAdmin = true
+
+	_ = session.Run(t.Context(), d)
+	if len(proxier.Sessions) != 0 {
+		t.Error(`a guest named "Admin" hijacked the admin login`)
+	}
+}
+
+// An explicit command still wins over the login name, so the documented
+// "ssh alice@host ct100" form keeps working unchanged.
+func TestExplicitCommandTakesPrecedenceOverTheLoginName(t *testing.T) {
+	repo := newRepo(t)
+	inst := &models.ProxmoxInstance{
+		Name: instPVE, APIURL: pveAPIURL, Node: instPVE,
+		ConnectionType: models.ConnectionTypeTermProxy,
+	}
+	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
+		t.Fatalf("add instance: %v", err)
+	}
+	seedGuestOn(t, repo, inst.ID, models.GuestTypeCT, 100, "web")
+	seedGuestOn(t, repo, inst.ID, models.GuestTypeVM, 200, "db")
+
+	proxier := &testenv.MockProxier{}
+	tb := newTerminal("")
+	d := newDeps(repo, tb, proxier)
+	// Login name names one guest, the command names another: the command
+	// is the explicit request and must win.
+	d.User = guestCT100
+	d.IsAdmin = true
+	d.Command = "vm200"
+
+	if code := session.Run(t.Context(), d); code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, tb.errb.String())
+	}
+	sessions := proxierSessions(proxier)
+	if len(sessions) != 1 || sessions[0].ProxmoxID != 200 {
+		t.Errorf("connected to %+v, want vmid 200 from the command", sessions)
+	}
 }
 
 // A client must not be able to reach the admin CLI by passing a multi-word
