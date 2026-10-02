@@ -55,7 +55,7 @@ func guestCmd(deps *Deps) *ucli.Command { //nolint:gocognit // CLI command tree
 			{
 				Name:      cmdConnect,
 				Usage:     "Connect to a guest console",
-				ArgsUsage: "[<instance>:]<identifier>",
+				ArgsUsage: "<identifier>[@<instance>]",
 				Action: func(ctx context.Context, cmd *ucli.Command) error {
 					if cmd.NArg() < 1 {
 						return fmt.Errorf(
