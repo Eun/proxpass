@@ -44,18 +44,19 @@ func twoInstances() ([]*models.ProxmoxInstance, []*models.Guest) {
 // A VMID that exists on only one instance resolves without a qualifier, in
 // all three identifier forms.
 func TestResolveGuestUnambiguous(t *testing.T) {
+	insts := []*models.ProxmoxInstance{{ID: 1, Name: instRome}}
 	pool := []*models.Guest{
 		guest(1, models.GuestTypeCT, 100, guestWebName),
 		guest(1, models.GuestTypeVM, 200, "db"),
 	}
 	for _, ident := range []string{"100", idCT100, guestWebName, "CT100", "Web"} {
-		g, err := cli.ResolveGuest(ident, pool)
+		g, _, err := cli.ResolveGuestAndInstance(ident, "", pool, insts)
 		if err != nil {
-			t.Errorf("ResolveGuest(%q): %v", ident, err)
+			t.Errorf("ResolveGuestAndInstance(%q): %v", ident, err)
 			continue
 		}
 		if g.ProxmoxID != 100 || g.Type != models.GuestTypeCT {
-			t.Errorf("ResolveGuest(%q) = %s%d, want ct100", ident, g.Type, g.ProxmoxID)
+			t.Errorf("ResolveGuestAndInstance(%q) = %s%d, want ct100", ident, g.Type, g.ProxmoxID)
 		}
 	}
 }
@@ -65,9 +66,9 @@ func TestResolveGuestUnambiguous(t *testing.T) {
 // name two different machines; the old code returned whichever the query
 // happened to yield first, connecting the user to an arbitrary one.
 func TestResolveGuestReportsAmbiguousTypeVMID(t *testing.T) {
-	_, pool := twoInstances()
+	insts, pool := twoInstances()
 
-	g, err := cli.ResolveGuest(idCT100, pool)
+	g, _, err := cli.ResolveGuestAndInstance(idCT100, "", pool, insts)
 	if err == nil {
 		t.Fatalf("ct100 matches two guests but resolved to %s%d on instance %d",
 			g.Type, g.ProxmoxID, g.InstanceID)
@@ -83,9 +84,9 @@ func TestResolveGuestReportsAmbiguousTypeVMID(t *testing.T) {
 // Every identifier form must behave the same way when ambiguous: the VMID
 // and name tiers already did, and type+VMID now joins them.
 func TestResolveGuestReportsAmbiguityForEveryForm(t *testing.T) {
-	_, pool := twoInstances()
+	insts, pool := twoInstances()
 	for _, ident := range []string{"100", idCT100, guestWebName} {
-		if _, err := cli.ResolveGuest(ident, pool); err == nil {
+		if _, _, err := cli.ResolveGuestAndInstance(ident, "", pool, insts); err == nil {
 			t.Errorf("%q matches two guests but resolved without error", ident)
 		}
 	}
@@ -101,7 +102,7 @@ func TestResolveGuestAmbiguityHints(t *testing.T) {
 
 	// Through ResolveGuest the instance names are not available, so the
 	// best it can do is name the matches by id.
-	_, err := cli.ResolveGuest(guestWebName, pool)
+	_, _, err := cli.ResolveGuestAndInstance(guestWebName, "", pool, insts)
 	if err == nil {
 		t.Fatal("expected an ambiguity error")
 	}
@@ -175,9 +176,10 @@ func TestResolveGuestAndInstanceDisambiguatesByInstance(t *testing.T) {
 // them differently: a login name that names no guest falls back to the
 // picker, while an ambiguous one has to be reported.
 func TestResolveGuestNotFoundIsTyped(t *testing.T) {
+	insts := []*models.ProxmoxInstance{{ID: 1, Name: instRome}}
 	pool := []*models.Guest{guest(1, models.GuestTypeCT, 100, guestWebName)}
 
-	_, err := cli.ResolveGuest("nosuchguest", pool)
+	_, _, err := cli.ResolveGuestAndInstance("nosuchguest", "", pool, insts)
 	if !errors.Is(err, cli.ErrGuestNotFound) {
 		t.Errorf("a miss must wrap ErrGuestNotFound, got %v", err)
 	}
@@ -187,8 +189,8 @@ func TestResolveGuestNotFoundIsTyped(t *testing.T) {
 
 	// An ambiguity must NOT satisfy errors.Is(ErrGuestNotFound): that would
 	// make a caller fall back instead of reporting it.
-	_, pool2 := twoInstances()
-	_, err = cli.ResolveGuest(guestWebName, pool2)
+	insts2, pool2 := twoInstances()
+	_, _, err = cli.ResolveGuestAndInstance(guestWebName, "", pool2, insts2)
 	if errors.Is(err, cli.ErrGuestNotFound) {
 		t.Errorf("an ambiguity must not be a not-found error: %v", err)
 	}
@@ -270,5 +272,33 @@ func TestParseGuestTargetRejectsTheOldColonForm(t *testing.T) {
 	// from the CLI, where it must now fail to resolve rather than work.
 	if id != instRome+":"+idCT100 {
 		t.Errorf("identifier = %q, want the string left whole", id)
+	}
+}
+
+// access grant/revoke must accept the qualified form.
+//
+// Without it a VMID present on two instances could not be granted at all:
+// unqualified it is ambiguous, and that path never parsed "@".
+func TestAccessIdentifiersAcceptTheQualifiedForm(t *testing.T) {
+	insts, pool := twoInstances()
+
+	for _, tc := range []struct {
+		ident string
+		want  int64
+	}{
+		{idCT100 + "@" + instRome, 1},
+		{idCT100 + "@" + instParis, 2},
+		{guestWebName + "@" + instParis, 2},
+	} {
+		instName, id := cli.ParseGuestTarget(tc.ident, cli.InstanceLookup(insts))
+		g, _, err := cli.ResolveGuestAndInstance(id, instName, pool, insts)
+		if err != nil {
+			t.Errorf("%s: %v", tc.ident, err)
+			continue
+		}
+		if g.InstanceID != tc.want {
+			t.Errorf("%s resolved to instance %d, want %d",
+				tc.ident, g.InstanceID, tc.want)
+		}
 	}
 }

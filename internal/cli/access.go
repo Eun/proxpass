@@ -129,10 +129,20 @@ func resolveGuestIdentifiers(
 	if err != nil {
 		return nil, nil, err
 	}
+	instances, err := deps.Repo.ListProxmoxInstances(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	known := InstanceLookup(instances)
 	ids = make([]int64, 0, len(identifiers))
 	names = make([]string, 0, len(identifiers))
 	for _, ident := range identifiers {
-		g, resolveErr := ResolveGuest(ident, allGuests)
+		// Accept the qualified form too. Without it a VMID that exists on
+		// two instances could not be granted AT ALL: ambiguous unqualified,
+		// and there was no way to qualify it here.
+		instName, id := ParseGuestTarget(ident, known)
+		g, _, resolveErr := ResolveGuestAndInstance(
+			id, instName, allGuests, instances)
 		if resolveErr != nil {
 			return nil, nil, resolveErr
 		}

@@ -6,3 +6,4 @@
 coverage.out
 *.db
 proxpass_host_key
+.e2e-build/
