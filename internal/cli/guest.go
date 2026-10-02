@@ -59,13 +59,12 @@ func guestCmd(deps *Deps) *ucli.Command { //nolint:gocognit // CLI command tree
 				Action: func(ctx context.Context, cmd *ucli.Command) error {
 					if cmd.NArg() < 1 {
 						return fmt.Errorf(
-							"usage: guest connect [<instance>:]<identifier>\n\n" +
+							"usage: guest connect <identifier>[@<instance>]\n\n" +
 								"identifier can be a VMID (e.g. 100), type+VMID (e.g. ct100), or name (e.g. webserver).\n" +
-								"if multiple guests match, prefix with the instance name (e.g. rome:ct101)",
+								"if multiple guests match, qualify it with the instance (e.g. ct101@rome)",
 						)
 					}
 					target := cmd.Args().First()
-					instName, identifier := ParseGuestTarget(target)
 
 					guests, err := deps.Repo.ListGuests(ctx)
 					if err != nil {
@@ -76,6 +75,11 @@ func guestCmd(deps *Deps) *ucli.Command { //nolint:gocognit // CLI command tree
 					if err != nil {
 						return err
 					}
+
+					// Parsed against the known instances: the "@" suffix
+					// is only an instance if one really has that name.
+					instName, identifier := ParseGuestTarget(
+						target, InstanceLookup(instances))
 
 					guest, inst, err := ResolveGuestAndInstance(identifier, instName, guests, instances)
 					if err != nil {
@@ -111,7 +115,8 @@ func guestCmd(deps *Deps) *ucli.Command { //nolint:gocognit // CLI command tree
 					}
 					var found []*models.Guest
 					for _, ident := range cmd.Args().Slice() {
-						instName, id := ParseGuestTarget(ident)
+						instName, id := ParseGuestTarget(
+							ident, InstanceLookup(instances))
 						g, _, resolveErr := ResolveGuestAndInstance(id, instName, allGuests, instances)
 						if resolveErr != nil {
 							return resolveErr

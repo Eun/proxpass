@@ -132,7 +132,7 @@ func resolveGuestIdentifiers(
 	ids = make([]int64, 0, len(identifiers))
 	names = make([]string, 0, len(identifiers))
 	for _, ident := range identifiers {
-		g, resolveErr := ResolveGuest(ident, allGuests, false)
+		g, resolveErr := ResolveGuest(ident, allGuests)
 		if resolveErr != nil {
 			return nil, nil, resolveErr
 		}

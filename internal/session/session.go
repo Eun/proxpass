@@ -164,14 +164,13 @@ func (d *Deps) attach(guest *models.Guest, inst *models.ProxmoxInstance) int {
 }
 
 // resolve turns a user-supplied target into a guest and its instance. The
-// target may be qualified as "instance:identifier".
+// target may be qualified as "identifier@instance".
 //
 // This resolves against EVERY guest, not just the reachable ones, because
 // it serves an explicit request: naming a guest that exists but is out of
 // reach must say "access denied" rather than "not found". The login-name
 // path deliberately does the opposite; see connectByLoginName.
 func (d *Deps) resolve(ctx context.Context, target string) (*models.Guest, *models.ProxmoxInstance, error) {
-	instName, identifier := cli.ParseGuestTarget(target)
 	guests, err := d.Repo.ListGuests(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("listing guests: %w", err)
@@ -180,6 +179,8 @@ func (d *Deps) resolve(ctx context.Context, target string) (*models.Guest, *mode
 	if err != nil {
 		return nil, nil, fmt.Errorf("listing instances: %w", err)
 	}
+	instName, identifier := cli.ParseGuestTarget(
+		target, cli.InstanceLookup(instances))
 	return cli.ResolveGuestAndInstance(identifier, instName, guests, instances)
 }
 
@@ -288,7 +289,7 @@ func (d *Deps) writeHelp(ctx context.Context) int {
 	fmt.Fprintf(w, "  ssh %s@<host>              choose a guest interactively\n", d.displayName())
 	fmt.Fprintf(w, "  ssh -t %s@<host> <guest>   connect directly\n\n", d.displayName())
 	fmt.Fprintf(w, "A guest may be named by VMID (100), type+VMID (ct100, vm200),\n")
-	fmt.Fprintf(w, "name (webserver), or instance-qualified (rome:ct101).\n\n")
+	fmt.Fprintf(w, "name (webserver), or instance-qualified (ct101@rome).\n\n")
 
 	guests, err := d.accessibleGuests(ctx)
 	if err != nil {

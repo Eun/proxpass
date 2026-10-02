@@ -12,7 +12,7 @@ protocol, and proxpass supplies the users, the keys and the session.
 - **Public Key Authentication** — The only supported method; password authentication is disabled
 - **Auto-Discovery** — Periodically reconciles the guest list against the configured Proxmox hosts via the REST API: guests that start are added, and guests that stop or are destroyed are removed
 - **Admin CLI over SSH** — Full command-line interface for managing instances, clients, groups, access rules, and admin keys
-- **Flexible Guest Resolution** — Connect by VMID (`100`), type+VMID (`ct100`), name (`webserver`), or instance-qualified (`rome:ct101`) — as an argument (`ssh host ct100`) or as the login name (`ssh ct100@host`)
+- **Flexible Guest Resolution** — Connect by VMID (`100`), type+VMID (`ct100`), name (`webserver`), or instance-qualified (`ct101@rome`) — as an argument (`ssh host ct100`) or as the login name (`ssh ct100@host`)
 - **Access Control** — Per-client and per-group access rules with a global default policy fallback
 - **SQLite Storage** — Single-file embedded database, no external dependencies
 
@@ -401,8 +401,8 @@ ssh -t -p 2222 alice@proxpass-host vm200
 # By name (case-insensitive)
 ssh -t -p 2222 alice@proxpass-host webserver
 
-# With an instance prefix (when the same VMID exists on multiple nodes)
-ssh -t -p 2222 alice@proxpass-host rome:ct101
+# Instance-qualified (when the same VMID exists on multiple nodes)
+ssh -t -p 2222 alice@proxpass-host ct101@rome
 ```
 
 ### Guest name as the login name
@@ -429,10 +429,12 @@ Three limitations follow from it being a login name rather than an argument:
 - **Reserved names still mean "browse".** `admin` and any client name open
   the picker even if a guest happens to share that name, since guest names
   come from Proxmox and proxpass does not control them.
-- **No instance prefix.** A colon cannot appear in a login name, so
-  `rome:ct101@host` is not possible. If an identifier matches guests on more
-  than one instance, proxpass refuses it rather than picking one, and lists
-  the alternatives. Use the argument form for those.
+- **Instance-qualified names work here too.** `ssh ct101@rome@proxpass-host`
+  selects ct101 on `rome`. ssh splits `user@host` on the last `@`, so the
+  username arrives as `ct101@rome`; proxpass then splits that on its own
+  last `@`, treating the suffix as an instance only when one really has
+  that name. A guest whose name itself contains `@` therefore still works,
+  and a client named `tobias@corp` is not mistaken for a qualified target.
 - **Names longer than 256 characters** are rejected, as are names containing
   `/`, `%`, `?`, `#` or a space. Guests named that way remain reachable via
   the argument form and the picker.

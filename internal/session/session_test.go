@@ -32,9 +32,14 @@ const (
 	// may not, for the disclosure tests.
 	guestMine   = "mine"
 	guestSecret = "secret"
-	pveAPIURL   = "https://pve:8006"
-	instPVE     = "pve"
-	cmdGuestLs  = "guest ls"
+	// Instance names used by the disclosure tests.
+	instMine   = "mine"
+	instSecret = "secretnode"
+	instRome   = "rome"
+	instParis  = "paris"
+	pveAPIURL  = "https://pve:8006"
+	instPVE    = "pve"
+	cmdGuestLs = "guest ls"
 )
 
 func newRepo(t *testing.T) db.Repository {
@@ -454,7 +459,7 @@ func TestAmbiguousLoginNameIsReported(t *testing.T) {
 
 	// A distinct API URL: the schema requires it to be unique.
 	second := &models.ProxmoxInstance{
-		Name: "rome", APIURL: "https://rome:8006", Node: "rome",
+		Name: instRome, APIURL: "https://rome:8006", Node: instRome,
 		ConnectionType: models.ConnectionTypeTermProxy,
 	}
 	if err := repo.AddProxmoxInstance(t.Context(), second); err != nil {
@@ -482,11 +487,10 @@ func TestAmbiguousLoginNameIsReported(t *testing.T) {
 			if !strings.Contains(tb.errb.String(), "matches") {
 				t.Errorf("stderr does not explain the ambiguity: %q", tb.errb.String())
 			}
-			// The advice must be something a login name can express. The
-			// resolver's usual "use instance:identifier" cannot be typed
-			// here at all, because a colon is not a legal login name
-			// character -- so the message must offer the concrete ids and
-			// the picker instead.
+			// The advice must be typeable AS A LOGIN NAME. The old
+			// "instance:identifier" could not be -- a colon is not a legal
+			// login name character -- which is why the qualifier is now a
+			// "@" suffix.
 			if strings.Contains(tb.errb.String(), "instance:identifier") {
 				t.Errorf("suggested a prefix a login name cannot carry: %q",
 					tb.errb.String())
@@ -494,7 +498,7 @@ func TestAmbiguousLoginNameIsReported(t *testing.T) {
 			// The alternatives must be distinguishable. Listing bare ids
 			// for an ambiguous "ct100" would print "ct100, ct100", so the
 			// instance name has to be part of each one.
-			for _, want := range []string{"pve:ct100", "rome:ct100"} {
+			for _, want := range []string{"ct100@pve", "ct100@rome"} {
 				if !strings.Contains(tb.errb.String(), want) {
 					t.Errorf("stderr does not list %q among the alternatives: %q",
 						want, tb.errb.String())
@@ -615,7 +619,7 @@ func TestLoginNameRespectsClientAccess(t *testing.T) {
 
 // An ambiguity must only ever name guests the caller may already see.
 //
-// The hint lists qualified ids like "pve:ct100, rome:ct100", which includes
+// The hint lists qualified ids like "ct100@pve, ct100@rome", which includes
 // INSTANCE names. Resolving against every guest would therefore disclose
 // both guests and Proxmox instances the caller has no access to, just by
 // logging in under a colliding name.
@@ -625,11 +629,11 @@ func TestAmbiguityHintOnlyNamesAccessibleGuests(t *testing.T) {
 
 	// Same name "web" on two instances; the client may reach only one.
 	mine := &models.ProxmoxInstance{
-		Name: "mine", APIURL: "https://mine:8006", Node: "mine",
+		Name: instMine, APIURL: "https://mine:8006", Node: instMine,
 		ConnectionType: models.ConnectionTypeTermProxy,
 	}
 	secret := &models.ProxmoxInstance{
-		Name: "secretnode", APIURL: "https://secret:8006", Node: "secretnode",
+		Name: instSecret, APIURL: "https://secret:8006", Node: instSecret,
 		ConnectionType: models.ConnectionTypeTermProxy,
 	}
 	for _, i := range []*models.ProxmoxInstance{mine, secret} {
@@ -662,7 +666,7 @@ func TestAmbiguityHintOnlyNamesAccessibleGuests(t *testing.T) {
 		t.Fatalf("exit = %d, want 0 (stderr %q)", code, tb.errb.String())
 	}
 	all := tb.out.String() + tb.errb.String()
-	if strings.Contains(all, "secretnode") {
+	if strings.Contains(all, instSecret) {
 		t.Errorf("leaked an instance the client cannot see: %q", all)
 	}
 	if strings.Contains(all, "matches 2 guests") {
@@ -671,6 +675,125 @@ func TestAmbiguityHintOnlyNamesAccessibleGuests(t *testing.T) {
 	sessions := proxierSessions(proxier)
 	if len(sessions) != 1 {
 		t.Fatalf("want exactly one console, got %d", len(sessions))
+	}
+}
+
+// A login name may now carry an instance: "ct100@rome".
+//
+// This is what the "@" separator buys. The old "instance:identifier" form
+// could never be a login name, because a colon is the passwd field
+// separator, so a collision was simply a dead end from the login path.
+func TestQualifiedLoginNameSelectsTheInstance(t *testing.T) {
+	repo := newRepo(t)
+	rome := &models.ProxmoxInstance{
+		Name: instRome, APIURL: "https://rome:8006", Node: instRome,
+		ConnectionType: models.ConnectionTypeTermProxy,
+	}
+	paris := &models.ProxmoxInstance{
+		Name: instParis, APIURL: "https://paris:8006", Node: instParis,
+		ConnectionType: models.ConnectionTypeTermProxy,
+	}
+	for _, i := range []*models.ProxmoxInstance{rome, paris} {
+		if err := repo.AddProxmoxInstance(t.Context(), i); err != nil {
+			t.Fatalf("add instance: %v", err)
+		}
+	}
+	// The same ct100 on both, so the bare name is ambiguous.
+	seedGuestOn(t, repo, rome.ID, models.GuestTypeCT, 100, guestWeb)
+	seedGuestOn(t, repo, paris.ID, models.GuestTypeCT, 100, guestWeb)
+
+	for _, tc := range []struct {
+		login string
+		want  int64
+	}{
+		{"ct100@rome", rome.ID},
+		{"ct100@paris", paris.ID},
+		{"web@rome", rome.ID},
+		{"100@paris", paris.ID},
+		// Case-insensitive on both halves.
+		{"CT100@Rome", rome.ID},
+	} {
+		t.Run(tc.login, func(t *testing.T) {
+			proxier := &testenv.MockProxier{}
+			tb := newTerminal("")
+			d := newDeps(repo, tb, proxier)
+			d.User = tc.login
+			d.DisplayName = session.AdminUser
+			d.IsAdmin = true
+
+			if code := session.Run(t.Context(), d); code != 0 {
+				t.Fatalf("exit = %d, want 0 (stderr %q)", code, tb.errb.String())
+			}
+			sessions := proxierSessions(proxier)
+			if len(sessions) != 1 {
+				t.Fatalf("opened %d consoles, want 1", len(sessions))
+			}
+			if sessions[0].InstanceID != tc.want {
+				t.Errorf("connected to instance %d, want %d",
+					sessions[0].InstanceID, tc.want)
+			}
+		})
+	}
+}
+
+// The instance suffix must not become an oracle on instance names.
+//
+// Only instances hosting a guest the caller can reach count as separators.
+// Otherwise "x@rome" behaving differently from "x@nope" would reveal that
+// "rome" exists -- the same disclosure the guest scoping exists to prevent.
+func TestQualifiedLoginNameDoesNotDiscloseInstances(t *testing.T) {
+	repo := newRepo(t)
+	client := addClient(t, repo)
+	mine := &models.ProxmoxInstance{
+		Name: instMine, APIURL: "https://mine:8006", Node: instMine,
+		ConnectionType: models.ConnectionTypeTermProxy,
+	}
+	secret := &models.ProxmoxInstance{
+		Name: instSecret, APIURL: "https://secret:8006", Node: instSecret,
+		ConnectionType: models.ConnectionTypeTermProxy,
+	}
+	for _, i := range []*models.ProxmoxInstance{mine, secret} {
+		if err := repo.AddProxmoxInstance(t.Context(), i); err != nil {
+			t.Fatalf("add instance: %v", err)
+		}
+	}
+	seedGuestOn(t, repo, mine.ID, models.GuestTypeCT, 100, guestMine)
+	seedGuestOn(t, repo, secret.ID, models.GuestTypeCT, 200, guestSecret)
+	guests, _ := repo.ListGuests(t.Context())
+	for _, g := range guests {
+		if g.InstanceID == mine.ID {
+			if err := repo.GrantClientAccess(
+				t.Context(), client.ID, []int64{g.ID}); err != nil {
+				t.Fatalf("grant: %v", err)
+			}
+		}
+	}
+
+	// A real instance the client cannot see, and an invented one: both must
+	// behave identically.
+	outputs := make(map[string]string, 2)
+	for _, login := range []string{"x@" + instSecret, "x@nosuchnode"} {
+		tb := newTerminal("\x03")
+		tb.term.Raw = true
+		proxier := &testenv.MockProxier{}
+		d := newDeps(repo, tb, proxier)
+		d.User = login
+		d.DisplayName = userAlice
+		d.ClientID = client.ID
+
+		_ = session.Run(t.Context(), d)
+		if len(proxier.Sessions) != 0 {
+			t.Errorf("login %q connected somewhere", login)
+		}
+		if strings.Contains(tb.out.String()+tb.errb.String(), guestSecret) {
+			t.Errorf("login %q leaked an inaccessible guest", login)
+		}
+		outputs[login] = tb.out.String() + tb.errb.String()
+	}
+	if outputs["x@"+instSecret] != outputs["x@nosuchnode"] {
+		t.Errorf("an invisible instance is distinguishable from a "+
+			"nonexistent one:\n real:    %q\n invented: %q",
+			outputs["x@"+instSecret], outputs["x@nosuchnode"])
 	}
 }
 
