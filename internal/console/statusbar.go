@@ -273,8 +273,21 @@ func (b *StatusBar) Observe(p []byte) {
 	// suppress forever.
 	b.lastBar = ""
 
-	wasReset := b.modes.TakeReset()
-	lostRegion := b.modes.TakeRegionLost()
+	// Only three things actually destroy the bar's scroll region: a reset, a
+	// guest installing its own, and a return from the alternate screen
+	// (which restores the normal screen's region along with the rest of its
+	// state). An erase is not one of them.
+	//
+	// That distinction matters because DECSTBM homes the cursor on some
+	// terminals -- Start says so, and positions the cursor explicitly for
+	// exactly that reason. Reinstalling the region on every erase therefore
+	// moved the guest's cursor mid-redraw. BusyBox ash redraws its input
+	// line with ED ("\x1b[J") on every keystroke, so each arrow key sent the
+	// cursor to the top of the screen; bash tracks the line itself and does
+	// not emit ED, which is why it looked like a shell-specific bug rather
+	// than a bar one.
+	regionGone := b.modes.TakeReset() || b.modes.TakeRegionLost() ||
+		b.modes.TakeLeftAltScreen()
 	alt := b.modes.AltScreen()
 	b.hidden = alt
 	switch {
@@ -282,21 +295,13 @@ func (b *StatusBar) Observe(p []byte) {
 		// The application is taking the whole screen: drop the scroll
 		// region so it can use every row, and stop drawing.
 		b.write("\x1b[r")
-	case b.active:
-		// Either a full-screen application exited, the guest erased the
-		// screen, or it reset the terminal. A reset discards the scroll
-		// region, and an alt-screen exit restores whatever region was in
-		// effect before, so the region is reinstalled in both cases rather
-		// than assumed to have survived.
-		b.write(fmt.Sprintf("\x1b[1;%dr", b.guestRowsLocked()))
-		if wasReset || lostRegion {
-			// A reset returns the cursor to the top-left of a
-			// now-unrestricted screen, and a guest that set its own region
-			// will have moved the cursor inside it. Either way the cursor
-			// may now be outside the reinstated region, so put it back so
-			// the guest's next line does not land on the bar's row.
-			b.write("\x1b[1;1H")
-		}
+	case b.active && regionGone:
+		// The region is genuinely gone, so reinstall it and put the cursor
+		// back inside: a reset homes it on a now-unrestricted screen, a
+		// guest that set its own region will have moved it there, and
+		// DECSTBM itself may move it. Without the reposition the guest's
+		// next line can land on the bar's row.
+		b.write(fmt.Sprintf("\x1b[1;%dr\x1b[1;1H", b.guestRowsLocked()))
 	}
 	b.mu.Unlock()
 	b.request()
