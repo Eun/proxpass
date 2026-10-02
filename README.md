@@ -275,7 +275,7 @@ Because the name is served over NSS rather than written to `/etc/passwd`,
 it is not bound by `useradd` policy: mixed case, a leading digit, dots and
 non-ASCII all work, so `Tobias`, `1st-box` and `tobías` are all valid. The
 only names refused are the ones that would not survive the lookup — a name
-longer than 32 characters, or one containing `:`, a newline, `/`, `%`, `?`,
+longer than 256 characters, or one containing `:`, a newline, `/`, `%`, `?`,
 `#`, a space, or starting with `-`.
 
 Because such a name is only a label, the UI names the identity the key
@@ -433,7 +433,7 @@ Three limitations follow from it being a login name rather than an argument:
   `rome:ct101@host` is not possible. If an identifier matches guests on more
   than one instance, proxpass refuses it rather than picking one, and lists
   the alternatives. Use the argument form for those.
-- **Names longer than 32 characters** are rejected, as are names containing
+- **Names longer than 256 characters** are rejected, as are names containing
   `/`, `%`, `?`, `#` or a space. Guests named that way remain reachable via
   the argument form and the picker.
 
