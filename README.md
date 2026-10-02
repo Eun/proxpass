@@ -129,6 +129,27 @@ Set `PROXPASS_DISABLE_STATUSBAR=1` to turn the bar off; the guest then gets
 the full terminal height. The bar also disables itself without a PTY or on a
 terminal shorter than four rows.
 
+It is read from the **session's** environment, and sshd builds that from
+scratch rather than inheriting the container's, so it has to be sent with the
+connection:
+
+```bash
+ssh -o SetEnv=PROXPASS_DISABLE_STATUSBAR=1 -p 2222 admin@proxpass-host
+```
+
+Or once, in `~/.ssh/config`:
+
+```
+Host proxpass-host
+    SetEnv PROXPASS_DISABLE_STATUSBAR=1
+```
+
+Setting it on the container (`docker run -e …`) has no effect, because sshd
+does not pass its own environment to a session. The image's sshd config
+accepts this one variable by name; it deliberately does not accept
+`PROXPASS_*` as a pattern, since `PROXPASS_ADMIN_KEY` and `PROXPASS_DATA`
+also configure the session binary.
+
 ## Leaving a guest console
 
 Normally you leave a console the way you would any shell: `exit`, `logout`,
