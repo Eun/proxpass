@@ -40,6 +40,12 @@ const (
 	pveAPIURL  = "https://pve:8006"
 	instPVE    = "pve"
 	cmdGuestLs = "guest ls"
+	// cmdConnectCT100 is the CLI form that replaced the bare "ct100"
+	// argument.
+	cmdConnectCT100 = "guest connect " + guestCT100
+	// A guest identifier that matches nothing.
+	guestMissing      = "ct999"
+	cmdConnectMissing = "guest connect " + guestMissing
 )
 
 func newRepo(t *testing.T) db.Repository {
@@ -886,7 +892,7 @@ func TestExplicitCommandTakesPrecedenceOverTheLoginName(t *testing.T) {
 	// is the explicit request and must win.
 	d.User = guestCT100
 	d.IsAdmin = true
-	d.Command = "vm200"
+	d.Command = "guest connect vm200"
 
 	if code := session.Run(t.Context(), d); code != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, tb.errb.String())
@@ -897,23 +903,158 @@ func TestExplicitCommandTakesPrecedenceOverTheLoginName(t *testing.T) {
 	}
 }
 
-// A client must not be able to reach the admin CLI by passing a multi-word
-// command.
+// A client must not reach any admin command.
+//
+// Clients now have a CLI of their own, so the test is no longer "any
+// multi-word command fails" -- it is that only the client tree exists for
+// them. The tree is built separately rather than filtered from the admin
+// one, so a command added for admins is not reachable here by default.
 func TestClientCannotRunAdminCommands(t *testing.T) {
 	repo := newRepo(t)
 	client := addClient(t, repo)
-	tb := newTerminal("")
 
+	for _, cmd := range []string{
+		"instance ls",
+		"client ls",
+		"client add --name bob --key x",
+		"group ls",
+		"access ls",
+		"access grant --client alice --guest ct100",
+		"policy show",
+		"admin-key ls",
+		"discover",
+		// A guest subcommand that exists for admins but not for clients.
+		"guest inspect ct100",
+	} {
+		t.Run(cmd, func(t *testing.T) {
+			tb := newTerminal("")
+			d := newDeps(repo, tb, &testenv.MockProxier{})
+			d.User = userAlice
+			d.DisplayName = userAlice
+			d.ClientID = client.ID
+			d.Command = cmd
+
+			if code := session.Run(t.Context(), d); code == 0 {
+				t.Errorf("a client ran %q successfully (out: %q)", cmd, tb.out.String())
+			}
+			// It must not have executed: no listing, no mutation.
+			if strings.Contains(tb.out.String(), "TYPE") ||
+				strings.Contains(tb.out.String(), "added") {
+				t.Errorf("a client saw admin output for %q: %q", cmd, tb.out.String())
+			}
+		})
+	}
+}
+
+// A client's own "guest ls" shows only the guests it may reach.
+//
+// This is the command's whole premise: it is built against a pre-filtered
+// pool, so it cannot list anything the picker would not.
+func TestClientGuestLsIsScopedToItsAccess(t *testing.T) {
+	repo := newRepo(t)
+	client := addClient(t, repo)
+	inst := &models.ProxmoxInstance{
+		Name: instPVE, APIURL: pveAPIURL, Node: instPVE,
+		ConnectionType: models.ConnectionTypeTermProxy,
+	}
+	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
+		t.Fatalf("add instance: %v", err)
+	}
+	seedGuestOn(t, repo, inst.ID, models.GuestTypeCT, 100, guestMine)
+	seedGuestOn(t, repo, inst.ID, models.GuestTypeCT, 200, guestSecret)
+	guests, _ := repo.ListGuests(t.Context())
+	for _, g := range guests {
+		if g.Name == guestMine {
+			if err := repo.GrantClientAccess(
+				t.Context(), client.ID, []int64{g.ID}); err != nil {
+				t.Fatalf("grant: %v", err)
+			}
+		}
+	}
+
+	tb := newTerminal("")
 	d := newDeps(repo, tb, &testenv.MockProxier{})
 	d.User = userAlice
+	d.DisplayName = userAlice
 	d.ClientID = client.ID
 	d.Command = cmdGuestLs
 
-	if code := session.Run(t.Context(), d); code == 0 {
-		t.Error("multi-word command from a client must fail")
+	if code := session.Run(t.Context(), d); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr %q)", code, tb.errb.String())
 	}
-	if !strings.Contains(tb.errb.String(), "access denied") {
-		t.Errorf("stderr = %q, want an access denied message", tb.errb.String())
+	out := tb.out.String()
+	if !strings.Contains(out, guestMine) {
+		t.Errorf("own guest missing from the listing: %q", out)
+	}
+	if strings.Contains(out, guestSecret) {
+		t.Errorf("listing leaked an inaccessible guest: %q", out)
+	}
+}
+
+// A client may connect through the CLI, for the guests it may reach.
+func TestClientCanConnectThroughTheCLI(t *testing.T) {
+	repo := newRepo(t)
+	client := addClient(t, repo)
+	guest := seedGuest(t, repo)
+	if err := repo.GrantClientAccess(
+		t.Context(), client.ID, []int64{guest.ID}); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+
+	proxier := &testenv.MockProxier{}
+	tb := newTerminal("")
+	d := newDeps(repo, tb, proxier)
+	d.User = userAlice
+	d.DisplayName = userAlice
+	d.ClientID = client.ID
+	d.Command = cmdConnectCT100
+
+	if code := session.Run(t.Context(), d); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr %q)", code, tb.errb.String())
+	}
+	if len(proxierSessions(proxier)) != 1 {
+		t.Error("a permitted client must reach the guest through the CLI")
+	}
+}
+
+// A guest the client may not reach is not found rather than denied, so the
+// CLI is not an oracle either.
+func TestClientCLIConnectDoesNotDiscloseInaccessibleGuests(t *testing.T) {
+	repo := newRepo(t)
+	client := addClient(t, repo)
+	seedGuest(t, repo) // exists, no access rule
+
+	outputs := make(map[string]string, 2)
+	for _, cmd := range []string{cmdConnectCT100, cmdConnectMissing} {
+		tb := newTerminal("")
+		proxier := &testenv.MockProxier{}
+		d := newDeps(repo, tb, proxier)
+		d.User = userAlice
+		d.DisplayName = userAlice
+		d.ClientID = client.ID
+		d.Command = cmd
+
+		if code := session.Run(t.Context(), d); code == 0 {
+			t.Errorf("%q must fail", cmd)
+		}
+		if len(proxier.Sessions) != 0 {
+			t.Errorf("%q reached a console", cmd)
+		}
+		if strings.Contains(tb.errb.String(), "access denied") {
+			t.Errorf("%q revealed that the guest exists: %q", cmd, tb.errb.String())
+		}
+		outputs[cmd] = tb.errb.String()
+	}
+	// The messages differ only by the identifier the caller supplied, which
+	// they already knew. Normalizing that away, the two must be identical:
+	// neither reveals whether the guest exists.
+	norm := func(s, id string) string { return strings.ReplaceAll(s, id, "<id>") }
+	gotExisting := norm(outputs[cmdConnectCT100], guestCT100)
+	gotAbsent := norm(outputs[cmdConnectMissing], guestMissing)
+	if gotExisting != gotAbsent {
+		t.Errorf("an inaccessible guest is distinguishable from a "+
+			"nonexistent one:\n existing: %q\n absent:   %q",
+			gotExisting, gotAbsent)
 	}
 }
 
@@ -928,7 +1069,7 @@ func TestClientWithoutAccessIsDenied(t *testing.T) {
 	d := newDeps(repo, tb, proxier)
 	d.User = userAlice
 	d.ClientID = client.ID
-	d.Command = guestCT100
+	d.Command = cmdConnectCT100
 
 	if code := session.Run(t.Context(), d); code == 0 {
 		t.Error("client without access must be denied")
@@ -951,7 +1092,7 @@ func TestClientWithAccessConnects(t *testing.T) {
 	d := newDeps(repo, tb, proxier)
 	d.User = userAlice
 	d.ClientID = client.ID
-	d.Command = guestCT100
+	d.Command = cmdConnectCT100
 
 	if code := session.Run(t.Context(), d); code != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, tb.errb.String())
@@ -974,7 +1115,7 @@ func TestAdminConnectsWithoutAccessRule(t *testing.T) {
 	d := newDeps(repo, tb, proxier)
 	d.User = session.AdminUser
 	d.IsAdmin = true
-	d.Command = guestCT100
+	d.Command = cmdConnectCT100
 
 	if code := session.Run(t.Context(), d); code != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, tb.errb.String())
@@ -1155,7 +1296,7 @@ func TestUnknownGuestFails(t *testing.T) {
 	d := newDeps(repo, tb, &testenv.MockProxier{})
 	d.User = userAlice
 	d.ClientID = client.ID
-	d.Command = "ct999"
+	d.Command = cmdConnectMissing
 
 	if code := session.Run(t.Context(), d); code == 0 {
 		t.Error("unknown guest must fail")
@@ -1426,7 +1567,7 @@ func TestLogRecordsTheLoginNameNotTheDisplayName(t *testing.T) {
 	d.User = userAlias
 	d.DisplayName = session.AdminUser
 	d.IsAdmin = true
-	d.Command = guestCT100
+	d.Command = cmdConnectCT100
 
 	if code := session.Run(t.Context(), d); code != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, tb.errb.String())
@@ -1545,7 +1686,7 @@ func TestSessionOutputIsCRLFOnRawTerminals(t *testing.T) {
 		d := newDeps(repo, tb, &testenv.MockProxier{})
 		d.User = session.AdminUser
 		d.IsAdmin = true
-		d.Command = "ct999"
+		d.Command = cmdConnectMissing
 
 		if code := session.Run(t.Context(), d); code == 0 {
 			t.Fatal("an unknown guest must fail")
@@ -1562,7 +1703,7 @@ func TestSessionOutputIsCRLFOnRawTerminals(t *testing.T) {
 		d := newDeps(repo, tb, &testenv.MockProxier{})
 		d.User = session.AdminUser
 		d.IsAdmin = true
-		d.Command = "ct100"
+		d.Command = cmdConnectCT100
 
 		if code := session.Run(t.Context(), d); code != 0 {
 			t.Fatalf("connect exit code = %d, want 0 (stderr %q)", code, tb.errb.String())

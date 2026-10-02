@@ -12,7 +12,7 @@ protocol, and proxpass supplies the users, the keys and the session.
 - **Public Key Authentication** — The only supported method; password authentication is disabled
 - **Auto-Discovery** — Periodically reconciles the guest list against the configured Proxmox hosts via the REST API: guests that start are added, and guests that stop or are destroyed are removed
 - **Admin CLI over SSH** — Full command-line interface for managing instances, clients, groups, access rules, and admin keys
-- **Flexible Guest Resolution** — Connect by VMID (`100`), type+VMID (`ct100`), name (`webserver`), or instance-qualified (`ct101@rome`) — as an argument (`ssh host ct100`) or as the login name (`ssh ct100@host`)
+- **Flexible Guest Resolution** — Connect by VMID (`100`), type+VMID (`ct100`), name (`webserver`), or instance-qualified (`ct101@rome`) — as the login name (`ssh ct100@host`) or via `guest connect`
 - **Access Control** — Per-client and per-group access rules with a global default policy fallback
 - **SQLite Storage** — Single-file embedded database, no external dependencies
 
@@ -384,26 +384,35 @@ ssh -p 2222 anything@proxpass-host  # any name at all
 A key that matches no client and no admin key is refused outright: proxpass
 never falls back to trusting the name.
 
-The guest identifier is passed as the SSH command; with no command you get an
-interactive picker. A PTY (`-t`) is required when naming a guest directly.
+There are two ways to name a guest: as the **login name**, or through
+**`guest connect`**. With neither you get the interactive picker.
 
 ```bash
 # Interactive picker
 ssh -p 2222 alice@proxpass-host
 
-# By VMID
-ssh -t -p 2222 alice@proxpass-host 100
+# As the login name (no -t needed)
+ssh -p 2222 ct100@proxpass-host
+ssh -p 2222 100@proxpass-host
+ssh -p 2222 webserver@proxpass-host
+ssh -p 2222 ct101@rome@proxpass-host     # instance-qualified
 
-# By type+VMID (disambiguates collisions)
-ssh -t -p 2222 alice@proxpass-host ct100
-ssh -t -p 2222 alice@proxpass-host vm200
+# Through the CLI (a PTY is required)
+ssh -t -p 2222 alice@proxpass-host guest connect ct100
+ssh -t -p 2222 alice@proxpass-host guest connect ct101@rome
 
-# By name (case-insensitive)
-ssh -t -p 2222 alice@proxpass-host webserver
-
-# Instance-qualified (when the same VMID exists on multiple nodes)
-ssh -t -p 2222 alice@proxpass-host ct101@rome
+# And to see what you may reach
+ssh -p 2222 alice@proxpass-host guest ls
 ```
+
+`guest ls` and `guest connect` are available to clients as well as
+administrators, and both are scoped to the guests your key grants access to.
+
+> **A bare guest identifier as the command — `ssh host ct100` — is no longer
+> accepted.** A single token had to be guessed at (a guest, or a mistyped
+> command?), and the guess was observable: `ssh host bogus` said "unknown
+> command" while `ssh host ct999` reported a resolution failure. Use
+> `guest connect ct100` or the login-name form.
 
 ### Guest name as the login name
 
