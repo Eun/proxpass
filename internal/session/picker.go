@@ -111,15 +111,28 @@ func (d *Deps) connectByLoginName(ctx context.Context) int {
 		return 1
 	}
 
-	// hintInstance is false: the resolver's usual advice is to qualify the
-	// target as "instance:identifier", but a login name cannot carry a
-	// colon (api.ValidLoginName rejects it, because it is the passwd field
-	// separator), so that hint would describe something impossible here.
-	// The unqualified form lists the concrete ids instead, which is what a
-	// login name can actually express -- and, because the pool is already
-	// filtered, only ones this caller may see.
-	guest, inst, err := cli.ResolveGuestAndInstanceHinted(
-		name, "", guests, instances, false /* hintInstance */)
+	// A login name CAN carry an instance now: "ct100@rome". The suffix is
+	// recognized only when it names an instance the caller can actually
+	// see, which matters for two reasons.
+	//
+	// Confidentiality: testing the suffix against every configured
+	// instance would be an oracle on instance names -- "x@rome" behaving
+	// differently from "x@nope" reveals that "rome" exists. Restricting
+	// the predicate to instances hosting a reachable guest means an
+	// invisible instance is simply not a separator, so the whole string is
+	// tried as one identifier and the usual not-found path shows the
+	// picker.
+	//
+	// Correctness: a client named "tobias@corp" is a legal login name, and
+	// must not be read as the guest "tobias" on an instance "corp".
+	visible := instancesHosting(guests, instances)
+	instName, identifier := cli.ParseGuestTarget(name, cli.InstanceLookup(visible))
+
+	// The ambiguity message names every alternative in the "@" form, which
+	// a login name can now express; the pool is already filtered, so it can
+	// only ever name guests this caller may see.
+	guest, inst, err := cli.ResolveGuestAndInstance(
+		identifier, instName, guests, instances)
 	switch {
 	case errors.Is(err, cli.ErrGuestNotFound):
 		// Just a login name, not a guest this session can reach: browse.
@@ -148,6 +161,28 @@ func (d *Deps) connectByLoginName(ctx context.Context) int {
 		return 1
 	}
 	return d.attach(guest, inst)
+}
+
+// instancesHosting returns the instances that host at least one of guests.
+//
+// This is the set of instance names the caller may legitimately know about,
+// derived from the guests it can already see rather than from the full
+// configuration -- so using it as a separator predicate cannot disclose an
+// instance the caller has no guest on.
+func instancesHosting(
+	guests []*models.Guest, instances []*models.ProxmoxInstance,
+) []*models.ProxmoxInstance {
+	seen := make(map[int64]struct{}, len(guests))
+	for _, g := range guests {
+		seen[g.InstanceID] = struct{}{}
+	}
+	out := make([]*models.ProxmoxInstance, 0, len(seen))
+	for _, inst := range instances {
+		if _, ok := seen[inst.ID]; ok {
+			out = append(out, inst)
+		}
+	}
+	return out
 }
 
 // pickerLoginHint is a login name the caller can actually use to reach the

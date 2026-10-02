@@ -394,6 +394,12 @@ type MockProxySession struct {
 	GuestName string
 	GuestType models.GuestType
 	ProxmoxID int
+	// InstanceName and InstanceID identify WHICH Proxmox instance the
+	// guest was reached on. A VMID is unique per instance but not across
+	// them, so these are the only way a test can tell "ct100 on rome"
+	// apart from "ct100 on paris".
+	InstanceName string
+	InstanceID   int64
 }
 
 // Connect implements console.Proxier. It records the session, writes a mock
@@ -406,9 +412,11 @@ func (p *MockProxier) Connect(
 ) error {
 	p.mu.Lock()
 	p.Sessions = append(p.Sessions, MockProxySession{
-		GuestName: guest.Name,
-		GuestType: guest.Type,
-		ProxmoxID: guest.ProxmoxID,
+		GuestName:    guest.Name,
+		GuestType:    guest.Type,
+		ProxmoxID:    guest.ProxmoxID,
+		InstanceName: inst.Name,
+		InstanceID:   inst.ID,
 	})
 	p.mu.Unlock()
 
