@@ -125,6 +125,15 @@ the switch to the alternate screen, releases the scroll region and stops
 drawing, so the application gets the whole terminal. It comes back when the
 application exits.
 
+The bar also stands aside when the guest saves its cursor. A terminal has only
+one slot to save a cursor position in, and terminfo's `sc`/`rc` capabilities
+are exactly the sequences the bar uses, so a shell redrawing its line — which
+is what an arrow key or Home/End causes — is competing for the same slot. The
+bar notices the save and skips its repaint until the guest restores, rather
+than overwriting the position the guest is about to return to. An unmatched
+save releases the bar after a second, so a guest that saves and never restores
+costs a late bar rather than a missing one.
+
 Set `PROXPASS_DISABLE_STATUSBAR=1` to turn the bar off; the guest then gets
 the full terminal height. The bar also disables itself without a PTY or on a
 terminal shorter than four rows.

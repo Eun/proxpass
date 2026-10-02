@@ -1,6 +1,9 @@
 package console
 
-import "bytes"
+import (
+	"bytes"
+	"time"
+)
 
 // modeFilter watches a guest's output stream for the escape sequences that
 // make a reserved status-bar row unsafe, and reports when the bar must hide
@@ -39,6 +42,86 @@ type modeFilter struct {
 	// scroll region as well as the screen. It is latched here and cleared by
 	// TakeReset so the caller cannot miss it between observations.
 	reset bool
+
+	// cursorSaved reports whether the guest is between saving and restoring
+	// its cursor. While it is, the bar must not draw: see CursorSaved.
+	cursorSaved bool
+
+	// cursorSavedAt is when cursorSaved was last set, so a guest that saves
+	// and never restores cannot suppress the bar forever.
+	cursorSavedAt time.Time
+
+	// now is the clock, swappable in tests.
+	now func() time.Time
+}
+
+// maxCursorHold bounds how long the bar will defer to a guest's saved cursor.
+//
+// A save/restore pair around a line redraw is over in well under a
+// millisecond. Nothing legitimate holds the slot for a second, but a guest
+// that saves and then blocks -- or one whose restore is never seen, because a
+// malformed stream desynchronized the scan -- would otherwise keep the bar
+// from ever drawing again. After this long the bar reclaims the slot: a
+// briefly wrong cursor is recoverable, a permanently missing bar is not.
+const maxCursorHold = time.Second
+
+func (m *modeFilter) clock() time.Time {
+	if m.now != nil {
+		return m.now()
+	}
+	return time.Now()
+}
+
+// CursorSaved reports whether the guest is currently holding a saved cursor
+// position.
+//
+// A terminal has exactly one cursor-save slot per screen buffer, and the bar's
+// own repaint uses it (statusbar.go draw). If the guest saves its cursor, the
+// bar repaints, and the guest then restores, the guest gets the bar's saved
+// position instead of its own and its cursor lands in the wrong place. That is
+// not hypothetical: terminfo defines sc=\E7 and rc=\E8, so every shell line
+// editor does exactly this when redrawing for an arrow key or Home/End.
+//
+// The slot cannot be shared, so the bar yields it: while this reports true the
+// bar skips its repaint, leaving the slot to the guest for as long as the
+// guest is relying on it. liamg/shox (Unlicense) fixed the same bug the same
+// way in commit 2af5cf5, with a pauseDrawing flag set from its CSI s/u
+// handlers -- though it latches only on the CSI form and so still misses
+// terminfo's DECSC, which is the form that actually occurs.
+//
+// The bar is cosmetic and the guest's cursor is not, so a stale bar for the
+// duration of a line redraw is the right trade. The hold is bounded by
+// maxCursorHold so an unmatched save degrades to a late bar rather than a
+// missing one.
+func (m *modeFilter) CursorSaved() bool {
+	if !m.cursorSaved {
+		return false
+	}
+	if m.clock().Sub(m.cursorSavedAt) >= maxCursorHold {
+		// Held too long to be a line redraw. Give up on the restore ever
+		// arriving and let the bar have the slot back.
+		m.cursorSaved = false
+		return false
+	}
+	return true
+}
+
+// isCursorSave and isCursorRestore report whether seq saves or restores the
+// cursor.
+//
+// Both spellings have to be matched. DECSC/DECRC ("\x1b7"/"\x1b8") is what
+// terminfo's sc/rc capabilities expand to and therefore what shells actually
+// emit; ANSI.SYS SCP/RCP ("\x1b[s"/"\x1b[u") is the CSI form, which some
+// applications use directly. Matching only one leaves the other able to
+// desynchronize the save slot.
+func isCursorSave(seq []byte) bool {
+	return (len(seq) == 2 && seq[0] == 0x1b && seq[1] == '7') ||
+		(len(seq) == 3 && seq[1] == '[' && seq[2] == 's')
+}
+
+func isCursorRestore(seq []byte) bool {
+	return (len(seq) == 2 && seq[0] == 0x1b && seq[1] == '8') ||
+		(len(seq) == 3 && seq[1] == '[' && seq[2] == 'u')
 }
 
 // TakeReset reports whether the terminal was reset since the last call, and
@@ -121,7 +204,23 @@ func (m *modeFilter) Observe(p []byte) (redraw bool) {
 			// region has to be reinstalled and not merely repainted.
 			m.reset = true
 			m.altScreen = false
+			m.cursorSaved = false
 			redraw = true
+		case isCursorSave(seq):
+			// The guest now owns the terminal's only cursor-save slot. The
+			// bar must leave it alone until the guest restores.
+			//
+			// A repeated save refreshes the deadline rather than being
+			// ignored: the guest is demonstrably still using the slot.
+			m.cursorSaved = true
+			m.cursorSavedAt = m.clock()
+		case isCursorRestore(seq):
+			// The slot is free again. Repaint: the bar may have skipped a
+			// draw while the guest held it, so its row can be stale.
+			if m.cursorSaved {
+				m.cursorSaved = false
+				redraw = true
+			}
 		case erasesBarRow(seq):
 			redraw = true
 		}
