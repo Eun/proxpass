@@ -1,6 +1,7 @@
 package cli_test
 
 import (
+	"bytes"
 	"errors"
 	"strings"
 	"testing"
@@ -18,6 +19,8 @@ const (
 	// LAST one.
 	guestAtName  = "mail@corp"
 	guestWebName = "web"
+	helpFlag     = "--help"
+	progName     = "proxpass"
 )
 
 // guest builds a guest on the given instance.
@@ -299,6 +302,32 @@ func TestAccessIdentifiersAcceptTheQualifiedForm(t *testing.T) {
 		if g.InstanceID != tc.want {
 			t.Errorf("%s resolved to instance %d, want %d",
 				tc.ident, g.InstanceID, tc.want)
+		}
+	}
+}
+
+// Help text must not advertise the removed colon syntax.
+//
+// `guest connect --help` shipped in v0.0.7 showing
+// "[<instance>:]<identifier>", a form that no longer resolves: the usage
+// ERROR text was updated when the qualifier moved to "@" but the
+// ArgsUsage string was missed, so the help told users to type something
+// guaranteed to fail.
+func TestCommandHelpDoesNotAdvertiseTheColonForm(t *testing.T) {
+	var out, errOut bytes.Buffer
+	deps := &cli.Deps{Out: &out, ErrOut: &errOut}
+
+	for _, argv := range [][]string{
+		{progName, "guest", "connect", helpFlag},
+		{progName, "guest", helpFlag},
+		{progName, "access", "grant", helpFlag},
+	} {
+		out.Reset()
+		errOut.Reset()
+		_ = cli.Build(deps).Run(t.Context(), argv)
+		got := out.String() + errOut.String()
+		if strings.Contains(got, "<instance>:") {
+			t.Errorf("%v advertises the removed colon form:\n%s", argv, got)
 		}
 	}
 }
