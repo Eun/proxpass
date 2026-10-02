@@ -130,13 +130,6 @@ func ResolveGuestAndInstance(
 
 // ResolveGuest looks up a guest by identifier within the given pool.
 // Resolution order: numeric VMID → type+VMID (ct100, vm200) ‒ name.
-func ResolveGuest(
-	identifier string,
-	guests []*models.Guest,
-) (*models.Guest, error) {
-	return resolveGuest(identifier, guests, nil)
-}
-
 // resolveGuest is ResolveGuest with the instance names used to describe an
 // ambiguity; see ambiguousError.
 func resolveGuest(
