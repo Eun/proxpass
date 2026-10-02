@@ -266,6 +266,18 @@ func (b *StatusBar) draw() {
 	if !b.active || b.hidden || b.cols < 1 {
 		return
 	}
+	if b.modes.CursorSaved() {
+		// The guest is between saving and restoring its cursor, and the
+		// terminal has only one slot to save it in. Drawing now would
+		// overwrite the guest's saved position with the bar's, so the guest's
+		// restore would move its cursor to wherever the bar happened to be.
+		//
+		// lastBar is deliberately left alone: the text has not been written,
+		// so the next draw must still treat it as changed. The repaint comes
+		// from the restore (modeFilter.Observe) or from the idle tick,
+		// whichever happens first.
+		return
+	}
 	text := barText(b.left, b.right, b.cols)
 	if text == b.lastBar {
 		// Repainting an identical row is what makes a bar flicker on
