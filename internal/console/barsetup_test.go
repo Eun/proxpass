@@ -2,6 +2,7 @@ package console
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
@@ -115,13 +116,14 @@ func TestWillDrawBarRejectsShortTerminals(t *testing.T) {
 // The observer must pass guest output through byte for byte: it exists to
 // watch the stream, not to rewrite it.
 func TestBarWriterForwardsDataUnchanged(t *testing.T) {
-	buf := &lockedBuffer{}
-	bar := NewStatusBar(buf, 80, 24)
+	// The bar and the guest share one terminal, as they do in a session:
+	// barWriter reaches it through the bar so the two cannot interleave.
+	sink := &lockedBuffer{}
+	bar := NewStatusBar(sink, 80, 24)
 	bar.Start()
 	defer bar.Stop()
 
-	var sink bytes.Buffer
-	w := &barWriter{out: &sink, bar: bar}
+	w := &barWriter{bar: bar}
 
 	const payload = "line one\n\x1b[31mred\x1b[0m\n\x1b[?1049hfullscreen"
 	n, err := w.Write([]byte(payload))
@@ -131,7 +133,13 @@ func TestBarWriterForwardsDataUnchanged(t *testing.T) {
 	if n != len(payload) {
 		t.Errorf("wrote %d bytes, want %d", n, len(payload))
 	}
-	if sink.String() != payload {
-		t.Errorf("data was altered:\n got %q\nwant %q", sink.String(), payload)
+	// The sink also holds the bar's own setup bytes, because the bar and the
+	// guest now share one writer. What matters is that the guest's payload
+	// reaches it as one unbroken, unmodified run: a rewriting proxy would
+	// alter it, and an unsynchronized one could have a repaint spliced into
+	// the middle of it.
+	if !strings.Contains(sink.String(), payload) {
+		t.Errorf("guest data was altered or interleaved:\n got %q\nwant it to contain %q",
+			sink.String(), payload)
 	}
 }

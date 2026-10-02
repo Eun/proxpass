@@ -63,6 +63,13 @@ func connectSSH(
 	if bar != nil {
 		defer bar.Stop()
 	}
+	// Under a PTY, stderr and stdout are the same device. With a bar, stderr
+	// has to take the same write lock as everything else; without one there
+	// is nothing to serialize against.
+	guestErr := term.Err
+	if bar != nil {
+		guestErr = bar.serializedWriter(term.Err)
+	}
 
 	// pct enter and qm terminal both misbehave without a PTY.
 	if err := session.RequestPty(term.Term, guestRows, term.Width, gossh.TerminalModes{}); err != nil {
@@ -163,7 +170,12 @@ func connectSSH(
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(term.Err, remoteStderr)
+		// Through guestErr, not term.Err directly: under a PTY both streams
+		// are the same device, so stderr is a third writer competing with
+		// the guest's stdout and the bar for one terminal. Writing it
+		// unsynchronized could split a bar repaint or a guest escape
+		// sequence in half.
+		_, _ = io.Copy(guestErr, remoteStderr)
 	}()
 
 	err = session.Wait()

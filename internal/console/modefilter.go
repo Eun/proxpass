@@ -53,6 +53,74 @@ type modeFilter struct {
 
 	// now is the clock, swappable in tests.
 	now func() time.Time
+
+	// regionLost records that the guest replaced the bar's scroll region
+	// with its own. It is latched and cleared by TakeRegionLost.
+	regionLost bool
+
+	// originMode reports whether the guest has set DECOM, which makes row
+	// coordinates relative to the scroll region instead of the screen.
+	originMode bool
+}
+
+// TakeRegionLost reports whether the guest installed its own scroll region
+// since the last call, and clears the flag.
+//
+// A guest that sets DECSTBM itself -- curses applications do, and so does
+// "tput csr" -- replaces the bar's reservation wholesale. The bar's row is
+// then inside the guest's scrolling area, so the guest will scroll through
+// it. Reinstalling the region is the only way to get the row back, and it
+// has to be driven by observing the change: nothing else reveals it.
+func (m *modeFilter) TakeRegionLost() bool {
+	was := m.regionLost
+	m.regionLost = false
+	return was
+}
+
+// OriginMode reports whether DECOM is active.
+//
+// With origin mode set, CUP row coordinates are relative to the top margin of
+// the scroll region and rows outside it are unreachable, so the bar's
+// absolute move to the last row would be clamped into the guest's area and
+// paint over the guest's bottom line. The bar cannot position itself
+// reliably until the guest clears DECOM, so it stops drawing instead of
+// drawing in the wrong place.
+func (m *modeFilter) OriginMode() bool { return m.originMode }
+
+// isSetScrollRegion reports whether seq is DECSTBM ("\x1b[...r").
+//
+// Only the guest's own region changes reach here: the bar's are written
+// straight to the terminal and never pass through Observe.
+func isSetScrollRegion(seq []byte) bool {
+	return len(seq) >= 3 && seq[1] == '[' && seq[len(seq)-1] == 'r' &&
+		// A private marker makes this a mode restore (DECRST-style), not
+		// DECSTBM.
+		seq[2] != '?'
+}
+
+// parseOriginMode reports whether seq sets or resets DECOM ("\x1b[?6h"/"l").
+func parseOriginMode(seq []byte) (enabled, ok bool) {
+	if len(seq) < 4 || seq[1] != '[' {
+		return false, false
+	}
+	final := seq[len(seq)-1]
+	if final != 'h' && final != 'l' {
+		return false, false
+	}
+	private := false
+	for _, param := range bytes.Split(seq[2:len(seq)-1], []byte(";")) {
+		if len(param) > 0 && param[0] == '?' {
+			private = true
+			param = param[1:]
+		}
+		if !private {
+			continue
+		}
+		if string(param) == "6" {
+			return final == 'h', true
+		}
+	}
+	return false, false
 }
 
 // maxCursorHold bounds how long the bar will defer to a guest's saved cursor.
@@ -199,12 +267,19 @@ func (m *modeFilter) Observe(p []byte) (redraw bool) {
 				m.altScreen = alt
 				redraw = true
 			}
+		case isSetScrollRegion(seq):
+			// The guest took the scroll region for itself, so the bar's row
+			// is no longer reserved. Latch it: the caller has to reinstall
+			// the region, not merely repaint the row.
+			m.regionLost = true
+			redraw = true
 		case isFullReset(seq):
 			// RIS resets everything, including the scroll region, so the
 			// region has to be reinstalled and not merely repainted.
 			m.reset = true
 			m.altScreen = false
 			m.cursorSaved = false
+			m.originMode = false
 			redraw = true
 		case isCursorSave(seq):
 			// The guest now owns the terminal's only cursor-save slot. The
@@ -223,6 +298,14 @@ func (m *modeFilter) Observe(p []byte) (redraw bool) {
 			}
 		case erasesBarRow(seq):
 			redraw = true
+		default:
+			if origin, ok := parseOriginMode(seq); ok && origin != m.originMode {
+				// DECOM changes what an absolute row coordinate means, so
+				// the bar either cannot place itself (set) or can again
+				// (reset). Both are worth a redraw decision.
+				m.originMode = origin
+				redraw = true
+			}
 		}
 		i += n
 	}

@@ -125,6 +125,12 @@ the switch to the alternate screen, releases the scroll region and stops
 drawing, so the application gets the whole terminal. It comes back when the
 application exits.
 
+It also stands aside for a guest that takes the screen's geometry for itself.
+An application setting its own scroll region replaces the bar's reservation,
+so the bar reinstates it; one setting origin mode (DECOM) makes the bar's row
+unaddressable, so the bar stops drawing until the mode is cleared rather than
+painting over the guest's bottom line.
+
 The bar also stands aside when the guest saves its cursor. A terminal has only
 one slot to save a cursor position in, and terminfo's `sc`/`rc` capabilities
 are exactly the sequences the bar uses, so a shell redrawing its line — which
