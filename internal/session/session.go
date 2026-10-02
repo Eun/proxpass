@@ -25,6 +25,10 @@ import (
 	"proxpass/internal/proxmox"
 )
 
+// cliProgName is argv[0] for both CLI trees; urfave/cli prints it in
+// usage and error messages.
+const cliProgName = "proxpass"
+
 // Deps holds everything a session needs.
 type Deps struct {
 	Repo       db.Repository
@@ -70,57 +74,63 @@ func Run(ctx context.Context, d *Deps) int {
 	case d.IsAdmin:
 		return d.runAdmin(ctx, cmd)
 
-	case strings.ContainsRune(cmd, ' '):
-		// Non-admins may only name a guest. A multi-word command looks like
-		// an attempt to reach the admin CLI.
-		d.Logger.Printf("%s: rejected multi-word command %q", d.User, cmd)
-		d.errf("access denied: clients may only connect to guests")
-		return 1
-
 	default:
-		return d.connect(ctx, cmd)
+		return d.runClient(ctx, cmd)
 	}
 }
 
-// runAdmin handles an admin command: a bare guest identifier connects
-// directly, anything else runs through the admin CLI.
-func (d *Deps) runAdmin(ctx context.Context, cmd string) int {
-	if !strings.ContainsRune(cmd, ' ') {
-		// A single token may be a guest; fall through to the CLI when it is
-		// not, so "ssh host bogus" reports "unknown command" rather than
-		// "guest not found".
-		guest, inst, err := d.resolve(ctx, cmd)
-		if err == nil {
-			return d.attach(guest, inst)
-		}
+// runClient handles a command from a non-admin client.
+//
+// Clients get a small CLI of their own rather than a bare guest identifier.
+// The identifier form used to live here ("ssh host ct100"), and is gone: a
+// guest is now named either as the login name or through "guest connect",
+// which means one syntax instead of a bare token that had to be
+// distinguished from a command by guessing.
+func (d *Deps) runClient(ctx context.Context, cmd string) int {
+	guests, err := d.accessibleGuests(ctx)
+	if err != nil {
+		d.Logger.Printf("%s: %v", d.User, err)
+		d.errf("internal error")
+		return 1
+	}
+	instances, err := d.Repo.ListProxmoxInstances(ctx)
+	if err != nil {
+		d.Logger.Printf("%s: listing instances: %v", d.User, err)
+		d.errf("internal error")
+		return 1
 	}
 
-	deps := &cli.Deps{
-		Repo:       d.Repo,
-		Discoverer: d.Discoverer,
-		Out:        d.Terminal.UIOut(),
-		ErrOut:     d.Terminal.UIErr(),
+	deps := &cli.ClientDeps{
+		Deps: &cli.Deps{
+			Repo:   d.Repo,
+			Out:    d.Terminal.UIOut(),
+			ErrOut: d.Terminal.UIErr(),
+		},
+		// Pre-filtered: no command in the client tree can reach a guest
+		// outside this set, because none of them can see one.
+		Guests:    guests,
+		Instances: instances,
 	}
-	argv := append([]string{"proxpass"}, splitArgs(cmd)...)
-	if err := cli.Build(deps).Run(detachValues(ctx), argv); err != nil {
+	argv := append([]string{cliProgName}, splitArgs(cmd)...)
+	if err := cli.BuildClient(deps).Run(detachValues(ctx), argv); err != nil {
+		d.Logger.Printf("%s: client cli: %v", d.User, err)
 		d.errf("Error: %v", err)
 		return 1
 	}
-	// "guest connect <id>" asks the caller to attach once the CLI returns.
 	if deps.ConnectRequest != nil {
-		return d.attach(deps.ConnectRequest.Guest, deps.ConnectRequest.Instance)
+		// The access check is redundant with the filtered pool and kept
+		// anyway, so that widening either one alone cannot open a hole.
+		return d.connectChecked(ctx, deps.ConnectRequest.Guest,
+			deps.ConnectRequest.Instance)
 	}
 	return 0
 }
 
-// connect resolves a guest identifier, checks access and attaches.
-func (d *Deps) connect(ctx context.Context, target string) int {
-	guest, inst, err := d.resolve(ctx, target)
-	if err != nil {
-		d.Logger.Printf("%s: %v", d.User, err)
-		d.errf("%v", err)
-		return 1
-	}
+// connectChecked attaches to a guest after confirming the session may
+// reach it.
+func (d *Deps) connectChecked(
+	ctx context.Context, guest *models.Guest, inst *models.ProxmoxInstance,
+) int {
 	allowed, err := d.hasAccess(ctx, guest)
 	if err != nil {
 		d.Logger.Printf("%s: access check failed: %v", d.User, err)
@@ -133,6 +143,34 @@ func (d *Deps) connect(ctx context.Context, target string) int {
 		return 1
 	}
 	return d.attach(guest, inst)
+}
+
+// runAdmin runs an admin command through the admin CLI.
+//
+// A bare guest identifier used to connect directly from here ("ssh host
+// ct100"). That is gone: a single token had to be guessed at -- guest or
+// mistyped command? -- and the guess leaked, because "ssh host bogus"
+// reported "unknown command" while "ssh host ct999" reported a resolution
+// failure. A guest is now named either as the login name or through
+// "guest connect", so nothing has to be guessed.
+func (d *Deps) runAdmin(ctx context.Context, cmd string) int {
+	deps := &cli.Deps{
+		Repo:       d.Repo,
+		Discoverer: d.Discoverer,
+		Out:        d.Terminal.UIOut(),
+		ErrOut:     d.Terminal.UIErr(),
+	}
+	argv := append([]string{cliProgName}, splitArgs(cmd)...)
+	if err := cli.Build(deps).Run(detachValues(ctx), argv); err != nil {
+		d.errf("Error: %v", err)
+		return 1
+	}
+	// "guest connect <id>" asks the caller to attach once the CLI returns.
+	if deps.ConnectRequest != nil {
+		return d.connectChecked(ctx, deps.ConnectRequest.Guest,
+			deps.ConnectRequest.Instance)
+	}
+	return 0
 }
 
 func (d *Deps) attach(guest *models.Guest, inst *models.ProxmoxInstance) int {
@@ -161,27 +199,6 @@ func (d *Deps) attach(guest *models.Guest, inst *models.ProxmoxInstance) int {
 		return 1
 	}
 	return 0
-}
-
-// resolve turns a user-supplied target into a guest and its instance. The
-// target may be qualified as "identifier@instance".
-//
-// This resolves against EVERY guest, not just the reachable ones, because
-// it serves an explicit request: naming a guest that exists but is out of
-// reach must say "access denied" rather than "not found". The login-name
-// path deliberately does the opposite; see connectByLoginName.
-func (d *Deps) resolve(ctx context.Context, target string) (*models.Guest, *models.ProxmoxInstance, error) {
-	guests, err := d.Repo.ListGuests(ctx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("listing guests: %w", err)
-	}
-	instances, err := d.Repo.ListProxmoxInstances(ctx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("listing instances: %w", err)
-	}
-	instName, identifier := cli.ParseGuestTarget(
-		target, cli.InstanceLookup(instances))
-	return cli.ResolveGuestAndInstance(identifier, instName, guests, instances)
 }
 
 // hasAccess reports whether the session may reach the guest. Admins may
@@ -286,8 +303,13 @@ func (d *Deps) writeHelp(ctx context.Context) int {
 	// The display name, not the login name: this is an instruction to be
 	// retyped, so it has to name an identity rather than echo back an
 	// alias that happens to have resolved this time.
-	fmt.Fprintf(w, "  ssh %s@<host>              choose a guest interactively\n", d.displayName())
-	fmt.Fprintf(w, "  ssh -t %s@<host> <guest>   connect directly\n\n", d.displayName())
+	fmt.Fprintf(w, "  ssh %s@<host>                            choose a guest interactively\n",
+		d.displayName())
+	fmt.Fprintf(w, "  ssh <guest>@<host>                       connect directly\n")
+	fmt.Fprintf(w, "  ssh -t %s@<host> guest connect <guest>   connect via the CLI\n",
+		d.displayName())
+	fmt.Fprintf(w, "  ssh %s@<host> guest ls                   list what you may reach\n\n",
+		d.displayName())
 	fmt.Fprintf(w, "A guest may be named by VMID (100), type+VMID (ct100, vm200),\n")
 	fmt.Fprintf(w, "name (webserver), or instance-qualified (ct101@rome).\n\n")
 

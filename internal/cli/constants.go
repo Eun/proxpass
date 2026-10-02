@@ -11,6 +11,7 @@ const (
 	flagGuest       = "guest"
 	cmdAdd          = "add"
 	cmdLs           = "ls"
+	cmdConnect      = "connect"
 	cmdRm           = "rm"
 	cmdInspect      = "inspect"
 	argsNames       = "<name> [<name> ...]"
