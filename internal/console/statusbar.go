@@ -51,6 +51,21 @@ import (
 type StatusBar struct {
 	out io.Writer
 
+	// outMu serializes writes to out.
+	//
+	// The bar and the guest share one terminal, and a PTY write is not
+	// guaranteed atomic: os.File.Write loops on a short write. Without this,
+	// guest bytes could land between the bar's cursor save and its restore,
+	// so the restore would discard wherever the guest's output had left the
+	// cursor -- and conversely a repaint could split a guest escape sequence
+	// in half.
+	//
+	// It is separate from mu, and always the inner lock of the two, so that
+	// forwarding guest output never waits on bar bookkeeping (SetText,
+	// Observe) and a slow terminal cannot serialize the draw loop's state
+	// updates. Lock order is mu then outMu; never the reverse.
+	outMu sync.Mutex
+
 	mu      sync.Mutex
 	rows    int
 	cols    int
@@ -97,6 +112,48 @@ func NewStatusBar(out io.Writer, cols, rows int) *StatusBar {
 	}
 }
 
+// write sends s to the terminal, excluding any concurrent guest output.
+//
+// Every write the bar makes goes through here. Callers may hold mu; outMu is
+// the inner lock.
+func (b *StatusBar) write(s string) {
+	b.outMu.Lock()
+	defer b.outMu.Unlock()
+	_, _ = io.WriteString(b.out, s)
+}
+
+// writeGuest forwards guest output to the terminal, excluding any concurrent
+// bar repaint.
+//
+// The bytes are passed through unchanged; only the write is serialized.
+func (b *StatusBar) writeGuest(p []byte) (int, error) {
+	b.outMu.Lock()
+	defer b.outMu.Unlock()
+	return b.out.Write(p)
+}
+
+// serializedWriter wraps out so writes to it take the bar's write lock.
+//
+// This is for streams that reach the same terminal without being part of the
+// guest's observed output -- stderr, which under a PTY is the same device as
+// stdout. Nothing is parsed: the bytes are forwarded as they arrive, merely
+// not interleaved with a bar repaint.
+func (b *StatusBar) serializedWriter(out io.Writer) io.Writer {
+	return &lockedWriter{out: out, bar: b}
+}
+
+// lockedWriter forwards to out under the bar's write lock.
+type lockedWriter struct {
+	out io.Writer
+	bar *StatusBar
+}
+
+func (w *lockedWriter) Write(p []byte) (int, error) {
+	w.bar.outMu.Lock()
+	defer w.bar.outMu.Unlock()
+	return w.out.Write(p)
+}
+
 // SetText sets the bar's left and right content and requests a repaint.
 func (b *StatusBar) SetText(left, right string) {
 	b.mu.Lock()
@@ -134,7 +191,7 @@ func (b *StatusBar) Start() {
 	// Install the scroll region, then put the cursor inside it. DECSTBM
 	// homes the cursor as a side effect on some terminals and leaves it
 	// alone on others, so it is positioned explicitly.
-	fmt.Fprintf(b.out, "\x1b[1;%dr\x1b[1;1H", b.guestRowsLocked())
+	b.write(fmt.Sprintf("\x1b[1;%dr\x1b[1;1H", b.guestRowsLocked()))
 	b.mu.Unlock()
 
 	b.request()
@@ -159,20 +216,38 @@ func (b *StatusBar) Stop() {
 	// Reset the scroll region to the full screen, erase the bar row, and
 	// leave the cursor on it so the shell prompt that follows does not
 	// overwrite the guest's last line.
-	fmt.Fprintf(b.out, "\x1b[r\x1b[%d;1H\x1b[2K", b.rows)
+	b.write(fmt.Sprintf("\x1b[r\x1b[%d;1H\x1b[2K", b.rows))
 }
 
 // Resize updates the terminal size, reinstalls the scroll region and
 // repaints. It returns the new guest height.
 func (b *StatusBar) Resize(cols, rows int) int {
 	b.mu.Lock()
+	prev := b.guestRowsLocked()
 	b.cols, b.rows = cols, rows
 	// Force the next repaint even if the text is unchanged: the bar has to
 	// be rewritten at a new width and position.
 	b.lastBar = ""
 	guest := b.guestRowsLocked()
 	if b.active {
-		fmt.Fprintf(b.out, "\x1b[1;%dr", guest)
+		// Reinstall the region and put the cursor back inside it, for the
+		// same reason Start does: DECSTBM homes the cursor on some terminals
+		// and leaves it alone on others. Reinstalling without this left the
+		// cursor at (1,1) on the terminals that home it, while the guest
+		// shell still believed it was at its prompt -- so the next keystroke
+		// redrew the line in the wrong place, on every resize.
+		//
+		// The cursor is clamped into the region rather than homed: homing it
+		// would discard the guest's position on terminals that do not move
+		// it, which is the majority. Row b.rows-1 is the last row the guest
+		// still owns, so a cursor that was below the new region lands on the
+		// guest's bottom line instead of on the bar.
+		b.write(fmt.Sprintf("\x1b[1;%dr", guest))
+		if prev > guest {
+			// The terminal shrank, so the cursor may now be outside the
+			// region (or on the bar's row). Only then is a move warranted.
+			b.write(fmt.Sprintf("\x1b[%d;1H", guest))
+		}
 	}
 	b.mu.Unlock()
 
@@ -199,25 +274,28 @@ func (b *StatusBar) Observe(p []byte) {
 	b.lastBar = ""
 
 	wasReset := b.modes.TakeReset()
+	lostRegion := b.modes.TakeRegionLost()
 	alt := b.modes.AltScreen()
 	b.hidden = alt
 	switch {
 	case alt && b.active:
 		// The application is taking the whole screen: drop the scroll
 		// region so it can use every row, and stop drawing.
-		fmt.Fprint(b.out, "\x1b[r")
+		b.write("\x1b[r")
 	case b.active:
 		// Either a full-screen application exited, the guest erased the
 		// screen, or it reset the terminal. A reset discards the scroll
 		// region, and an alt-screen exit restores whatever region was in
 		// effect before, so the region is reinstalled in both cases rather
 		// than assumed to have survived.
-		fmt.Fprintf(b.out, "\x1b[1;%dr", b.guestRowsLocked())
-		if wasReset {
-			// A reset also returns the cursor to the top-left of a
-			// now-unrestricted screen. Put it back inside the region so the
-			// guest's next line does not land on the bar's row.
-			fmt.Fprint(b.out, "\x1b[1;1H")
+		b.write(fmt.Sprintf("\x1b[1;%dr", b.guestRowsLocked()))
+		if wasReset || lostRegion {
+			// A reset returns the cursor to the top-left of a
+			// now-unrestricted screen, and a guest that set its own region
+			// will have moved the cursor inside it. Either way the cursor
+			// may now be outside the reinstated region, so put it back so
+			// the guest's next line does not land on the bar's row.
+			b.write("\x1b[1;1H")
 		}
 	}
 	b.mu.Unlock()
@@ -266,6 +344,16 @@ func (b *StatusBar) draw() {
 	if !b.active || b.hidden || b.cols < 1 {
 		return
 	}
+	if b.modes.OriginMode() {
+		// DECOM makes a row coordinate relative to the scroll region, and
+		// rows outside the region unreachable. The bar's row is outside it
+		// by construction, so the absolute move below would be clamped into
+		// the guest's area and the bar would paint over the guest's bottom
+		// line. Not drawing is better than drawing in the wrong place; the
+		// bar returns when the guest clears DECOM, which Observe watches
+		// for.
+		return
+	}
 	if b.modes.CursorSaved() {
 		// The guest is between saving and restoring its cursor, and the
 		// terminal has only one slot to save it in. Drawing now would
@@ -302,7 +390,7 @@ func (b *StatusBar) draw() {
 	sb.WriteString(text)
 	sb.WriteString("\x1b[0m") // reset attributes
 	sb.WriteString("\x1b8")   // restore cursor
-	_, _ = io.WriteString(b.out, sb.String())
+	b.write(sb.String())
 }
 
 // barText lays out the bar: left content, padding, right content, clipped to

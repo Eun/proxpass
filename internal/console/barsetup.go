@@ -71,7 +71,7 @@ func startBar(term *Terminal, label, hint string) (*StatusBar, io.Writer, int) {
 	bar.SetText(label, hint)
 	bar.Start()
 	rows := bar.GuestRows()
-	return bar, &barWriter{out: term.Out, bar: bar}, rows
+	return bar, &barWriter{bar: bar}, rows
 }
 
 // barWriter forwards guest output unchanged while letting the bar watch it
@@ -80,15 +80,25 @@ func startBar(term *Terminal, label, hint string) (*StatusBar, io.Writer, int) {
 // The data is passed to the terminal exactly as it arrived. Observe only
 // reads it, so unlike a rewriting proxy this cannot corrupt an escape
 // sequence that happens to straddle a read boundary.
+//
+// The terminal is reached through the bar rather than held here, so that
+// guest output and bar repaints are serialized against each other.
 type barWriter struct {
-	out io.Writer
 	bar *StatusBar
 }
 
 func (w *barWriter) Write(p []byte) (int, error) {
-	// Forward first. The bar is cosmetic and the guest's output is not, so a
-	// write is never delayed by the inspection.
-	n, err := w.out.Write(p)
+	// Forward under the bar's write lock. A PTY write is not atomic -- it can
+	// be split -- and the bar and the guest share one terminal, so without
+	// this guest bytes could land between the bar's cursor save and its
+	// restore. The restore would then discard the position the guest's own
+	// output had just set, and a repaint could equally be cut into the middle
+	// of a guest escape sequence.
+	//
+	// Only the write is serialized. Observe runs afterwards, outside the
+	// lock, because it takes the bar's state mutex and the lock order is
+	// state-then-write.
+	n, err := w.bar.writeGuest(p)
 	if n > 0 {
 		w.bar.Observe(p[:n])
 	}

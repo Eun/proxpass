@@ -24,7 +24,7 @@ func barWriteBench(b *testing.B, payload []byte) {
 	bar.Start()
 	defer bar.Stop()
 
-	w := &barWriter{out: io.Discard, bar: bar}
+	w := &barWriter{bar: bar}
 	b.SetBytes(int64(len(payload)))
 	b.ResetTimer()
 	for range b.N {
