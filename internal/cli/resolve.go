@@ -9,44 +9,74 @@ import (
 	"proxpass/internal/models"
 )
 
-// ParseGuestTarget splits an optional "instance:identifier" string.
-// If no colon is present, instanceName is empty.
-func ParseGuestTarget(s string) (instanceName, identifier string) {
-	if idx := strings.IndexByte(s, ':'); idx >= 0 {
-		return s[:idx], s[idx+1:]
+// ParseGuestTarget splits an optional "identifier@instance" string.
+//
+// The instance is the SUFFIX, so the target reads left to right the way it
+// is spoken: "ct100@rome" is ct100 on rome. It is also the only split that
+// works, because the separator has to be "@":
+//
+//   - a colon cannot appear in a login name at all (it is the passwd field
+//     separator, so api.ValidLoginName rejects it), which is what made the
+//     old "instance:identifier" form unusable as "ssh rome:ct100@host".
+//   - "@" is already a legal login name character, and ssh splits user@host
+//     on the LAST "@", so "ct100@rome@host" arrives with the username
+//     "ct100@rome" intact. Verified against the image.
+//
+// The split is on the last "@" rather than the first for a specific reason:
+// a guest name may itself contain "@" (names come from Proxmox and are not
+// validated), while a Proxmox node name is a DNS hostname and cannot. So
+// the suffix is unambiguous and the prefix keeps whatever "@" it had --
+// "mail@corp@rome" is the guest "mail@corp" on "rome".
+//
+// knownInstance decides whether the suffix really is an instance. Without
+// it, the client name "tobias@corp" -- valid today -- would be read as the
+// guest "tobias" on an instance "corp". It may be nil, in which case no
+// split is attempted and the whole string is one identifier.
+func ParseGuestTarget(
+	s string, knownInstance func(string) bool,
+) (instanceName, identifier string) {
+	if knownInstance == nil {
+		return "", s
 	}
-	return "", s
+	idx := strings.LastIndexByte(s, '@')
+	if idx <= 0 || idx == len(s)-1 {
+		// No "@", or nothing on one side of it: not a qualified target.
+		return "", s
+	}
+	suffix := s[idx+1:]
+	if !knownInstance(suffix) {
+		// The suffix names no instance, so the "@" belongs to the
+		// identifier itself.
+		return "", s
+	}
+	return suffix, s[:idx]
+}
+
+// InstanceLookup returns a knownInstance predicate for ParseGuestTarget.
+//
+// Matching is case-insensitive, like instance resolution itself.
+func InstanceLookup(instances []*models.ProxmoxInstance) func(string) bool {
+	return func(name string) bool {
+		for _, inst := range instances {
+			if strings.EqualFold(inst.Name, name) {
+				return true
+			}
+		}
+		return false
+	}
 }
 
 // ResolveGuestAndInstance looks up a guest and its Proxmox instance by
 // identifier and an optional instance name filter.
 //
 // If instName is non-empty, only guests on that instance are considered.
-// If multiple guests match, an error is returned hinting to use instance:identifier.
+// If multiple guests match, an error is returned hinting to use
+// identifier@instance.
 func ResolveGuestAndInstance(
 	identifier string,
 	instName string,
 	guests []*models.Guest,
 	instances []*models.ProxmoxInstance,
-) (*models.Guest, *models.ProxmoxInstance, error) {
-	// An unqualified target may be qualified, so suggesting the prefix is
-	// useful advice.
-	return ResolveGuestAndInstanceHinted(
-		identifier, instName, guests, instances, instName == "")
-}
-
-// ResolveGuestAndInstanceHinted is ResolveGuestAndInstance with explicit
-// control over the disambiguation hint.
-//
-// hintInstance must be false where the caller's syntax cannot express an
-// instance prefix -- a login name cannot contain a colon -- so that an
-// ambiguity error does not advise something impossible.
-func ResolveGuestAndInstanceHinted(
-	identifier string,
-	instName string,
-	guests []*models.Guest,
-	instances []*models.ProxmoxInstance,
-	hintInstance bool,
 ) (*models.Guest, *models.ProxmoxInstance, error) {
 	// Build instance lookup map by ID.
 	instByID := make(map[int64]*models.ProxmoxInstance, len(instances))
@@ -86,7 +116,7 @@ func ResolveGuestAndInstanceHinted(
 	for _, inst := range instances {
 		instNames[inst.ID] = inst.Name
 	}
-	guest, err := resolveGuest(identifier, pool, instNames, hintInstance)
+	guest, err := resolveGuest(identifier, pool, instNames)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -98,26 +128,20 @@ func ResolveGuestAndInstanceHinted(
 	return guest, inst, nil
 }
 
-// ResolveGuest looks up a guest by identifier within the given pool.
-// Resolution order: numeric VMID → type+VMID (ct100, vm200) ‒ name.
+// resolveGuest looks up a guest by identifier within the given pool.
+// Resolution order: numeric VMID → type+VMID (ct100, vm200) → name.
 //
-// hintInstance controls whether error messages suggest using the
-// instance:identifier format to disambiguate.
-func ResolveGuest(
-	identifier string,
-	guests []*models.Guest,
-	hintInstance bool,
-) (*models.Guest, error) {
-	return resolveGuest(identifier, guests, nil, hintInstance)
-}
-
-// resolveGuest is ResolveGuest with the instance names used to describe an
-// ambiguity; see ambiguousError.
+// It is deliberately unexported. Every caller must go through
+// ResolveGuestAndInstance, which parses the "identifier@instance" form
+// first -- a caller resolving a raw identifier would silently not support
+// qualification, which is how `access grant --guest ct200@rome` came to be
+// unable to name a guest on a colliding VMID at all.
+//
+// instNames is used to describe an ambiguity; see ambiguousError.
 func resolveGuest(
 	identifier string,
 	guests []*models.Guest,
 	instNames map[int64]string,
-	hintInstance bool,
 ) (*models.Guest, error) {
 	lower := strings.ToLower(identifier)
 
@@ -133,7 +157,7 @@ func resolveGuest(
 			return matches[0], nil
 		}
 		if len(matches) > 1 {
-			return nil, ambiguousError(identifier, matches, instNames, hintInstance)
+			return nil, ambiguousError(identifier, matches, instNames)
 		}
 		// No match by VMID; fall through to other methods.
 	}
@@ -166,7 +190,7 @@ func resolveGuest(
 		}
 		if len(matches) > 1 {
 			return nil, ambiguousError(
-				fmt.Sprintf("%s%d", p, vmid), matches, instNames, hintInstance)
+				fmt.Sprintf("%s%d", p, vmid), matches, instNames)
 		}
 	}
 
@@ -181,7 +205,7 @@ func resolveGuest(
 		return matches[0], nil
 	}
 	if len(matches) > 1 {
-		return nil, ambiguousError(identifier, matches, instNames, hintInstance)
+		return nil, ambiguousError(identifier, matches, instNames)
 	}
 
 	return nil, fmt.Errorf("%w: %q", ErrGuestNotFound, identifier)
@@ -199,34 +223,36 @@ var ErrGuestNotFound = errors.New("guest not found")
 // ambiguousError reports that identifier matched more than one guest, and
 // suggests how to narrow it down.
 //
-// When the caller accepts an "instance:identifier" target, that prefix is
-// the advice: a VMID and a type+VMID are already as specific as a bare
-// identifier gets, so nothing else would help.
+// It lists every alternative as a target the caller can type back
+// verbatim, qualified by instance. The instance is what distinguishes
+// them: listing bare ids for an ambiguous "ct100" would print "ct100,
+// ct100" and say nothing. instNames may be nil, in which case only the
+// bare ids are listed.
 //
-// Otherwise the hint has to name the alternatives concretely. It lists
-// "instance:typeVMID" per match, because the distinguishing part may be the
-// instance: listing bare ids for an ambiguous "ct100" would print "ct100,
-// ct100" and tell the user nothing. instNames may be nil, in which case
-// only the ids are listed.
+// There used to be a second, terser form for callers that could not
+// express an instance prefix. Every caller can now -- a login name carries
+// "ct100@rome" as readily as an argument does -- so one message serves
+// both.
 func ambiguousError(
 	identifier string,
 	matches []*models.Guest,
 	instNames map[int64]string,
-	hintInstance bool,
 ) error {
-	if hintInstance {
-		return fmt.Errorf(
-			"%q matches %d guests; use instance:identifier (see 'guest ls')",
-			identifier, len(matches))
-	}
 	hints := make([]string, 0, len(matches))
 	for _, g := range matches {
-		id := fmt.Sprintf("%s%d", g.Type, g.ProxmoxID)
-		if inst := instNames[g.InstanceID]; inst != "" {
-			id = inst + ":" + id
-		}
-		hints = append(hints, id)
+		hints = append(hints, qualified(g, instNames))
 	}
 	return fmt.Errorf("%q matches %d guests: %s",
 		identifier, len(matches), strings.Join(hints, ", "))
+}
+
+// qualified renders a guest as the "identifier@instance" target the user
+// can type back verbatim. Without a known instance name it degrades to the
+// bare identifier.
+func qualified(g *models.Guest, instNames map[int64]string) string {
+	id := fmt.Sprintf("%s%d", g.Type, g.ProxmoxID)
+	if inst := instNames[g.InstanceID]; inst != "" {
+		return id + "@" + inst
+	}
+	return id
 }
