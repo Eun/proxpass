@@ -4,9 +4,30 @@ import "strings"
 
 // MaxLoginNameLen bounds a login name.
 //
-// 32 is the useradd/useradd.8 limit and what utmp records, so a longer name is
-// a mistake rather than an intent even though NSS itself would carry it.
-const MaxLoginNameLen = 32
+// This is NOT a Unix constraint, and the 32 it used to be was justified by
+// two things that do not actually apply here:
+//
+//   - useradd's 32-character limit. proxpass never calls useradd; it serves
+//     users over NSS, so that policy governs nothing in this deployment.
+//   - utmp's UT_NAMESIZE, which really is 32 in glibc and really would
+//     truncate. But nothing in the image writes utmp -- there is no
+//     /var/run/utmp and `who' reports nothing -- because sessions run under
+//     ForceCommand rather than a login shell.
+//
+// Measured against the running image with the bound lifted: names resolve
+// correctly through NSS, sshd and the session up to roughly 970 characters,
+// where the directory lookup's HTTP request line gives out. Crucially they
+// FAIL rather than truncate -- a 300- and a 900-character name both came
+// back at exactly the length asked for -- so there is no silent-alias risk
+// of the kind that motivated the original limit.
+//
+// What the bound is actually for: a login name is echoed into an
+// AuthorizedKeysCommand argv, a lookup URL, every log line for the session
+// and the picker's title. An unbounded name is a cheap way to make a mess
+// of all four. 256 fails such a name HERE, with a clear message, instead of
+// deep inside an unrelated layer, while leaving ample room for a qualified
+// "guest@instance" pair.
+const MaxLoginNameLen = 256
 
 // ValidLoginName reports whether name is safe to serve as a Unix login name.
 //

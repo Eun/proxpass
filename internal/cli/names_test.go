@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"proxpass/internal/api"
 	"proxpass/internal/cli"
 )
 
@@ -12,7 +13,7 @@ func TestValidateClientName(t *testing.T) {
 	// not bound by the base image's useradd policy and accepts more than
 	// useradd would: mixed case, a leading digit, dots and non-ASCII.
 	valid := []string{
-		"alice", "bob2", "deploy-bot", "_svc", "a", strings.Repeat("a", 32),
+		"alice", "bob2", "deploy-bot", "_svc", "a", strings.Repeat("a", api.MaxLoginNameLen),
 		"Alice", "1alice", "alice.b", "alicé", "alice@host", "alice+tag",
 	}
 	for _, name := range valid {
@@ -37,7 +38,7 @@ func TestValidateClientName(t *testing.T) {
 		"colon":          "al:ice",
 		"newline":        "alice\nbob",
 		"url escape":     "alice%2f",
-		"too long":       strings.Repeat("a", 33),
+		"too long":       strings.Repeat("a", api.MaxLoginNameLen+1),
 		// A shell metacharacter is safe on its own -- the wrappers quote
 		// "$@" and nothing interpolates the name into a shell -- but a
 		// client name is also written into the access-rule output, so keep
