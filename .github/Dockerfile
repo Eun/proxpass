@@ -25,7 +25,7 @@ ARG DEBIAN_RELEASE="bookworm"
 # `all' target does. -buildmode=c-shared needs cgo, hence golang + gcc +
 # libc6-dev, and the .so must be linked against the SAME glibc as the runtime
 # stage -- so both stages use the same Debian release.
-FROM golang:1.25-${DEBIAN_RELEASE} AS nss-builder
+FROM golang:1.26-${DEBIAN_RELEASE} AS nss-builder
 
 ARG NSS_HTTP_REPO
 ARG NSS_HTTP_REF
