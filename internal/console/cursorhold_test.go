@@ -134,6 +134,8 @@ func TestCursorRestoreRequestsARepaint(t *testing.T) {
 	default:
 	}
 
+	// The restore frees the slot and repaints in the same call.
+	out.Reset()
 	bar.Observe([]byte("\x1b8"))
 	select {
 	case <-bar.dirty:
@@ -141,10 +143,6 @@ func TestCursorRestoreRequestsARepaint(t *testing.T) {
 		t.Error("the cursor restore did not request a repaint, so the bar " +
 			"stays stale until the idle tick")
 	}
-
-	// And the repaint, once it happens, uses the slot again now it is free.
-	out.Reset()
-	bar.draw()
 	if out.Len() == 0 {
 		t.Error("bar did not repaint after the guest released the cursor slot")
 	}
@@ -235,10 +233,9 @@ func TestResetClearsTheCursorHold(t *testing.T) {
 	bar := newHeldBar(&out)
 
 	bar.Observe([]byte("\x1b7"))
-	bar.Observe([]byte("\x1bc")) // RIS
 
 	out.Reset()
-	bar.draw()
+	bar.Observe([]byte("\x1bc")) // RIS
 	if out.Len() == 0 {
 		t.Error("bar still held off after a terminal reset")
 	}

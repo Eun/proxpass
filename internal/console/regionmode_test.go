@@ -82,9 +82,10 @@ func TestBarReturnsWhenOriginModeIsCleared(t *testing.T) {
 		t.Fatalf("bar drew under origin mode: %q", out.String())
 	}
 
-	bar.Observe([]byte("\x1b[?6l"))
+	// Observe repaints synchronously, so the paint lands here rather than on
+	// the next draw().
 	out.Reset()
-	bar.draw()
+	bar.Observe([]byte("\x1b[?6l"))
 	if out.Len() == 0 {
 		t.Error("bar never returned after the guest cleared origin mode")
 	}
@@ -97,10 +98,9 @@ func TestResetClearsOriginMode(t *testing.T) {
 	bar := newHeldBar(&out)
 
 	bar.Observe([]byte("\x1b[?6h"))
-	bar.Observe([]byte("\x1bc")) // RIS
 
 	out.Reset()
-	bar.draw()
+	bar.Observe([]byte("\x1bc")) // RIS
 	if out.Len() == 0 {
 		t.Error("bar still suppressed after a terminal reset cleared DECOM")
 	}
