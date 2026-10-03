@@ -61,6 +61,23 @@ type modeFilter struct {
 	// originMode reports whether the guest has set DECOM, which makes row
 	// coordinates relative to the scroll region instead of the screen.
 	originMode bool
+
+	// leftAltScreen records that the guest returned from the alternate
+	// screen, which restores the normal screen's scroll region along with
+	// the rest of its state. It is latched and cleared by TakeLeftAltScreen.
+	leftAltScreen bool
+}
+
+// TakeLeftAltScreen reports whether the guest returned from the alternate
+// screen since the last call, and clears the flag.
+//
+// Leaving the alternate screen restores the normal screen's saved state,
+// including whatever scroll region was in effect before the bar installed
+// its own, so the region has to be reinstalled.
+func (m *modeFilter) TakeLeftAltScreen() bool {
+	was := m.leftAltScreen
+	m.leftAltScreen = false
+	return was
 }
 
 // TakeRegionLost reports whether the guest installed its own scroll region
@@ -264,6 +281,11 @@ func (m *modeFilter) Observe(p []byte) (redraw bool) {
 		switch alt, ok := parseAltScreen(seq); {
 		case ok:
 			if alt != m.altScreen {
+				if !alt {
+					// Coming back from the alternate screen restores the
+					// normal screen's scroll region, so the bar's is gone.
+					m.leftAltScreen = true
+				}
 				m.altScreen = alt
 				redraw = true
 			}
