@@ -34,6 +34,7 @@ func connectTermProxy(
 	guest *models.Guest,
 	inst *models.ProxmoxInstance,
 	logger *log.Logger,
+	label string,
 ) error {
 	term.normalize()
 
@@ -121,9 +122,7 @@ func connectTermProxy(
 	}
 
 	// --- Step 6: reserve the bar's row and send the initial size ---
-	bar, guestOut, guestRows := startBar(term,
-		fmt.Sprintf("%s (%s%d) @ %s", guest.Name, guest.Type, guest.ProxmoxID, inst.Name),
-		EscapeHint)
+	bar, guestOut, guestRows := startBar(term, label, EscapeHint)
 	if bar != nil {
 		defer bar.Stop()
 	}

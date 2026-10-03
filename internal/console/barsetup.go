@@ -1,9 +1,12 @@
 package console
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"strings"
+
+	"proxpass/internal/models"
 )
 
 // DisableStatusBarEnv turns the status bar off.
@@ -40,6 +43,35 @@ func WillDrawBar(term *Terminal) bool {
 // its size.
 func barEligible(term *Terminal) bool {
 	return !barDisabled() && term.Raw && term.Out != nil
+}
+
+// barLabel builds the status bar's left-hand text.
+//
+// The shape follows the login form a client would type to reach the same
+// guest, so the bar reads as the answer to "where am I?" in the same
+// vocabulary the user connects with:
+//
+//	webserver@rome@proxpass.example.com (ct100)
+//	^ guest   ^ instance ^ public endpoint ^ the id that is unambiguous
+//
+// The endpoint is appended only when the deployment has been told what it is
+// (PROXPASS_PUBLIC_ENDPOINT); proxpass cannot discover it, because the name
+// clients use is a DNS and port-forwarding fact that the server never sees.
+// Without it the label is just "webserver@rome (ct100)".
+//
+// The qualifier order matches `ssh ct100@rome@host': guest first, then where
+// it lives, then how you got there.
+func barLabel(guest *models.Guest, inst *models.ProxmoxInstance, publicEndpoint string) string {
+	var sb strings.Builder
+	sb.WriteString(guest.Name)
+	sb.WriteString("@")
+	sb.WriteString(inst.Name)
+	if publicEndpoint != "" {
+		sb.WriteString("@")
+		sb.WriteString(publicEndpoint)
+	}
+	fmt.Fprintf(&sb, " (%s%d)", guest.Type, guest.ProxmoxID)
+	return sb.String()
 }
 
 // startBar sets up a status bar for a guest console, or returns nil when one

@@ -575,3 +575,48 @@ func TestRemoveProxmoxInstanceCleansUpGuests(t *testing.T) {
 
 // Compile-time interface check.
 var _ Repository = (*sqliteRepo)(nil)
+
+func TestSettings(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+
+	// An unset key is not an error: a fresh database legitimately has none,
+	// and every caller wants the same empty fallback.
+	got, err := repo.GetSetting(ctx, SettingPublicEndpoint)
+	if err != nil {
+		t.Fatalf("reading an unset setting: %v", err)
+	}
+	if got != "" {
+		t.Errorf("unset setting = %q, want empty", got)
+	}
+
+	if err := repo.SetSetting(ctx, SettingPublicEndpoint, "proxpass.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err = repo.GetSetting(ctx, SettingPublicEndpoint); err != nil {
+		t.Fatal(err)
+	} else if got != "proxpass.example.com" {
+		t.Errorf("setting = %q, want %q", got, "proxpass.example.com")
+	}
+
+	// Setting it again replaces rather than failing on the primary key, so a
+	// deployment can change its endpoint by restarting.
+	if err := repo.SetSetting(ctx, SettingPublicEndpoint, "new.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err = repo.GetSetting(ctx, SettingPublicEndpoint); err != nil {
+		t.Fatal(err)
+	} else if got != "new.example.com" {
+		t.Errorf("setting after replace = %q, want %q", got, "new.example.com")
+	}
+
+	// Keys are independent.
+	if err := repo.SetSetting(ctx, "other", "value"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err = repo.GetSetting(ctx, SettingPublicEndpoint); err != nil {
+		t.Fatal(err)
+	} else if got != "new.example.com" {
+		t.Errorf("setting changed by an unrelated key: %q", got)
+	}
+}

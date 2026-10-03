@@ -72,19 +72,30 @@ type Proxier interface {
 
 // DefaultProxier dispatches to the termproxy WebSocket transport or the SSH
 // transport depending on the instance's configured connection type.
-type DefaultProxier struct{}
+type DefaultProxier struct {
+	// PublicEndpoint is the hostname clients use to reach this proxpass. It
+	// is shown in the status bar so a session says where it is as well as
+	// what it is connected to, and is empty when the deployment has not been
+	// told what its endpoint is.
+	//
+	// This is a field rather than a Connect parameter because it describes
+	// the deployment, not the connection: it is the same for every guest and
+	// never varies within a process.
+	PublicEndpoint string
+}
 
 // Connect implements Proxier.
-func (DefaultProxier) Connect(
+func (p DefaultProxier) Connect(
 	term *Terminal,
 	guest *models.Guest,
 	inst *models.ProxmoxInstance,
 	logger *log.Logger,
 ) error {
+	label := barLabel(guest, inst, p.PublicEndpoint)
 	if inst.ConnectionType == models.ConnectionTypeTermProxy {
-		return connectTermProxy(term, guest, inst, logger)
+		return connectTermProxy(term, guest, inst, logger, label)
 	}
-	return connectSSH(term, guest, inst, logger)
+	return connectSSH(term, guest, inst, logger, label)
 }
 
 // defaults applied when sshd did not report a usable terminal.

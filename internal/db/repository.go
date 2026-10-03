@@ -51,6 +51,10 @@ type Repository interface {
 	SetDefaultPolicy(ctx context.Context, policy *models.DefaultAccessPolicy) error
 	GetDefaultPolicy(ctx context.Context) (*models.DefaultAccessPolicy, error)
 
+	// Settings
+	SetSetting(ctx context.Context, key, value string) error
+	GetSetting(ctx context.Context, key string) (string, error)
+
 	// Admin Keys
 	AddAdminKey(ctx context.Context, pubKey string) error
 	ListAdminKeys(ctx context.Context) ([]string, error)
@@ -59,3 +63,15 @@ type Repository interface {
 	// Access check (used by the proxy)
 	HasAccess(ctx context.Context, clientID, guestID int64) (bool, error)
 }
+
+// Setting keys.
+//
+// These name configuration that `proxpass serve' persists so that a session
+// can read it: sshd gives the session a fresh environment, so anything passed
+// as PROXPASS_* reaches serve and nowhere else.
+const (
+	// SettingPublicEndpoint is the hostname clients use to reach this
+	// proxpass, shown in the guest console's status bar. Empty when the
+	// deployment has not been told what it is.
+	SettingPublicEndpoint = "public_endpoint"
+)

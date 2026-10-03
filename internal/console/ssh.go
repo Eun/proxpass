@@ -24,6 +24,7 @@ func connectSSH(
 	guest *models.Guest,
 	inst *models.ProxmoxInstance,
 	logger *log.Logger,
+	label string,
 ) error {
 	term.normalize()
 
@@ -57,9 +58,7 @@ func connectSSH(
 	// shorter, so the guest never writes into it. guestOut is where the
 	// guest's output goes: the bar's observer when there is a bar, the
 	// terminal directly when there is not.
-	bar, guestOut, guestRows := startBar(term,
-		fmt.Sprintf("%s (%s%d) @ %s", guest.Name, guest.Type, guest.ProxmoxID, inst.Name),
-		EscapeHint)
+	bar, guestOut, guestRows := startBar(term, label, EscapeHint)
 	if bar != nil {
 		defer bar.Stop()
 	}
