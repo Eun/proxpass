@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -518,6 +519,32 @@ func (r *sqliteRepo) GetDefaultPolicy(ctx context.Context) (*models.DefaultAcces
 	_ = json.Unmarshal([]byte(clientIDsStr), &policy.AuthorizedClientIDs)
 	_ = json.Unmarshal([]byte(groupIDsStr), &policy.AuthorizedGroupIDs)
 	return policy, nil
+}
+
+// --- Settings ---
+
+// SetSetting stores a configuration value, replacing any previous one.
+func (r *sqliteRepo) SetSetting(ctx context.Context, key, value string) error {
+	_, err := r.db.ExecContext(ctx,
+		"INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", key, value)
+	return err
+}
+
+// GetSetting returns a configuration value, or "" when it has never been set.
+//
+// An unset value is not an error: every caller wants the same fallback, and a
+// fresh database legitimately has none of these.
+func (r *sqliteRepo) GetSetting(ctx context.Context, key string) (string, error) {
+	var value string
+	err := r.db.QueryRowContext(ctx,
+		"SELECT value FROM settings WHERE key = ?", key).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return value, nil
 }
 
 // --- Admin Keys ---

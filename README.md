@@ -105,7 +105,15 @@ While you are attached to a guest console, the bottom row shows which guest
 you are on and how to leave it:
 
 ```
- webserver (ct100) @ pve1                      Ctrl+A X: disconnect
+ webserver@pve1 (ct100)                        Ctrl+A X: disconnect
+```
+
+The name reads as the login form that reaches the same guest: the guest, then
+the instance it runs on. Set [`--public-endpoint`](#public-endpoint) and the
+hostname your users connect to is appended, so a session names itself in full:
+
+```
+ webserver@pve1@proxpass.example.com (ct100)   Ctrl+A X: disconnect
 ```
 
 proxpass reserves that row with a **scroll region** (`DECSTBM`) and asks the
@@ -287,11 +295,38 @@ All flags can also be set via environment variables.
 | `--data` | `PROXPASS_DATA` | `/var/lib/proxpass/proxpass.db` | Path to SQLite database |
 | `--log-level` | `PROXPASS_LOG_LEVEL` | `info` | Log level (debug, info, warn, error) |
 | `--admin-key` | `PROXPASS_ADMIN_KEY` | | Admin public key (see below) |
+| `--public-endpoint` | `PROXPASS_PUBLIC_ENDPOINT` | | Hostname clients connect to, shown in the status bar (see below) |
 | `--listen` | `PROXPASS_LISTEN` | `127.0.0.1:8080` | Address of the NSS directory API (`serve` only) |
 | `--discovery-interval` | `PROXPASS_DISCOVERY_INTERVAL` | `5m` | Guest discovery poll interval (`serve` only) |
 
 The SSH port itself is sshd's, so it is published with `-p` on the container
 rather than configured in proxpass.
+
+### Public endpoint
+
+`--public-endpoint` is the hostname your users put in `ssh`. proxpass cannot
+work this out for itself: the name clients use is a DNS and port-forwarding
+fact that never reaches the server, which only ever sees its own container.
+
+When it is set, the status bar names the guest the way you would reach it:
+
+```
+container1@rome@proxpass.example.com (ct100)
+```
+
+which is the `ssh ct100@rome@host` form read left to right — the guest, the
+instance it runs on, and the endpoint you came in through. Without it the
+endpoint is simply left out:
+
+```
+container1@rome (ct100)
+```
+
+Like the admin key, the value is persisted to the database when `serve`
+starts, because sshd gives each session a fresh environment and the variable
+would otherwise be invisible to it. Unlike the admin key it is *replaced* on
+every start, so changing it in your compose file and restarting is enough —
+and clearing it removes it, rather than leaving a stale hostname on screen.
 
 ### Admin key
 

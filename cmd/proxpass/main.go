@@ -55,6 +55,12 @@ func run() int {
 				Usage:   "admin SSH public key (authorized_keys format)",
 				Sources: ucli.EnvVars("PROXPASS_ADMIN_KEY"),
 			},
+			&ucli.StringFlag{
+				Name: "public-endpoint",
+				Usage: "hostname clients use to reach this proxpass " +
+					"(shown in the status bar)",
+				Sources: ucli.EnvVars("PROXPASS_PUBLIC_ENDPOINT"),
+			},
 		},
 		Commands: []*ucli.Command{
 			serveCommand(),
@@ -132,6 +138,12 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 		return err
 	}
 
+	// Same reason as the admin key: a session cannot see this in its
+	// environment, so serve writes it down where the session can read it.
+	if err := storePublicEndpoint(ctx, repo, cmd.String("public-endpoint"), logger); err != nil {
+		return err
+	}
+
 	// Guest discovery runs in the background; the directory API blocks.
 	discovery := proxmox.NewDiscovery(
 		repo, interval, logger, proxmox.DefaultDiscovererFactory)
@@ -174,6 +186,40 @@ func storeAdminKey(ctx context.Context, repo db.Repository, rawKey string, logge
 		return fmt.Errorf("storing admin key: %w", err)
 	}
 	logger.Println("admin key from configuration stored")
+	return nil
+}
+
+// storePublicEndpoint records the hostname clients use to reach this proxpass,
+// so that a session can show it in the status bar.
+//
+// A session cannot read this from its environment: sshd builds a fresh one and
+// does not inherit the container's, so the value reaches `proxpass serve' and
+// nothing else. It is written to the database for the same reason the admin
+// key is, and read back from there.
+//
+// Unlike the admin key it is updated rather than added, because it describes
+// the deployment rather than granting anything: changing the compose file and
+// restarting should change what sessions display. Clearing it removes the
+// stored value, so the status bar stops showing an endpoint that is no longer
+// right instead of keeping a stale one forever.
+func storePublicEndpoint(ctx context.Context, repo db.Repository, endpoint string, logger *log.Logger) error {
+	endpoint = strings.TrimSpace(endpoint)
+
+	current, err := repo.GetSetting(ctx, db.SettingPublicEndpoint)
+	if err != nil {
+		return fmt.Errorf("reading public endpoint: %w", err)
+	}
+	if current == endpoint {
+		return nil
+	}
+	if err := repo.SetSetting(ctx, db.SettingPublicEndpoint, endpoint); err != nil {
+		return fmt.Errorf("storing public endpoint: %w", err)
+	}
+	if endpoint == "" {
+		logger.Println("public endpoint cleared")
+		return nil
+	}
+	logger.Printf("public endpoint set to %q", endpoint)
 	return nil
 }
 
@@ -256,10 +302,21 @@ func runSession(ctx context.Context, cmd *ucli.Command) error {
 	// session is drawing.
 	logger := log.New(term.UIErr(), "proxpass: ", log.LstdFlags)
 
+	// The endpoint comes from the database, not the flag: sshd gives this
+	// process a fresh environment, so PROXPASS_PUBLIC_ENDPOINT is never set
+	// here. `proxpass serve' recorded it for exactly this reason. A failure
+	// to read it must not cost the user their session -- the endpoint is
+	// cosmetic -- so it degrades to the shorter label.
+	publicEndpoint, err := repo.GetSetting(ctx, db.SettingPublicEndpoint)
+	if err != nil {
+		logger.Printf("reading the public endpoint: %v", err)
+		publicEndpoint = ""
+	}
+
 	code := session.Run(ctx, &session.Deps{
 		Repo:        repo,
 		Discoverer:  proxmox.DefaultDiscovererFactory,
-		Proxier:     console.DefaultProxier{},
+		Proxier:     console.DefaultProxier{PublicEndpoint: publicEndpoint},
 		Logger:      logger,
 		Terminal:    term,
 		User:        identity.User,
