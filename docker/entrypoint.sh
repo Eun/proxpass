@@ -78,8 +78,40 @@ export PROXPASS_GID PROXPASS_ADMIN_GID
 # "other" x+r provides without letting them create or unlink anything.
 chown -R "root:${PROXPASS_ADMIN_GID}" "${PROXPASS_DATA_DIR}"
 chmod 2775 "${PROXPASS_DATA_DIR}"
+# PROXPASS_DATA is either a SQLite path or a postgres:// URL. Only the former
+# gets a default, because there is no sensible default for a server nobody has
+# told us about.
 PROXPASS_DATA="${PROXPASS_DATA:-${PROXPASS_DATA_DIR}/proxpass.db}"
 export PROXPASS_DATA
+
+# PROXPASS_DSN_FILE holds the DSN for the sshd helpers.
+#
+# sshd runs AuthorizedKeysCommand and ForceCommand with a SCRUBBED
+# environment, so neither sees PROXPASS_DATA. That went unnoticed while the
+# default was the right answer -- the helper fell back to the same SQLite path
+# the server used. Pointing proxpass at Postgres makes the fallback wrong
+# rather than redundant: the helper would quietly create an EMPTY SQLite
+# database, find no keys in it, and every login would be refused.
+#
+# The file is root-owned and world-readable: it is read by
+# AuthorizedKeysCommand (root) and by each session (uid 19999). It may hold a
+# password, so it is 0644 rather than group-writable, and it is NOT in the
+# data directory clients can list.
+PROXPASS_DSN_FILE="/run/proxpass/dsn"
+mkdir -p "$(dirname "${PROXPASS_DSN_FILE}")"
+printf '%s' "${PROXPASS_DATA}" > "${PROXPASS_DSN_FILE}"
+chown root:root "${PROXPASS_DSN_FILE}"
+chmod 0644 "${PROXPASS_DSN_FILE}"
+
+# proxpass_uses_postgres reports whether the database lives on a server rather
+# than in a file. The file-permission work below is meaningless then: there is
+# no file to chmod, and write access is decided by the DSN's credentials.
+proxpass_uses_postgres() {
+	case "${PROXPASS_DATA}" in
+	postgres://* | postgresql://*) return 0 ;;
+	*) return 1 ;;
+	esac
+}
 # Host keys stay root-only: sshd reads them before dropping privileges.
 chown -R root:root "${PROXPASS_HOST_KEY_DIR}"
 chmod 0700 "${PROXPASS_HOST_KEY_DIR}"
@@ -128,6 +160,9 @@ if [ "$#" -eq 0 ]; then
 	# client logins, via their shared primary group) only reads. Clients must
 	# not be able to modify another client's access rules.
 	fix_db_mode() {
+		# Nothing to do when the database is a server: these permissions
+		# exist to control who may write the SQLite FILE.
+		proxpass_uses_postgres && return 0
 		[ -f "${PROXPASS_DATA}" ] || return 0
 		chown "root:${PROXPASS_ADMIN_GID}" "${PROXPASS_DATA}" 2>/dev/null || true
 		chmod 0664 "${PROXPASS_DATA}" 2>/dev/null || true

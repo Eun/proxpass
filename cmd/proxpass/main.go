@@ -39,8 +39,9 @@ func run() int {
 		Usage: "Proxmox SSH proxy",
 		Flags: []ucli.Flag{
 			&ucli.StringFlag{
-				Name:    "data",
-				Usage:   "path to SQLite database",
+				Name: "data",
+				Usage: "SQLite file path, or a postgres:// URL " +
+					"(e.g. postgres://user:pass@host/proxpass?sslmode=disable)",
 				Value:   "/var/lib/proxpass/proxpass.db",
 				Sources: ucli.EnvVars("PROXPASS_DATA"),
 			},
@@ -122,7 +123,7 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 		ids.AdminUID, ids.AdminGroupGID, ids.SharedGroupGID,
 		ids.UIDBase, ids.GIDBase, ids.MaxID)
 
-	repo, err := db.NewSQLiteRepository(dataPath)
+	repo, err := db.NewRepository(dataPath)
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
@@ -240,7 +241,7 @@ func runAuthorizedKeys(ctx context.Context, cmd *ucli.Command) error {
 		return nil
 	}
 
-	repo, err := db.NewSQLiteRepository(cmd.String("data"))
+	repo, err := db.NewRepository(cmd.String("data"))
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
@@ -276,7 +277,7 @@ func runSession(ctx context.Context, cmd *ucli.Command) error {
 		return fmt.Errorf("no user; sshd should set $USER")
 	}
 
-	repo, err := db.NewSQLiteRepository(cmd.String("data"))
+	repo, err := db.NewRepository(cmd.String("data"))
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}

@@ -5,4 +5,15 @@
 # request up from $SSH_ORIGINAL_COMMAND (which sshd sets for us): empty means
 # "show the interactive guest list", anything else names a target.
 set -eu
+
+# sshd scrubs the environment for this helper, so PROXPASS_DATA is not set
+# here. The entrypoint left the DSN where it can be read; without it the
+# binary would fall back to its SQLite default and silently use the wrong
+# database. See the note in docker/entrypoint.sh.
+DSN_FILE="/run/proxpass/dsn"
+if [ -r "${DSN_FILE}" ]; then
+	PROXPASS_DATA="$(cat "${DSN_FILE}")"
+	export PROXPASS_DATA
+fi
+
 exec /app session

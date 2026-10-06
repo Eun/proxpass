@@ -10,17 +10,40 @@ import (
 	"strings"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib" // register the "pgx" driver
 	"github.com/pressly/goose/v3"
-	_ "modernc.org/sqlite" // register sqlite3 driver
+	_ "modernc.org/sqlite" // register the "sqlite" driver
 
 	"proxpass/internal/models"
 )
 
-//go:embed migrations/*.sql
+//go:embed migrations/sqlite/*.sql migrations/postgres/*.sql
 var migrationsFS embed.FS
 
-type sqliteRepo struct {
+// sqlRepo implements Repository against any database/sql backend.
+//
+// The queries are written once with "?" placeholders and rebound per dialect
+// on the way out, so there is a single set of statements rather than one per
+// backend that could drift apart.
+type sqlRepo struct {
 	db *sql.DB
+	d  *dialect
+}
+
+// exec, query and queryRow rebind the statement before handing it to the
+// driver. Every call site uses these rather than r.db directly; a stray
+// r.db.ExecContext would work on SQLite and fail on Postgres, which is
+// exactly the kind of bug that only shows up in the backend you test least.
+func (r *sqlRepo) exec(ctx context.Context, q string, args ...any) (sql.Result, error) {
+	return r.db.ExecContext(ctx, r.d.rebind(q), args...)
+}
+
+func (r *sqlRepo) query(ctx context.Context, q string) (*sql.Rows, error) {
+	return r.db.QueryContext(ctx, r.d.rebind(q))
+}
+
+func (r *sqlRepo) queryRow(ctx context.Context, q string, args ...any) *sql.Row {
+	return r.db.QueryRowContext(ctx, r.d.rebind(q), args...)
 }
 
 // busyTimeout is how long a writer waits for a competing lock before giving
@@ -31,59 +54,95 @@ type sqliteRepo struct {
 // discovery pass.
 const busyTimeout = 5 * time.Second
 
+// NewSQLiteRepository opens the SQLite database at dbPath.
+//
+// Kept as the name callers and tests already use; it is now a thin wrapper
+// over NewRepository.
 func NewSQLiteRepository(dbPath string) (Repository, error) {
 	// WAL lets readers proceed while a writer holds the lock, which is the
 	// normal case here: discovery writes while sessions read.
 	dsn := fmt.Sprintf("%s?_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)",
 		dbPath, busyTimeout.Milliseconds())
-	db, err := sql.Open("sqlite", dsn)
+	return open(BackendSQLite, dsn)
+}
+
+// NewRepository opens whichever backend the DSN names.
+//
+// A Postgres URL ("postgres://..." or "postgresql://...") selects Postgres;
+// anything else is a SQLite path. Inferring from the DSN rather than adding a
+// separate backend flag means there is one setting to get right instead of
+// two that can disagree -- a Postgres URL with the backend left at "sqlite"
+// would otherwise create a confusing file named after the URL.
+func NewRepository(dsn string) (Repository, error) {
+	if isPostgresDSN(dsn) {
+		return open(BackendPostgres, dsn)
+	}
+	return NewSQLiteRepository(dsn)
+}
+
+// isPostgresDSN reports whether dsn names a Postgres server.
+func isPostgresDSN(dsn string) bool {
+	return strings.HasPrefix(dsn, "postgres://") ||
+		strings.HasPrefix(dsn, "postgresql://")
+}
+
+// open connects, migrates and returns the repository.
+func open(backend Backend, dsn string) (Repository, error) {
+	d, err := dialectFor(backend)
+	if err != nil {
+		return nil, err
+	}
+	database, err := sql.Open(d.driver, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
+	if err := migrate(database, &d); err != nil {
+		_ = database.Close()
+		return nil, err
+	}
+	return &sqlRepo{db: database, d: &d}, nil
+}
 
-	// Configure goose: SQLite dialect, embedded migration files, no logging.
+// migrate brings the schema up to date.
+//
+// goose keeps its dialect and base filesystem in package-level state, so the
+// two settings are applied together here rather than once at init: a process
+// that opened both backends would otherwise run one's migrations against the
+// other.
+func migrate(database *sql.DB, d *dialect) error {
 	goose.SetBaseFS(migrationsFS)
-	if err := goose.SetDialect("sqlite3"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("goose set dialect: %w", err)
+	if err := goose.SetDialect(d.goose); err != nil {
+		return fmt.Errorf("goose set dialect: %w", err)
 	}
 	goose.SetLogger(goose.NopLogger())
-
-	if err := goose.Up(db, "migrations"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("running migrations: %w", err)
+	if err := goose.Up(database, d.migrations); err != nil {
+		return fmt.Errorf("running migrations: %w", err)
 	}
-
-	return &sqliteRepo{db: db}, nil
+	return nil
 }
 
-// isUniqueConstraintError returns true when SQLite rejects an INSERT or UPDATE
-// because it would violate a UNIQUE constraint.
-func isUniqueConstraintError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
-}
-
-func (r *sqliteRepo) Close() error {
+func (r *sqlRepo) Close() error {
 	return r.db.Close()
 }
 
 // --- Proxmox Instances ---
 
-func (r *sqliteRepo) AddProxmoxInstance(ctx context.Context, inst *models.ProxmoxInstance) error {
+func (r *sqlRepo) AddProxmoxInstance(ctx context.Context, inst *models.ProxmoxInstance) error {
 	// Normalise the URL before storing so the UNIQUE constraint compares
 	// canonical forms (no trailing slashes).
 	inst.APIURL = strings.TrimRight(inst.APIURL, "/")
-	res, err := r.db.ExecContext(ctx,
+	err := r.queryRow(ctx,
 		`INSERT INTO proxmox_instances
 		(name, api_url, api_token_id, api_token_secret, connection_type, node,
 		 ssh_host, ssh_port, ssh_user, ssh_key_path, ssh_key)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		RETURNING id`,
 		inst.Name, inst.APIURL, inst.APITokenID, inst.APITokenSecret,
 		string(inst.ConnectionType), inst.Node,
 		inst.SSHHost, inst.SSHPort, inst.SSHUser, inst.SSHKeyPath, inst.SSHKey,
-	)
+	).Scan(&inst.ID)
 	if err != nil {
-		if isUniqueConstraintError(err) {
+		if r.d.isUniqueViolation(err) {
 			if strings.Contains(err.Error(), "api_url") {
 				return fmt.Errorf("an instance with api-url %q already exists", inst.APIURL)
 			}
@@ -91,12 +150,11 @@ func (r *sqliteRepo) AddProxmoxInstance(ctx context.Context, inst *models.Proxmo
 		}
 		return err
 	}
-	inst.ID, err = res.LastInsertId()
-	return err
+	return nil
 }
 
-func (r *sqliteRepo) ListProxmoxInstances(ctx context.Context) ([]*models.ProxmoxInstance, error) {
-	rows, err := r.db.QueryContext(ctx,
+func (r *sqlRepo) ListProxmoxInstances(ctx context.Context) ([]*models.ProxmoxInstance, error) {
+	rows, err := r.query(ctx,
 		// Ordered by id so the listing is stable. Without ORDER BY the order
 		// is whatever SQLite happens to return, which is usually insertion
 		// order but is not promised and changes after a row is deleted and
@@ -128,9 +186,9 @@ func (r *sqliteRepo) ListProxmoxInstances(ctx context.Context) ([]*models.Proxmo
 	return list, rows.Err()
 }
 
-func (r *sqliteRepo) UpdateProxmoxInstance(ctx context.Context, inst *models.ProxmoxInstance) error {
+func (r *sqlRepo) UpdateProxmoxInstance(ctx context.Context, inst *models.ProxmoxInstance) error {
 	inst.APIURL = strings.TrimRight(inst.APIURL, "/")
-	_, err := r.db.ExecContext(ctx,
+	_, err := r.exec(ctx,
 		`UPDATE proxmox_instances SET
 		name = ?, api_url = ?, api_token_id = ?,
 		api_token_secret = ?, connection_type = ?, node = ?,
@@ -142,7 +200,7 @@ func (r *sqliteRepo) UpdateProxmoxInstance(ctx context.Context, inst *models.Pro
 		inst.SSHHost, inst.SSHPort,
 		inst.SSHUser, inst.SSHKeyPath, inst.SSHKey, inst.ID,
 	)
-	if err != nil && isUniqueConstraintError(err) {
+	if err != nil && r.d.isUniqueViolation(err) {
 		if strings.Contains(err.Error(), "api_url") {
 			return fmt.Errorf("an instance with api-url %q already exists", inst.APIURL)
 		}
@@ -151,7 +209,7 @@ func (r *sqliteRepo) UpdateProxmoxInstance(ctx context.Context, inst *models.Pro
 	return err
 }
 
-func (r *sqliteRepo) RemoveProxmoxInstance(ctx context.Context, id int64) error {
+func (r *sqlRepo) RemoveProxmoxInstance(ctx context.Context, id int64) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -160,7 +218,7 @@ func (r *sqliteRepo) RemoveProxmoxInstance(ctx context.Context, id int64) error 
 
 	// Collect guest IDs belonging to this instance so we can remove their
 	// access rules before deleting the guests themselves.
-	rows, err := tx.QueryContext(ctx, "SELECT id FROM guests WHERE instance_id = ?", id)
+	rows, err := tx.QueryContext(ctx, r.d.rebind("SELECT id FROM guests WHERE instance_id = ?"), id)
 	if err != nil {
 		return err
 	}
@@ -182,18 +240,18 @@ func (r *sqliteRepo) RemoveProxmoxInstance(ctx context.Context, id int64) error 
 
 	// Delete access rules that reference any of these guests.
 	for _, gid := range guestIDs {
-		if _, err := tx.ExecContext(ctx, "DELETE FROM access_rules WHERE guest_id = ?", gid); err != nil {
+		if _, err := tx.ExecContext(ctx, r.d.rebind("DELETE FROM access_rules WHERE guest_id = ?"), gid); err != nil {
 			return err
 		}
 	}
 
 	// Delete the guests themselves.
-	if _, err := tx.ExecContext(ctx, "DELETE FROM guests WHERE instance_id = ?", id); err != nil {
+	if _, err := tx.ExecContext(ctx, r.d.rebind("DELETE FROM guests WHERE instance_id = ?"), id); err != nil {
 		return err
 	}
 
 	// Finally remove the instance.
-	if _, err := tx.ExecContext(ctx, "DELETE FROM proxmox_instances WHERE id = ?", id); err != nil {
+	if _, err := tx.ExecContext(ctx, r.d.rebind("DELETE FROM proxmox_instances WHERE id = ?"), id); err != nil {
 		return err
 	}
 
@@ -202,30 +260,27 @@ func (r *sqliteRepo) RemoveProxmoxInstance(ctx context.Context, id int64) error 
 
 // --- Guests ---
 
-func (r *sqliteRepo) UpsertGuest(ctx context.Context, guest *models.Guest) error {
-	err := r.db.QueryRowContext(ctx,
+func (r *sqlRepo) UpsertGuest(ctx context.Context, guest *models.Guest) error {
+	err := r.queryRow(ctx,
 		"SELECT id FROM guests WHERE proxmox_id = ? AND instance_id = ?",
 		guest.ProxmoxID, guest.InstanceID).Scan(&guest.ID)
 	if err == sql.ErrNoRows {
-		res, err := r.db.ExecContext(ctx,
-			"INSERT INTO guests (type, name, status, proxmox_id, instance_id) VALUES (?, ?, ?, ?, ?)",
-			guest.Type, guest.Name, guest.Status, guest.ProxmoxID, guest.InstanceID)
-		if err != nil {
-			return err
-		}
-		guest.ID, err = res.LastInsertId()
-		return err
+		return r.queryRow(ctx,
+			`INSERT INTO guests (type, name, status, proxmox_id, instance_id)
+			 VALUES (?, ?, ?, ?, ?) RETURNING id`,
+			guest.Type, guest.Name, guest.Status, guest.ProxmoxID, guest.InstanceID,
+		).Scan(&guest.ID)
 	} else if err != nil {
 		return err
 	}
-	_, err = r.db.ExecContext(ctx,
+	_, err = r.exec(ctx,
 		"UPDATE guests SET type=?, name=?, status=? WHERE id=?",
 		guest.Type, guest.Name, guest.Status, guest.ID)
 	return err
 }
 
-func (r *sqliteRepo) ListGuests(ctx context.Context) ([]*models.Guest, error) {
-	rows, err := r.db.QueryContext(ctx, "SELECT id, type, name, status, proxmox_id, instance_id FROM guests")
+func (r *sqlRepo) ListGuests(ctx context.Context) ([]*models.Guest, error) {
+	rows, err := r.query(ctx, "SELECT id, type, name, status, proxmox_id, instance_id FROM guests")
 	if err != nil {
 		return nil, err
 	}
@@ -241,9 +296,9 @@ func (r *sqliteRepo) ListGuests(ctx context.Context) ([]*models.Guest, error) {
 	return list, rows.Err()
 }
 
-func (r *sqliteRepo) GetGuestByID(ctx context.Context, id int64) (*models.Guest, error) {
+func (r *sqlRepo) GetGuestByID(ctx context.Context, id int64) (*models.Guest, error) {
 	g := &models.Guest{}
-	err := r.db.QueryRowContext(ctx,
+	err := r.queryRow(ctx,
 		"SELECT id, type, name, status, proxmox_id, instance_id FROM guests WHERE id = ?", id).
 		Scan(&g.ID, &g.Type, &g.Name, &g.Status, &g.ProxmoxID, &g.InstanceID)
 	if err != nil {
@@ -263,7 +318,7 @@ func (r *sqliteRepo) GetGuestByID(ctx context.Context, id int64) (*models.Guest,
 // Deleting the access rules alongside the guests matters because guests.id is
 // AUTOINCREMENT but access_rules.guest_id has no foreign key: a stale rule
 // would keep granting access to whatever guest later occupied that row id.
-func (r *sqliteRepo) RemoveGuestsNotIn(ctx context.Context, instanceID int64, keep []int) (int, error) {
+func (r *sqlRepo) RemoveGuestsNotIn(ctx context.Context, instanceID int64, keep []int) (int, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin: %w", err)
@@ -272,8 +327,7 @@ func (r *sqliteRepo) RemoveGuestsNotIn(ctx context.Context, instanceID int64, ke
 
 	// Collect the row ids to drop. Doing this in Go rather than with a
 	// NOT IN (...) clause keeps the statement free of dynamic SQL.
-	rows, err := tx.QueryContext(ctx,
-		"SELECT id, proxmox_id FROM guests WHERE instance_id = ?", instanceID)
+	rows, err := tx.QueryContext(ctx, r.d.rebind("SELECT id, proxmox_id FROM guests WHERE instance_id = ?"), instanceID)
 	if err != nil {
 		return 0, fmt.Errorf("select guests: %w", err)
 	}
@@ -305,12 +359,10 @@ func (r *sqliteRepo) RemoveGuestsNotIn(ctx context.Context, instanceID int64, ke
 	}
 
 	for _, id := range stale {
-		if _, err := tx.ExecContext(ctx,
-			"DELETE FROM access_rules WHERE guest_id = ?", id); err != nil {
+		if _, err := tx.ExecContext(ctx, r.d.rebind("DELETE FROM access_rules WHERE guest_id = ?"), id); err != nil {
 			return 0, fmt.Errorf("delete access rules for guest %d: %w", id, err)
 		}
-		if _, err := tx.ExecContext(ctx,
-			"DELETE FROM guests WHERE id = ?", id); err != nil {
+		if _, err := tx.ExecContext(ctx, r.d.rebind("DELETE FROM guests WHERE id = ?"), id); err != nil {
 			return 0, fmt.Errorf("delete guest %d: %w", id, err)
 		}
 	}
@@ -322,21 +374,18 @@ func (r *sqliteRepo) RemoveGuestsNotIn(ctx context.Context, instanceID int64, ke
 
 // --- Clients ---
 
-func (r *sqliteRepo) AddClient(ctx context.Context, client *models.Client) error {
+func (r *sqlRepo) AddClient(ctx context.Context, client *models.Client) error {
 	keysJSON, _ := json.Marshal(client.PublicKeys)
 	groupsJSON, _ := json.Marshal(client.GroupIDs)
-	res, err := r.db.ExecContext(ctx,
-		"INSERT INTO clients (name, public_keys, group_ids) VALUES (?, ?, ?)",
-		client.Name, string(keysJSON), string(groupsJSON))
-	if err != nil {
-		return err
-	}
-	client.ID, err = res.LastInsertId()
-	return err
+	return r.queryRow(ctx,
+		`INSERT INTO clients (name, public_keys, group_ids)
+		 VALUES (?, ?, ?) RETURNING id`,
+		client.Name, string(keysJSON), string(groupsJSON),
+	).Scan(&client.ID)
 }
 
-func (r *sqliteRepo) ListClients(ctx context.Context) ([]*models.Client, error) {
-	rows, err := r.db.QueryContext(ctx, "SELECT id, name, public_keys, group_ids FROM clients")
+func (r *sqlRepo) ListClients(ctx context.Context) ([]*models.Client, error) {
+	rows, err := r.query(ctx, "SELECT id, name, public_keys, group_ids FROM clients")
 	if err != nil {
 		return nil, err
 	}
@@ -355,24 +404,24 @@ func (r *sqliteRepo) ListClients(ctx context.Context) ([]*models.Client, error) 
 	return list, rows.Err()
 }
 
-func (r *sqliteRepo) UpdateClient(ctx context.Context, client *models.Client) error {
+func (r *sqlRepo) UpdateClient(ctx context.Context, client *models.Client) error {
 	keysJSON, _ := json.Marshal(client.PublicKeys)
 	groupsJSON, _ := json.Marshal(client.GroupIDs)
-	_, err := r.db.ExecContext(ctx,
+	_, err := r.exec(ctx,
 		"UPDATE clients SET name = ?, public_keys = ?, group_ids = ? WHERE id = ?",
 		client.Name, string(keysJSON), string(groupsJSON), client.ID)
 	return err
 }
 
-func (r *sqliteRepo) RemoveClient(ctx context.Context, id int64) error {
-	_, err := r.db.ExecContext(ctx, "DELETE FROM clients WHERE id = ?", id)
+func (r *sqlRepo) RemoveClient(ctx context.Context, id int64) error {
+	_, err := r.exec(ctx, "DELETE FROM clients WHERE id = ?", id)
 	return err
 }
 
-func (r *sqliteRepo) GetClientByName(ctx context.Context, name string) (*models.Client, error) {
+func (r *sqlRepo) GetClientByName(ctx context.Context, name string) (*models.Client, error) {
 	c := &models.Client{}
 	var keysStr, groupsStr string
-	err := r.db.QueryRowContext(ctx,
+	err := r.queryRow(ctx,
 		"SELECT id, name, public_keys, group_ids FROM clients WHERE name = ?", name).
 		Scan(&c.ID, &c.Name, &keysStr, &groupsStr)
 	if err != nil {
@@ -385,20 +434,17 @@ func (r *sqliteRepo) GetClientByName(ctx context.Context, name string) (*models.
 
 // --- Groups ---
 
-func (r *sqliteRepo) AddGroup(ctx context.Context, group *models.Group) error {
+func (r *sqlRepo) AddGroup(ctx context.Context, group *models.Group) error {
 	clientIDsJSON, _ := json.Marshal(group.ClientIDs)
-	res, err := r.db.ExecContext(ctx,
-		"INSERT INTO groups (name, client_ids) VALUES (?, ?)",
-		group.Name, string(clientIDsJSON))
-	if err != nil {
-		return err
-	}
-	group.ID, err = res.LastInsertId()
-	return err
+	return r.queryRow(ctx,
+		`INSERT INTO groups (name, client_ids)
+		 VALUES (?, ?) RETURNING id`,
+		group.Name, string(clientIDsJSON),
+	).Scan(&group.ID)
 }
 
-func (r *sqliteRepo) ListGroups(ctx context.Context) ([]*models.Group, error) {
-	rows, err := r.db.QueryContext(ctx, "SELECT id, name, client_ids FROM groups")
+func (r *sqlRepo) ListGroups(ctx context.Context) ([]*models.Group, error) {
+	rows, err := r.query(ctx, "SELECT id, name, client_ids FROM groups")
 	if err != nil {
 		return nil, err
 	}
@@ -416,23 +462,23 @@ func (r *sqliteRepo) ListGroups(ctx context.Context) ([]*models.Group, error) {
 	return list, rows.Err()
 }
 
-func (r *sqliteRepo) UpdateGroup(ctx context.Context, group *models.Group) error {
+func (r *sqlRepo) UpdateGroup(ctx context.Context, group *models.Group) error {
 	clientIDsJSON, _ := json.Marshal(group.ClientIDs)
-	_, err := r.db.ExecContext(ctx,
+	_, err := r.exec(ctx,
 		"UPDATE groups SET name = ?, client_ids = ? WHERE id = ?",
 		group.Name, string(clientIDsJSON), group.ID)
 	return err
 }
 
-func (r *sqliteRepo) RemoveGroup(ctx context.Context, id int64) error {
-	_, err := r.db.ExecContext(ctx, "DELETE FROM groups WHERE id = ?", id)
+func (r *sqlRepo) RemoveGroup(ctx context.Context, id int64) error {
+	_, err := r.exec(ctx, "DELETE FROM groups WHERE id = ?", id)
 	return err
 }
 
 // --- Access Rules ---
 
-func (r *sqliteRepo) ListAccessRules(ctx context.Context) ([]*models.AccessRuleRow, error) {
-	rows, err := r.db.QueryContext(ctx, "SELECT id, type, subject_id, guest_id FROM access_rules ORDER BY id")
+func (r *sqlRepo) ListAccessRules(ctx context.Context) ([]*models.AccessRuleRow, error) {
+	rows, err := r.query(ctx, "SELECT id, type, subject_id, guest_id FROM access_rules ORDER BY id")
 	if err != nil {
 		return nil, err
 	}
@@ -451,14 +497,15 @@ func (r *sqliteRepo) ListAccessRules(ctx context.Context) ([]*models.AccessRuleR
 }
 
 // grantAccess is the shared helper for GrantClientAccess and GrantGroupAccess.
-func (r *sqliteRepo) grantAccess(ctx context.Context, ruleType models.RuleType, subjectID int64, guestIDs []int64) error {
+func (r *sqlRepo) grantAccess(ctx context.Context, ruleType models.RuleType, subjectID int64, guestIDs []int64) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	stmt, err := tx.PrepareContext(ctx,
-		"INSERT OR IGNORE INTO access_rules (type, subject_id, guest_id) VALUES (?, ?, ?)")
+	stmt, err := tx.PrepareContext(ctx, r.d.rebind(
+		`INSERT INTO access_rules (type, subject_id, guest_id) VALUES (?, ?, ?)
+		 ON CONFLICT (type, subject_id, guest_id) DO NOTHING`))
 	if err != nil {
 		return err
 	}
@@ -471,23 +518,23 @@ func (r *sqliteRepo) grantAccess(ctx context.Context, ruleType models.RuleType, 
 	return tx.Commit()
 }
 
-func (r *sqliteRepo) GrantClientAccess(ctx context.Context, clientID int64, guestIDs []int64) error {
+func (r *sqlRepo) GrantClientAccess(ctx context.Context, clientID int64, guestIDs []int64) error {
 	return r.grantAccess(ctx, models.RuleClient, clientID, guestIDs)
 }
 
-func (r *sqliteRepo) GrantGroupAccess(ctx context.Context, groupID int64, guestIDs []int64) error {
+func (r *sqlRepo) GrantGroupAccess(ctx context.Context, groupID int64, guestIDs []int64) error {
 	return r.grantAccess(ctx, models.RuleGroup, groupID, guestIDs)
 }
 
-func (r *sqliteRepo) RevokeClientAccess(ctx context.Context, clientID, guestID int64) error {
-	_, err := r.db.ExecContext(ctx,
+func (r *sqlRepo) RevokeClientAccess(ctx context.Context, clientID, guestID int64) error {
+	_, err := r.exec(ctx,
 		"DELETE FROM access_rules WHERE type = ? AND subject_id = ? AND guest_id = ?",
 		models.RuleClient, clientID, guestID)
 	return err
 }
 
-func (r *sqliteRepo) RevokeGroupAccess(ctx context.Context, groupID, guestID int64) error {
-	_, err := r.db.ExecContext(ctx,
+func (r *sqlRepo) RevokeGroupAccess(ctx context.Context, groupID, guestID int64) error {
+	_, err := r.exec(ctx,
 		"DELETE FROM access_rules WHERE type = ? AND subject_id = ? AND guest_id = ?",
 		models.RuleGroup, groupID, guestID)
 	return err
@@ -495,19 +542,23 @@ func (r *sqliteRepo) RevokeGroupAccess(ctx context.Context, groupID, guestID int
 
 // --- Default Policy ---
 
-func (r *sqliteRepo) SetDefaultPolicy(ctx context.Context, policy *models.DefaultAccessPolicy) error {
+func (r *sqlRepo) SetDefaultPolicy(ctx context.Context, policy *models.DefaultAccessPolicy) error {
 	clientIDsJSON, _ := json.Marshal(policy.AuthorizedClientIDs)
 	groupIDsJSON, _ := json.Marshal(policy.AuthorizedGroupIDs)
-	_, err := r.db.ExecContext(ctx,
-		"INSERT OR REPLACE INTO default_policy (id, authorized_client_ids, authorized_group_ids) VALUES (1, ?, ?)",
+	_, err := r.exec(ctx,
+		`INSERT INTO default_policy (id, authorized_client_ids, authorized_group_ids)
+		 VALUES (1, ?, ?)
+		 ON CONFLICT (id) DO UPDATE SET
+		   authorized_client_ids = excluded.authorized_client_ids,
+		   authorized_group_ids  = excluded.authorized_group_ids`,
 		string(clientIDsJSON), string(groupIDsJSON))
 	return err
 }
 
-func (r *sqliteRepo) GetDefaultPolicy(ctx context.Context) (*models.DefaultAccessPolicy, error) {
+func (r *sqlRepo) GetDefaultPolicy(ctx context.Context) (*models.DefaultAccessPolicy, error) {
 	policy := &models.DefaultAccessPolicy{}
 	var clientIDsStr, groupIDsStr string
-	err := r.db.QueryRowContext(ctx,
+	err := r.queryRow(ctx,
 		"SELECT authorized_client_ids, authorized_group_ids FROM default_policy WHERE id = 1").
 		Scan(&clientIDsStr, &groupIDsStr)
 	if err == sql.ErrNoRows {
@@ -524,9 +575,10 @@ func (r *sqliteRepo) GetDefaultPolicy(ctx context.Context) (*models.DefaultAcces
 // --- Settings ---
 
 // SetSetting stores a configuration value, replacing any previous one.
-func (r *sqliteRepo) SetSetting(ctx context.Context, key, value string) error {
-	_, err := r.db.ExecContext(ctx,
-		"INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", key, value)
+func (r *sqlRepo) SetSetting(ctx context.Context, key, value string) error {
+	_, err := r.exec(ctx,
+		`INSERT INTO settings (key, value) VALUES (?, ?)
+		 ON CONFLICT (key) DO UPDATE SET value = excluded.value`, key, value)
 	return err
 }
 
@@ -534,9 +586,9 @@ func (r *sqliteRepo) SetSetting(ctx context.Context, key, value string) error {
 //
 // An unset value is not an error: every caller wants the same fallback, and a
 // fresh database legitimately has none of these.
-func (r *sqliteRepo) GetSetting(ctx context.Context, key string) (string, error) {
+func (r *sqlRepo) GetSetting(ctx context.Context, key string) (string, error) {
 	var value string
-	err := r.db.QueryRowContext(ctx,
+	err := r.queryRow(ctx,
 		"SELECT value FROM settings WHERE key = ?", key).Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
@@ -549,13 +601,14 @@ func (r *sqliteRepo) GetSetting(ctx context.Context, key string) (string, error)
 
 // --- Admin Keys ---
 
-func (r *sqliteRepo) AddAdminKey(ctx context.Context, pubKey string) error {
-	_, err := r.db.ExecContext(ctx, "INSERT OR IGNORE INTO admin_keys (public_key) VALUES (?)", pubKey)
+func (r *sqlRepo) AddAdminKey(ctx context.Context, pubKey string) error {
+	_, err := r.exec(ctx, `INSERT INTO admin_keys (public_key) VALUES (?)
+		 ON CONFLICT (public_key) DO NOTHING`, pubKey)
 	return err
 }
 
-func (r *sqliteRepo) ListAdminKeys(ctx context.Context) ([]string, error) {
-	rows, err := r.db.QueryContext(ctx, "SELECT public_key FROM admin_keys")
+func (r *sqlRepo) ListAdminKeys(ctx context.Context) ([]string, error) {
+	rows, err := r.query(ctx, "SELECT public_key FROM admin_keys")
 	if err != nil {
 		return nil, err
 	}
@@ -571,8 +624,8 @@ func (r *sqliteRepo) ListAdminKeys(ctx context.Context) ([]string, error) {
 	return list, rows.Err()
 }
 
-func (r *sqliteRepo) RemoveAdminKey(ctx context.Context, pubKey string) error {
-	_, err := r.db.ExecContext(ctx, "DELETE FROM admin_keys WHERE public_key = ?", pubKey)
+func (r *sqlRepo) RemoveAdminKey(ctx context.Context, pubKey string) error {
+	_, err := r.exec(ctx, "DELETE FROM admin_keys WHERE public_key = ?", pubKey)
 	return err
 }
 
@@ -580,10 +633,10 @@ func (r *sqliteRepo) RemoveAdminKey(ctx context.Context, pubKey string) error {
 
 // HasAccess returns true if clientID is allowed to reach guestID.
 // Priority: explicit client rule > group rule > default policy.
-func (r *sqliteRepo) HasAccess(ctx context.Context, clientID, guestID int64) (bool, error) {
+func (r *sqlRepo) HasAccess(ctx context.Context, clientID, guestID int64) (bool, error) {
 	// 1. Direct client rule
 	var exists int
-	err := r.db.QueryRowContext(ctx,
+	err := r.queryRow(ctx,
 		"SELECT 1 FROM access_rules WHERE type = ? AND subject_id = ? AND guest_id = ? LIMIT 1",
 		models.RuleClient, clientID, guestID).Scan(&exists)
 	if err == nil {
@@ -595,7 +648,7 @@ func (r *sqliteRepo) HasAccess(ctx context.Context, clientID, guestID int64) (bo
 
 	// 2. Group rules — load the client's group memberships
 	var groupsJSON string
-	err = r.db.QueryRowContext(ctx,
+	err = r.queryRow(ctx,
 		"SELECT group_ids FROM clients WHERE id = ?", clientID).Scan(&groupsJSON)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -607,7 +660,7 @@ func (r *sqliteRepo) HasAccess(ctx context.Context, clientID, guestID int64) (bo
 	_ = json.Unmarshal([]byte(groupsJSON), &groupIDs)
 
 	for _, gid := range groupIDs {
-		err = r.db.QueryRowContext(ctx,
+		err = r.queryRow(ctx,
 			"SELECT 1 FROM access_rules WHERE type = ? AND subject_id = ? AND guest_id = ? LIMIT 1",
 			models.RuleGroup, gid, guestID).Scan(&exists)
 		if err == nil {

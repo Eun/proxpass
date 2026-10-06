@@ -292,7 +292,7 @@ All flags can also be set via environment variables.
 
 | Flag | Env Var | Default | Description |
 |------|---------|---------|-------------|
-| `--data` | `PROXPASS_DATA` | `/var/lib/proxpass/proxpass.db` | Path to SQLite database |
+| `--data` | `PROXPASS_DATA` | `/var/lib/proxpass/proxpass.db` | SQLite file path, or a `postgres://` URL (see below) |
 | `--log-level` | `PROXPASS_LOG_LEVEL` | `info` | Log level (debug, info, warn, error) |
 | `--admin-key` | `PROXPASS_ADMIN_KEY` | | Admin public key (see below) |
 | `--public-endpoint` | `PROXPASS_PUBLIC_ENDPOINT` | | Hostname clients connect to, shown in the status bar (see below) |
@@ -301,6 +301,34 @@ All flags can also be set via environment variables.
 
 The SSH port itself is sshd's, so it is published with `-p` on the container
 rather than configured in proxpass.
+
+### Database
+
+proxpass stores its state in SQLite by default: one file, nothing to run, and
+the right answer for a single deployment.
+
+Point `--data` at a `postgres://` URL to use PostgreSQL instead:
+
+```yaml
+environment:
+  PROXPASS_DATA: "postgres://proxpass:secret@db:5432/proxpass?sslmode=disable"
+```
+
+The backend is inferred from the value — a `postgres://` or `postgresql://`
+URL selects PostgreSQL, anything else is a SQLite path — so there is one
+setting to get right rather than two that can disagree. The schema is created
+on first start, as it is for SQLite.
+
+There is no migration path between the two: switching backend starts from an
+empty database. If you have an existing SQLite deployment, recreate your
+instances and clients against the new database rather than expecting the data
+to follow.
+
+Worth knowing before choosing PostgreSQL: with SQLite, write access is
+enforced by the file's group permissions, so a client session cannot modify
+the database whatever the application does. With PostgreSQL that containment
+is gone — access is whatever the DSN's credentials allow. Give proxpass a role
+scoped to its own database.
 
 ### Public endpoint
 

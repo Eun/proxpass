@@ -52,6 +52,28 @@ jobs:
         name: Test
         run: mise run test
       -
+        # The database suite is backend-agnostic: pointing it at Postgres runs
+        # the same assertions against the other backend. Without this, a query
+        # that only works on SQLite would pass CI and fail in a Postgres
+        # deployment.
+        #
+        # Linux only: the matrix's other platforms have no Docker daemon.
+        name: Test against Postgres
+        if: matrix.platform == 'ubuntu-latest'
+        env:
+          PROXPASS_TEST_POSTGRES_DSN: postgres://proxpass:proxpass@127.0.0.1:5432/proxpass?sslmode=disable
+        run: |
+          docker run -d --name proxpass-test-postgres \
+            -e POSTGRES_USER=proxpass \
+            -e POSTGRES_PASSWORD=proxpass \
+            -e POSTGRES_DB=proxpass \
+            -p 5432:5432 postgres:17-alpine
+          for _ in $(seq 1 30); do
+            docker exec proxpass-test-postgres pg_isready -U proxpass && break
+            sleep 1
+          done
+          go test ./internal/db/... -count=1
+      -
         name: Upload coverage
         if: matrix.platform == 'ubuntu-latest'
         uses: actions/upload-artifact@v7
