@@ -2,9 +2,11 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"proxpass/internal/models"
@@ -16,8 +18,23 @@ const (
 	testTokenSecret = "secret"
 )
 
+// newTestRepo returns a repository for the backend under test.
+//
+// Every test in this file goes through here, so pointing it at Postgres runs
+// the entire suite against Postgres -- the behavior is asserted once and both
+// backends must satisfy it. That matters more than it sounds: the failure mode
+// of a two-backend port is a query that happens to work on the one the tests
+// use, and a single shared suite is what makes that impossible.
+//
+// Postgres is used when PROXPASS_TEST_POSTGRES_DSN is set; otherwise SQLite,
+// so the default `go test ./...` needs no server. CI and the release build
+// both set it.
 func newTestRepo(t *testing.T) Repository {
 	t.Helper()
+	if dsn := os.Getenv(testPostgresDSNEnv); dsn != "" {
+		return newTestPostgresRepo(t, dsn)
+	}
+
 	f, err := os.CreateTemp("", "proxpass-test-*.db")
 	if err != nil {
 		t.Fatal(err)
@@ -32,6 +49,51 @@ func newTestRepo(t *testing.T) Repository {
 	t.Cleanup(func() { _ = repo.Close() })
 	return repo
 }
+
+// testPostgresDSNEnv names a Postgres server the tests may use.
+const testPostgresDSNEnv = "PROXPASS_TEST_POSTGRES_DSN"
+
+// newTestPostgresRepo gives each test its own schema on the shared server.
+//
+// A fresh schema rather than a fresh database: creating a database is slow and
+// cannot run inside a transaction, while a schema is cheap and gives the same
+// isolation. search_path makes the unqualified names in the migrations and
+// queries resolve to it, so nothing in the production code needs to know.
+func newTestPostgresRepo(t *testing.T, dsn string) Repository {
+	t.Helper()
+	schema := fmt.Sprintf("test_%d_%d", os.Getpid(), nextSchemaID.Add(1))
+
+	admin, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("opening postgres: %v", err)
+	}
+	defer func() { _ = admin.Close() }()
+	if _, err := admin.ExecContext(t.Context(), "CREATE SCHEMA "+schema); err != nil {
+		t.Fatalf("creating schema %s: %v", schema, err)
+	}
+	t.Cleanup(func() {
+		db, err := sql.Open("pgx", dsn)
+		if err != nil {
+			return
+		}
+		defer func() { _ = db.Close() }()
+		_, _ = db.ExecContext(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
+	})
+
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	repo, err := NewRepository(dsn + sep + "search_path=" + schema)
+	if err != nil {
+		t.Fatalf("opening repository on schema %s: %v", schema, err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	return repo
+}
+
+// nextSchemaID keeps parallel tests from colliding on a schema name.
+var nextSchemaID atomic.Int64
 
 func TestProxmoxInstances(t *testing.T) {
 	repo := newTestRepo(t)
@@ -574,7 +636,7 @@ func TestRemoveProxmoxInstanceCleansUpGuests(t *testing.T) {
 }
 
 // Compile-time interface check.
-var _ Repository = (*sqliteRepo)(nil)
+var _ Repository = (*sqlRepo)(nil)
 
 func TestSettings(t *testing.T) {
 	repo := newTestRepo(t)
