@@ -151,8 +151,15 @@ func TestUnknownUserIsServedAsAnUnprivilegedAlias(t *testing.T) {
 		t.Errorf("gid = %d, want the shared client gid %d",
 			got.Gid, ids.SharedGroupGID)
 	}
-	if got.Uid != ids.AdminUID {
-		t.Errorf("uid = %d, want %d", got.Uid, ids.AdminUID)
+	// An alias must NOT share the administrator's uid. An alias is reachable
+	// with any valid key, including a client's, so a shared uid would make
+	// an alias session indistinguishable from the admin's to anything that
+	// identifies a process by its owner.
+	if got.Uid != ids.AliasUID {
+		t.Errorf("uid = %d, want the alias uid %d", got.Uid, ids.AliasUID)
+	}
+	if got.Uid == ids.AdminUID {
+		t.Errorf("alias uid %d is the administrator's uid", got.Uid)
 	}
 }
 
@@ -563,4 +570,53 @@ func keysOf(m map[string]any) []string {
 
 func itoa(u uint) string {
 	return strconv.FormatUint(uint64(u), 10)
+}
+
+// The alias uid must resolve back to a name.
+//
+// sshd and anything else that formats an owner calls getpwuid(); an
+// unanswered uid shows as a bare number. This nearly regressed when the alias
+// uid moved below AdminUID, because the handler rejected everything under it.
+func TestAliasUIDResolvesByUID(t *testing.T) {
+	h, _ := newTestServer(t)
+	ids := api.DefaultIDLayout()
+
+	rec := get(t, h, "/user/uid/"+strconv.FormatUint(uint64(ids.AliasUID), 10))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var got api.User
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Uid != ids.AliasUID {
+		t.Errorf("uid = %d, want %d", got.Uid, ids.AliasUID)
+	}
+	if got.Gid != ids.SharedGroupGID {
+		t.Errorf("gid = %d, want the shared client gid %d", got.Gid, ids.SharedGroupGID)
+	}
+	if got.User != api.AliasUser {
+		t.Errorf("name = %q, want %q", got.User, api.AliasUser)
+	}
+}
+
+// The admin uid still resolves, and to the admin rather than an alias.
+func TestAdminUIDStillResolvesByUID(t *testing.T) {
+	h, _ := newTestServer(t)
+	ids := api.DefaultIDLayout()
+
+	rec := get(t, h, "/user/uid/"+strconv.FormatUint(uint64(ids.AdminUID), 10))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var got api.User
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.User != api.AdminUser {
+		t.Errorf("name = %q, want %q", got.User, api.AdminUser)
+	}
+	if got.Gid != ids.AdminGroupGID {
+		t.Errorf("gid = %d, want the admin gid %d", got.Gid, ids.AdminGroupGID)
+	}
 }

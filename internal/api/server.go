@@ -50,6 +50,14 @@ const (
 	// an "invalid user" before it ever consults AuthorizedKeysCommand.
 	AdminUser = "admin"
 
+	// AliasUser is the name reported for the shared alias uid.
+	//
+	// A uid cannot say which alias a session logged in with -- every alias
+	// resolves to the same one -- so the reverse lookup answers with this
+	// placeholder rather than inventing a name. It is not itself a login:
+	// any unused name works, and this one is served like any other alias.
+	AliasUser = "proxpass-login"
+
 	// SharedGroup is the primary group of every client login. It grants
 	// READ access to the proxpass state directory, which is all a client
 	// session needs: it resolves a guest, checks access and connects.
@@ -92,8 +100,11 @@ func (l IDLayout) adminUser() User {
 // rules from the filesystem even though proxpass itself had correctly
 // resolved them as a non-admin.
 //
-// The uid stays AdminUID because every alias shares it and no client row
-// derives it; it owns nothing, since write access comes from the gid.
+// The uid is AliasUID: shared by every alias, since NSS is asked only for a
+// name and cannot tell one alias session from another, but distinct from the
+// administrator's. An alias is reachable with any valid key, including a
+// client's, so an alias session must not be indistinguishable from the
+// admin's to anything that identifies a process by its owner.
 func (l IDLayout) aliasUser(name string) User {
 	return User{
 		User:     name,
@@ -101,7 +112,7 @@ func (l IDLayout) aliasUser(name string) User {
 		Name:     "proxpass login",
 		Dir:      HomeDir,
 		Shell:    LoginShell,
-		Uid:      l.AdminUID,
+		Uid:      l.AliasUID,
 		Gid:      l.SharedGroupGID,
 		AuthKeys: []string{},
 	}
@@ -284,12 +295,26 @@ func (s *Server) writeAdminAlias(w http.ResponseWriter, r *http.Request, name st
 func (s *Server) handleUserByUID(w http.ResponseWriter, r *http.Request) {
 	raw := strings.TrimPrefix(r.URL.Path, "/user/uid/")
 	uid, err := strconv.ParseUint(raw, 10, 32)
-	if err != nil || uid < uint64(s.ids.AdminUID) {
+	if err != nil {
 		http.NotFound(w, r)
+		return
+	}
+	// The alias uid resolves to the reserved alias name rather than to any
+	// particular alias: a uid cannot say which name a session logged in
+	// with, since every alias shares it. Answering keeps `ls -l` and the
+	// like from showing a bare number for a session's own files.
+	if uid == uint64(s.ids.AliasUID) {
+		s.writeJSON(w, s.ids.aliasUser(AliasUser))
 		return
 	}
 	if uid == uint64(s.ids.AdminUID) {
 		s.writeJSON(w, s.ids.adminUser())
+		return
+	}
+	// Below the fixed uids there is nothing proxpass serves; the lowest
+	// client uid is UIDBase.
+	if uid < uint64(s.ids.UIDBase) {
+		http.NotFound(w, r)
 		return
 	}
 	clients, err := s.repo.ListClients(r.Context())
