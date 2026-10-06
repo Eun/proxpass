@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"proxpass/internal/db"
+	"proxpass/internal/session"
 )
 
 func testRepo(t *testing.T) db.Repository {
@@ -102,5 +105,47 @@ func TestStorePublicEndpointTrimsWhitespace(t *testing.T) {
 	}
 	if got != "proxpass.example.com" {
 		t.Errorf("endpoint = %q, want it trimmed", got)
+	}
+}
+
+// --- client database fallback ---
+
+// testLoginName is the alias a session arrives with.
+const testLoginName = "tobias"
+
+// A client whose API exchange failed must not continue with a database
+// handle. Before this check the only thing stopping it was the file mode,
+// which is a property of the shipped image rather than of the program.
+func TestAClientIsRefusedTheDatabaseFallback(t *testing.T) {
+	err := refuseClientDatabaseFallback(
+		&session.Identity{User: testLoginName, DisplayName: "alice", ClientID: 7},
+		errors.New("no session token in the environment"))
+	if err == nil {
+		t.Fatal("a client session was allowed to fall back to the database")
+	}
+	// The message has to name the likely cause: when this fires, the
+	// session is dead and the operator needs to know why.
+	if !strings.Contains(err.Error(), session.TokenEnv) {
+		t.Errorf("the error does not name %s: %v", session.TokenEnv, err)
+	}
+}
+
+// The administrator still needs it: the admin CLI writes, and nothing
+// serves it yet.
+func TestAnAdminMayStillUseTheDatabase(t *testing.T) {
+	if err := refuseClientDatabaseFallback(
+		&session.Identity{User: testLoginName, DisplayName: "admin", IsAdmin: true},
+		errors.New("no session token")); err != nil {
+		t.Fatalf("the administrator was refused the database: %v", err)
+	}
+}
+
+// The reason the API failed must survive, so the log says what to fix.
+func TestTheFallbackRefusalKeepsTheAPIError(t *testing.T) {
+	apiErr := errors.New("connection refused")
+	err := refuseClientDatabaseFallback(
+		&session.Identity{User: testLoginName, DisplayName: "alice", ClientID: 1}, apiErr)
+	if !errors.Is(err, apiErr) {
+		t.Fatalf("the API error was lost: %v", err)
 	}
 }

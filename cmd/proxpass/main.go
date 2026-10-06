@@ -159,6 +159,29 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	return nil
 }
 
+// refuseClientDatabaseFallback stops a client session continuing with a
+// database handle.
+//
+// A client only reaches the fallback when the API was unusable. Letting it
+// carry on would hand it the Proxmox API token secrets and instance SSH
+// private keys in the database -- the exposure this whole design removes --
+// and the only thing preventing that would be the file mode. That mode is
+// the right defense and it stays, but it must not be the ONLY one: it is a
+// property of the shipped image, not of the program, and retiring the
+// gid split later must not quietly turn this path back into a real one.
+//
+// An administrator is allowed through: the admin CLI writes, and nothing
+// serves it yet.
+func refuseClientDatabaseFallback(identity *session.Identity, apiErr error) error {
+	if identity.IsAdmin {
+		return nil
+	}
+	return fmt.Errorf(
+		"could not reach the proxpass API (%w), and a client session is not "+
+			"permitted to read the database directly; check that sshd sets %s",
+		apiErr, session.TokenEnv)
+}
+
 // exchangeIdentity spends the minted token for a session credential.
 //
 // Returns a nil client and a nil identity when there is no token or the
@@ -377,9 +400,13 @@ func runSession(ctx context.Context, cmd *ucli.Command) error {
 
 	// Fall back to the database when the exchange did not work. An
 	// administrator always lands here, because the admin CLI writes and
-	// cannot be served by the read-only session API; a client reaches it
-	// only when something is misconfigured, and will then fail on the file
-	// permissions instead -- which is the correct outcome, not a bypass.
+	// cannot be served by the read-only session API.
+	//
+	// A client reaches this only when something is misconfigured, and must
+	// NOT keep the handle: see below. The file permissions would refuse it
+	// anyway in the shipped image, but that is a property of the
+	// deployment, and this is the one place the program itself can say
+	// "a client session does not hold a database handle" and mean it.
 	var repo db.Repository
 	if identity == nil {
 		var err error
@@ -396,6 +423,13 @@ func runSession(ctx context.Context, cmd *ucli.Command) error {
 		identity, err = session.ResolveIdentityByKey(
 			ctx, repo, user, session.AuthInfoPath(), cmd.String("admin-key"))
 		if err != nil {
+			return err
+		}
+
+		// Resolving the identity is the ONLY thing a client may use this
+		// handle for, and it is now done.
+		if err := refuseClientDatabaseFallback(identity, apiErr); err != nil {
+			_ = repo.Close()
 			return err
 		}
 	}
