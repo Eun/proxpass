@@ -434,15 +434,29 @@ func runSession(ctx context.Context, cmd *ucli.Command) error {
 		}
 	}
 
-	// An administrator needs the database for the admin CLI even when the
-	// exchange succeeded, so open it now if it is not already open.
+	// An administrator gets a repository served by the API, not the file.
+	//
+	// The admin CLI writes, so it needs a full db.Repository -- and it gets
+	// one, backed by the loopback API rather than by a database handle. The
+	// commands are untouched: they call the same interface they always did.
+	// This is what lets the file be closed to every session, administrator
+	// included, instead of only to clients.
+	//
+	// When the exchange failed there is no API to use, so the database is
+	// opened directly. An administrator is allowed that fallback -- it is
+	// how a deployment recovers when the directory is down -- and the file
+	// permissions still decide whether it actually works.
 	if identity.IsAdmin && repo == nil {
-		var err error
-		repo, err = db.NewRepository(cmd.String("data"))
-		if err != nil {
-			return fmt.Errorf("failed to open database: %w", err)
+		if apiClient != nil {
+			repo = session.NewAdminRepository(apiClient)
+		} else {
+			var err error
+			repo, err = db.NewRepository(cmd.String("data"))
+			if err != nil {
+				return fmt.Errorf("failed to open database: %w", err)
+			}
+			defer func() { _ = repo.Close() }()
 		}
-		defer func() { _ = repo.Close() }()
 	}
 
 	term, restore := currentTerminal()

@@ -47,14 +47,25 @@ trap terminate TERM INT
 
 mkdir -p "${PROXPASS_DATA_DIR}" "${PROXPASS_HOST_KEY_DIR}"
 
-# `proxpass session' runs as the logged-in user, not as root, so it needs to
-# reach the database. Access is granted through dedicated groups rather than
-# by loosening the mode: the database holds proxmox API credentials and every
-# client's public keys, so it must not become world readable.
+# `proxpass session' runs as the logged-in user, not as root. It no longer
+# needs to reach the database at all: every session, client and administrator
+# alike, goes through the loopback API, and `proxpass serve' is the only
+# process that opens the file. The mode is 0600 root:root accordingly.
 #
-# Clients get READ access via gid PROXPASS_GID, the admin gets WRITE access
-# via PROXPASS_ADMIN_GID. Splitting them means a client session cannot modify
-# another client's access rules or corrupt the database.
+# The two groups REMAIN, and no longer carry access control.
+#
+# They used to: clients got read access via PROXPASS_GID and the
+# administrator write access via PROXPASS_ADMIN_GID, and that split was what
+# stopped a client modifying another client's rules. The separation now lives
+# in the API -- an admin operation is refused unless the caller's stored
+# identity says IsAdmin, which is tested, rather than in a file mode that has
+# to be re-derived correctly on every container start.
+#
+# They are kept because sshd still needs a primary group for each login, the
+# NSS directory still has to serve one, and the UID/GID layout is part of the
+# published interface (PROXPASS_GID, PROXPASS_ADMIN_GID). Removing them would
+# be a visible change to deployments for no security gain. What is gone is
+# their power: granting a login the admin gid now grants it nothing.
 #
 # Neither group is created in /etc/group. nsswitch.conf consults "files"
 # before "http", so a local entry would shadow the one the proxpass directory
@@ -77,11 +88,12 @@ export PROXPASS_GID PROXPASS_ADMIN_GID
 # journal siblings inherit it. Clients need to traverse and read it, which
 # "other" x+r provides without letting them create or unlink anything.
 chown -R "root:${PROXPASS_ADMIN_GID}" "${PROXPASS_DATA_DIR}"
-# 2770, not 2775: nothing outside the administrator's group has any business
-# in here. The setgid bit keeps new files in that group so the admin CLI can
-# still write them. A client session reaches the directory API over loopback
-# and never opens this directory at all.
-chmod 2770 "${PROXPASS_DATA_DIR}"
+# 2700: only root. `proxpass serve' is the only process that opens anything
+# in here -- every session, administrator included, goes through the API --
+# so nothing else needs to traverse it. The setgid bit is kept so that a
+# pre-existing deployment's files keep their group on upgrade rather than
+# changing ownership underneath a running container.
+chmod 2700 "${PROXPASS_DATA_DIR}"
 # PROXPASS_DATA is either a SQLite path or a postgres:// URL. Only the former
 # gets a default, because there is no sensible default for a server nobody has
 # told us about.
@@ -160,31 +172,34 @@ if [ "$#" -eq 0 ]; then
 	# after serve has created the file — a chmod beforehand would silently
 	# do nothing on a fresh volume and every write would fail with
 	# "attempt to write a readonly database".
-	# 0660 root:<admin gid>. The administrator's group reads and writes;
-	# EVERYONE ELSE, which means every client login, gets nothing.
+	# 0600 root:root. NOBODY but root -- which means `proxpass serve' --
+	# touches this file. Not the administrator's group either.
 	#
-	# It used to be 0664, world readable, because a client session opened
-	# this file itself to list its guests. That also handed it
-	# api_token_secret and the instances' ssh_key -- every Proxmox
-	# credential in the deployment -- to anyone who could log in at all.
-	# A client session now reads through the loopback API instead and
-	# holds no database handle, so the read bit can finally go.
+	# The history is the point. It was 0664 -- world readable -- because a
+	# client session opened this file to list its guests, which also handed
+	# it api_token_secret and the instances' ssh_key. It became 0660 when
+	# clients moved to the API. It is 0600 now that the ADMIN CLI has moved
+	# too: every session, privileged or not, reaches the database through
+	# `proxpass serve', which is the only process that opens it.
 	#
-	# Do not widen this back without first moving the admin CLI off the
-	# file too: the mode is what enforces the separation; the code is
-	# only where the reads happen to come from.
+	# That is what retires the gid split. The admin group no longer needs
+	# write access to a file, so the split between it and the client group
+	# stops carrying any weight -- see docker/sshd_config.d and the id
+	# layout. The separation now lives in the API's admin check, which is
+	# tested, rather than in a mode that has to be re-derived on every
+	# container start.
 	fix_db_mode() {
 		# Nothing to do when the database is a server: these permissions
 		# exist to control who may write the SQLite FILE.
 		proxpass_uses_postgres && return 0
 		[ -f "${PROXPASS_DATA}" ] || return 0
 		chown "root:${PROXPASS_ADMIN_GID}" "${PROXPASS_DATA}" 2>/dev/null || true
-		chmod 0660 "${PROXPASS_DATA}" 2>/dev/null || true
+		chmod 0600 "${PROXPASS_DATA}" 2>/dev/null || true
 		# sqlite writes -wal/-shm siblings next to the database.
 		for sib in "${PROXPASS_DATA}-wal" "${PROXPASS_DATA}-shm" "${PROXPASS_DATA}-journal"; do
 			[ -e "${sib}" ] || continue
 			chown "root:${PROXPASS_ADMIN_GID}" "${sib}" 2>/dev/null || true
-			chmod 0660 "${sib}" 2>/dev/null || true
+			chmod 0600 "${sib}" 2>/dev/null || true
 		done
 	}
 
