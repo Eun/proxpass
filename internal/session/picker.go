@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"proxpass/internal/cli"
-	"proxpass/internal/models"
 )
 
 // errQuit signals that the user declined to pick a guest.
@@ -29,16 +28,7 @@ func (d *Deps) isReservedLoginName(ctx context.Context, name string) (bool, erro
 	// Any configured client name is reserved, not just this session's own:
 	// the set of names that mean "browse" must not depend on who is asking,
 	// or the same command would do different things for different callers.
-	clients, err := d.Repo.ListClients(ctx)
-	if err != nil {
-		return false, fmt.Errorf("listing clients: %w", err)
-	}
-	for _, c := range clients {
-		if strings.EqualFold(c.Name, name) {
-			return true, nil
-		}
-	}
-	return false, nil
+	return d.Dir.IsLoginNameReserved(ctx, name)
 }
 
 // connectByLoginName connects to the guest named by the login name, or runs
@@ -104,13 +94,6 @@ func (d *Deps) connectByLoginName(ctx context.Context) int {
 		d.errf("internal error")
 		return 1
 	}
-	instances, err := d.Repo.ListProxmoxInstances(ctx)
-	if err != nil {
-		d.Logger.Printf("%s: listing instances: %v", d.User, err)
-		d.errf("internal error")
-		return 1
-	}
-
 	// A login name CAN carry an instance now: "ct100@rome". The suffix is
 	// recognized only when it names an instance the caller can actually
 	// see, which matters for two reasons.
@@ -125,14 +108,14 @@ func (d *Deps) connectByLoginName(ctx context.Context) int {
 	//
 	// Correctness: a client named "tobias@corp" is a legal login name, and
 	// must not be read as the guest "tobias" on an instance "corp".
-	visible := instancesHosting(guests, instances)
+	visible := namedInstances(guests)
 	instName, identifier := cli.ParseGuestTarget(name, cli.InstanceLookup(visible))
 
 	// The ambiguity message names every alternative in the "@" form, which
 	// a login name can now express; the pool is already filtered, so it can
 	// only ever name guests this caller may see.
-	guest, inst, err := cli.ResolveGuestAndInstance(
-		identifier, instName, guests, instances)
+	guest, _, err := cli.ResolveGuestAndInstance(
+		identifier, instName, guestModels(guests), visible)
 	switch {
 	case errors.Is(err, cli.ErrGuestNotFound):
 		// Just a login name, not a guest this session can reach: browse.
@@ -148,41 +131,10 @@ func (d *Deps) connectByLoginName(ctx context.Context) int {
 	}
 
 	// Redundant after the scoping above, and kept on purpose: this is the
-	// check that must hold even if the pool is ever widened again.
-	allowed, err := d.hasAccess(ctx, guest)
-	if err != nil {
-		d.Logger.Printf("%s: access check failed: %v", d.User, err)
-		d.errf("internal error")
-		return 1
-	}
-	if !allowed {
-		d.Logger.Printf("%s: access denied to guest %s", d.User, guest.Name)
-		d.errf("access denied")
-		return 1
-	}
-	return d.attach(guest, inst)
-}
-
-// instancesHosting returns the instances that host at least one of guests.
-//
-// This is the set of instance names the caller may legitimately know about,
-// derived from the guests it can already see rather than from the full
-// configuration -- so using it as a separator predicate cannot disclose an
-// instance the caller has no guest on.
-func instancesHosting(
-	guests []*models.Guest, instances []*models.ProxmoxInstance,
-) []*models.ProxmoxInstance {
-	seen := make(map[int64]struct{}, len(guests))
-	for _, g := range guests {
-		seen[g.InstanceID] = struct{}{}
-	}
-	out := make([]*models.ProxmoxInstance, 0, len(seen))
-	for _, inst := range instances {
-		if _, ok := seen[inst.ID]; ok {
-			out = append(out, inst)
-		}
-	}
-	return out
+	// check that must hold even if the pool is ever widened again. It is
+	// now the same call that fetches the credentials, so the two cannot
+	// come apart.
+	return d.connectChecked(ctx, guest)
 }
 
 // pickerLoginHint is a login name the caller can actually use to reach the
@@ -214,20 +166,7 @@ func (d *Deps) runPicker(ctx context.Context) int {
 		return 1
 	}
 
-	instances, err := d.Repo.ListProxmoxInstances(ctx)
-	if err != nil {
-		d.Logger.Printf("%s: listing instances: %v", d.User, err)
-		d.errf("internal error")
-		return 1
-	}
-	instNames := make(map[int64]string, len(instances))
-	instByID := make(map[int64]*models.ProxmoxInstance, len(instances))
-	for _, inst := range instances {
-		instNames[inst.ID] = inst.Name
-		instByID[inst.ID] = inst
-	}
-
-	rows := newGuestRows(guests, instNames)
+	rows := newGuestRows(guests)
 
 	chosen, err := d.pick(rows)
 	if err != nil {
@@ -239,12 +178,9 @@ func (d *Deps) runPicker(ctx context.Context) int {
 		return 1
 	}
 
-	inst, ok := instByID[chosen.guest.InstanceID]
-	if !ok {
-		d.errf("proxmox instance for guest %q not found", chosen.guest.Name)
-		return 1
-	}
-	return d.attach(chosen.guest, inst)
+	// Credentials are fetched for the chosen guest only, at the moment of
+	// connecting, rather than held for every guest in the list.
+	return d.connectChecked(ctx, chosen.guest)
 }
 
 // pick runs the interactive picker and returns the selected row.

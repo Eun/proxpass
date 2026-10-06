@@ -53,7 +53,7 @@ func mixedRows(t *testing.T) []guestRow {
 		})
 		instNames[instID] = s.host
 	}
-	return newGuestRows(guests, instNames)
+	return newGuestRows(guestInfos(guests, instNames))
 }
 
 func TestSortRowsOrdersByTheChosenColumn(t *testing.T) {
@@ -88,7 +88,7 @@ func TestSortByIDIsNumericNotLexical(t *testing.T) {
 		{ID: 2, Type: models.GuestTypeCT, Name: "b", ProxmoxID: 99, Status: models.StatusRunning, InstanceID: 1},
 		{ID: 3, Type: models.GuestTypeCT, Name: "c", ProxmoxID: 1000, Status: models.StatusRunning, InstanceID: 1},
 	}
-	rs := newGuestRows(guests, map[int64]string{1: testHost})
+	rs := newGuestRows(guestInfos(guests, map[int64]string{1: testHost}))
 	sortRows(rs, sortByID)
 
 	got := make([]int, 0, len(rs))
@@ -135,10 +135,10 @@ func TestSortRowsIsDeterministicOnTies(t *testing.T) {
 		{ID: 3, Type: models.GuestTypeVM, Name: gSame, ProxmoxID: 101, Status: models.StatusRunning, InstanceID: 1},
 	}
 	for mode := sortByName; mode < sortModeCount; mode++ {
-		first := newGuestRows(guests, map[int64]string{1: testHost})
+		first := newGuestRows(guestInfos(guests, map[int64]string{1: testHost}))
 		sortRows(first, mode)
 		for range 5 {
-			again := newGuestRows(guests, map[int64]string{1: testHost})
+			again := newGuestRows(guestInfos(guests, map[int64]string{1: testHost}))
 			sortRows(again, mode)
 			for i := range first {
 				if first[i].id != again[i].id {

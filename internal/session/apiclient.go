@@ -98,6 +98,8 @@ func (c *APIClient) do(
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized:
 		return ErrUnauthorized
+	case resp.StatusCode == http.StatusForbidden:
+		return errForbidden
 	case resp.StatusCode < 200 || resp.StatusCode > 299:
 		// The body may carry an Error, but it is deliberately terse and
 		// this is a loopback call: the status is the useful part.
@@ -123,3 +125,8 @@ const maxResponseBytes = 4 << 20
 
 // ErrUnauthorized reports a credential the server would not accept.
 var ErrUnauthorized = errors.New("the API rejected this session's credential")
+
+// errForbidden reports a guest this session may not reach. The server
+// answers the same way for a guest that does not exist, so callers must
+// turn this into ErrAccessDenied rather than "no such guest".
+var errForbidden = errors.New("forbidden")

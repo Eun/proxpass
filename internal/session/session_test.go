@@ -337,12 +337,48 @@ func newTerminal(input string) *terminalBuf {
 }
 
 func newDeps(repo db.Repository, tb *terminalBuf, proxier console.Proxier) *session.Deps {
-	return &session.Deps{
+	d := &session.Deps{
 		Repo:     repo,
 		Proxier:  proxier,
 		Logger:   log.New(io.Discard, "", 0),
 		Terminal: tb.term,
 	}
+	// A database-backed directory that reads the identity from Deps when
+	// it is used, not when it is built: tests routinely set IsAdmin or
+	// ClientID after this returns, and capturing them here would silently
+	// scope the session to the wrong caller.
+	d.Dir = &lazyRepoDirectory{deps: d}
+	return d
+}
+
+// lazyRepoDirectory is a RepoDirectory that picks up the identity at call
+// time.
+type lazyRepoDirectory struct {
+	deps *session.Deps
+}
+
+func (l *lazyRepoDirectory) dir() *session.RepoDirectory {
+	return &session.RepoDirectory{
+		Repo:     l.deps.Repo,
+		IsAdmin:  l.deps.IsAdmin,
+		ClientID: l.deps.ClientID,
+	}
+}
+
+func (l *lazyRepoDirectory) AccessibleGuests(ctx context.Context) ([]*session.GuestInfo, error) {
+	return l.dir().AccessibleGuests(ctx)
+}
+
+func (l *lazyRepoDirectory) Connect(ctx context.Context, guestID int64) (*session.ConnectInfo, error) {
+	return l.dir().Connect(ctx, guestID)
+}
+
+func (l *lazyRepoDirectory) IsLoginNameReserved(ctx context.Context, name string) (bool, error) {
+	return l.dir().IsLoginNameReserved(ctx, name)
+}
+
+func (l *lazyRepoDirectory) PublicEndpoint(ctx context.Context) (string, error) {
+	return l.dir().PublicEndpoint(ctx)
 }
 
 func seedGuest(t *testing.T, repo db.Repository) *models.Guest {
