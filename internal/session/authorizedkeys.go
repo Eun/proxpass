@@ -2,12 +2,15 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"proxpass/internal/api"
 	"proxpass/internal/db"
+	"proxpass/internal/models"
 )
 
 // WriteAuthorizedKeys prints the authorized_keys lines for user to w.
@@ -70,21 +73,57 @@ func WriteAuthorizedKeys(
 	// would let any client authenticate under an unused name and be treated
 	// as the administrator. The two must change together, which is why the
 	// session refuses to start at all when ExposeAuthInfo is off.
-	writeKeys(w, []string{flagAdminKey})
+	//
+	// Each line also carries a freshly minted API token for the identity
+	// that key belongs to. sshd applies the options of the MATCHING key
+	// only, so the session is handed exactly one token: the one for whoever
+	// actually authenticated. That is why minting happens per line here and
+	// not once per invocation -- this command cannot know which of the keys
+	// it is about to print will be the one accepted.
+	minter := newTokenMinter(ctx, repo)
+
+	adminIdentity := &models.SessionIdentity{
+		User:        user,
+		DisplayName: AdminUser,
+		IsAdmin:     true,
+	}
+	minter.writeKeys(w, []string{flagAdminKey}, adminIdentity)
+
 	keys, err := repo.ListAdminKeys(ctx)
 	if err != nil {
 		return fmt.Errorf("listing admin keys: %w", err)
 	}
-	writeKeys(w, keys)
+	minter.writeKeys(w, keys, adminIdentity)
 
 	clients, err := repo.ListClients(ctx)
 	if err != nil {
 		return fmt.Errorf("listing clients: %w", err)
 	}
 	for _, c := range clients {
-		writeKeys(w, c.PublicKeys)
+		minter.writeKeys(w, c.PublicKeys, &models.SessionIdentity{
+			User:        user,
+			DisplayName: c.Name,
+			ClientID:    c.ID,
+		})
 	}
-	return nil
+	return minter.err
+}
+
+// tokenMinter writes key lines, giving each one an API token for the
+// identity that key identifies.
+//
+// It accumulates the first error instead of returning one per call so that
+// the caller can keep printing keys. A mint failure must not cost somebody
+// their login: without a token the session simply falls back to resolving
+// its own identity, which is exactly what it did before tokens existed.
+type tokenMinter struct {
+	ctx  context.Context //nolint:containedctx // carried so writeKeys can stay a plain writer
+	repo db.Repository
+	err  error
+}
+
+func newTokenMinter(ctx context.Context, repo db.Repository) *tokenMinter {
+	return &tokenMinter{ctx: ctx, repo: repo}
 }
 
 // writeKeys prints one key per line, skipping blanks.
@@ -94,7 +133,7 @@ func WriteAuthorizedKeys(
 // emitted. cli.ValidatePublicKey rejects such values at the point of entry;
 // this is the second line of defense for rows written before that check
 // existed, or by anything that bypasses the CLI.
-func writeKeys(w io.Writer, keys []string) {
+func (m *tokenMinter) writeKeys(w io.Writer, keys []string, identity *models.SessionIdentity) {
 	for _, k := range keys {
 		k = strings.TrimSpace(k)
 		if k == "" {
@@ -103,6 +142,40 @@ func writeKeys(w io.Writer, keys []string) {
 		if strings.ContainsAny(k, "\n\r") {
 			continue
 		}
-		fmt.Fprintln(w, k)
+		fmt.Fprintln(w, m.lineFor(k, identity))
+	}
+}
+
+// lineFor returns the authorized_keys line for one key: the key itself,
+// preceded by an environment= option carrying this identity's token.
+//
+// On any failure it returns the bare key. sshd parses this stdout as keys,
+// so there is nowhere to report a problem to, and a login that works without
+// a token is far better than one that is refused: the session keeps its
+// existing behavior. The error is recorded for the caller's return value,
+// which reaches the sshd log via the command's exit status.
+func (m *tokenMinter) lineFor(key string, identity *models.SessionIdentity) string {
+	token, hash, err := NewToken()
+	if err != nil {
+		m.record(err)
+		return key
+	}
+	if !ValidTokenValue(token) {
+		m.record(errors.New("generated token is not option-safe"))
+		return key
+	}
+
+	now := time.Now()
+	if err := m.repo.MintSessionToken(
+		m.ctx, hash, identity, now, now.Add(TokenTTL)); err != nil {
+		m.record(err)
+		return key
+	}
+	return fmt.Sprintf("environment=%q %s", TokenEnv+"="+token, key)
+}
+
+func (m *tokenMinter) record(err error) {
+	if m.err == nil {
+		m.err = err
 	}
 }

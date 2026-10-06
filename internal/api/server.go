@@ -171,6 +171,17 @@ func (s *Server) IDs() IDLayout { return s.ids }
 // libnss_http.so.2 ("runtime: netpollBreak write failed with 9"). All real
 // resolution therefore goes through the single-entry lookups. The list
 // endpoints remain implemented because they are part of the contract.
+//
+// The session routes (/healthz and /session/...) are registered from the
+// generated OpenAPI handler, so the spec in api/openapi.yaml stays the one
+// description of them. The NSS routes above are hand-written for the reason
+// given in that spec: their shape is fixed by an external consumer.
+//
+// Only the session routes are behind the bearer token. The NSS routes must
+// stay open: nss_http sends no Authorization header, and sshd resolves the
+// login through NSS before any session -- and therefore any token -- exists.
+// The entrypoint also polls /users to decide when the directory is ready, so
+// requiring a token there would deadlock container startup.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/user/name/", s.handleUserByName)
@@ -179,11 +190,27 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/group/name/", s.handleGroupByName)
 	mux.HandleFunc("/group/gid/", s.handleGroupByGID)
 	mux.HandleFunc("/groups", s.handleGroups)
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok\n"))
+
+	return HandlerWithOptions(
+		NewStrictHandler(NewSessionHandler(s.repo, s.logger), nil),
+		StdHTTPServerOptions{
+			BaseRouter:  mux,
+			Middlewares: []MiddlewareFunc{bearerTokenMiddleware},
+		},
+	)
+}
+
+// bearerTokenMiddleware puts the Authorization header on the request context
+// for the session handlers.
+//
+// It does not reject anything. Whether a token is good is decided by
+// redeeming it, which consumes it, so that has to happen once in the handler
+// that needs the answer -- see GetSessionIdentity. /healthz is specified as
+// unauthenticated and simply ignores the context value.
+func bearerTokenMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, withBearerToken(r))
 	})
-	return mux
 }
 
 // ListenAndServe runs the directory server until ctx is canceled.

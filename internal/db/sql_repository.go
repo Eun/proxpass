@@ -629,6 +629,84 @@ func (r *sqlRepo) RemoveAdminKey(ctx context.Context, pubKey string) error {
 	return err
 }
 
+// --- Session Tokens ---
+
+// MintSessionToken records a token against the identity it was issued for.
+//
+// tokenHash is a hash, never the token: see the migration. Minting also
+// sweeps rows that have already expired, so a container that authenticates
+// for months does not accumulate them. The sweep is deliberately here rather
+// than on a timer -- there is no long-lived process holding a write handle
+// that could run one, and mint is the only moment this table grows.
+//
+// The sweep threshold is now, NOT expiresAt. Sweeping by the new token's own
+// expiry would delete every token due to expire before it -- that is, every
+// other token outstanding -- so two people logging in at once would lock each
+// other out.
+func (r *sqlRepo) MintSessionToken(
+	ctx context.Context,
+	tokenHash string,
+	identity *models.SessionIdentity,
+	now, expiresAt time.Time,
+) error {
+	if _, err := r.exec(ctx,
+		"DELETE FROM session_tokens WHERE expires_at <= ?",
+		now.Unix()); err != nil {
+		return fmt.Errorf("sweeping expired session tokens: %w", err)
+	}
+
+	isAdmin := 0
+	if identity.IsAdmin {
+		isAdmin = 1
+	}
+	_, err := r.exec(ctx,
+		`INSERT INTO session_tokens
+		     (token_hash, login_name, display_name, is_admin, client_id, expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		tokenHash, identity.User, identity.DisplayName,
+		isAdmin, identity.ClientID, expiresAt.Unix())
+	if err != nil {
+		return fmt.Errorf("minting session token: %w", err)
+	}
+	return nil
+}
+
+// RedeemSessionToken consumes a token and reports who it belonged to.
+//
+// The DELETE ... RETURNING is one statement on purpose. Reading the row and
+// then deleting it would let two callers presenting the same token both see
+// it before either removed it, which is exactly the replay that "single use"
+// is meant to prevent. A single statement makes the delete the thing that
+// decides, so only one caller can win. Both backends support RETURNING
+// (SQLite since 3.35; modernc.org/sqlite bundles 3.53).
+//
+// Expiry is applied in the same statement rather than afterwards, so an
+// expired token is never redeemable even for the caller that deletes it.
+func (r *sqlRepo) RedeemSessionToken(
+	ctx context.Context,
+	tokenHash string,
+	now time.Time,
+) (*models.SessionIdentity, error) {
+	var (
+		identity models.SessionIdentity
+		isAdmin  int64
+	)
+	err := r.queryRow(ctx,
+		`DELETE FROM session_tokens
+		  WHERE token_hash = ? AND expires_at > ?
+		 RETURNING login_name, display_name, is_admin, client_id`,
+		tokenHash, now.Unix()).
+		Scan(&identity.User, &identity.DisplayName, &isAdmin, &identity.ClientID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNoSuchToken
+	}
+	if err != nil {
+		return nil, fmt.Errorf("redeeming session token: %w", err)
+	}
+	identity.IsAdmin = isAdmin != 0
+	return &identity, nil
+}
+
 // --- Access Control Check ---
 
 // HasAccess returns true if clientID is allowed to reach guestID.

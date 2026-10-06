@@ -52,6 +52,10 @@ func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
 
 const userAliceName = "alice"
 
+// userAliasName is a login name that belongs to no client: any unused name
+// is served as an alias.
+const userAliasName = "tobias"
+
 func TestUserByName(t *testing.T) {
 	h, repo := newTestServer(t)
 	seedClient(t, repo, userAliceName, "ssh-ed25519 AAAAkey alice")
@@ -65,7 +69,7 @@ func TestUserByName(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &user); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if user.User != "alice" {
+	if user.User != userAliceName {
 		t.Errorf("User = %q, want alice", user.User)
 	}
 	// sshd runs with UsePAM no and does its own shadow check, so the
@@ -133,8 +137,8 @@ func TestUnknownUserIsServedAsAnUnprivilegedAlias(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.User != "tobias" {
-		t.Errorf("User = %q, want %q", got.User, "tobias")
+	if got.User != userAliasName {
+		t.Errorf("User = %q, want %q", got.User, userAliasName)
 	}
 	// An alias must carry the SHARED gid, not the admin one.
 	//
@@ -226,7 +230,7 @@ func TestUserByUID(t *testing.T) {
 	}
 	var user api.User
 	_ = json.Unmarshal(rec.Body.Bytes(), &user)
-	if user.User != "alice" {
+	if user.User != userAliceName {
 		t.Errorf("User = %q, want alice", user.User)
 	}
 }

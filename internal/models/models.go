@@ -85,3 +85,20 @@ type DefaultAccessPolicy struct {
 	AuthorizedClientIDs []int64 `json:"authorized_client_ids"`
 	AuthorizedGroupIDs  []int64 `json:"authorized_group_ids"`
 }
+
+// SessionIdentity is who a session turned out to be, as resolved from the
+// key that authenticated it.
+//
+// It is stored against a bearer token at authentication time and handed back
+// when that token is redeemed, so that `proxpass serve' can answer "who are
+// you" without the session having to claim anything. The session's own view
+// of this lives in internal/session.Identity; this is the part that has to
+// survive in the database between the two processes.
+//
+// ClientID is 0 for the administrator, who has no client row.
+type SessionIdentity struct {
+	User        string `json:"user"`
+	DisplayName string `json:"display_name"`
+	IsAdmin     bool   `json:"is_admin"`
+	ClientID    int64  `json:"client_id"`
+}
