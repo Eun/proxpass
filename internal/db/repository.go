@@ -74,6 +74,15 @@ type Repository interface {
 	// already been used. Single use is the point: see the method comment.
 	RedeemSessionToken(ctx context.Context, tokenHash string, now time.Time) (*models.SessionIdentity, error)
 
+	// API Sessions
+	//
+	// What a session holds after exchanging its one-shot environment token.
+	// Unlike the above, LookupAPISession does NOT consume: a session asks
+	// repeatedly over its lifetime.
+	CreateAPISession(ctx context.Context, tokenHash string, identity *models.SessionIdentity, now, expiresAt time.Time) error
+	LookupAPISession(ctx context.Context, tokenHash string, now time.Time) (*models.SessionIdentity, error)
+	RevokeAPISession(ctx context.Context, tokenHash string) error
+
 	// Access check (used by the proxy)
 	HasAccess(ctx context.Context, clientID, guestID int64) (bool, error)
 }

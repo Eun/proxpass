@@ -631,44 +631,79 @@ func (r *sqlRepo) RemoveAdminKey(ctx context.Context, pubKey string) error {
 
 // --- Session Tokens ---
 
-// MintSessionToken records a token against the identity it was issued for.
+// The two token tables -- session_tokens and api_sessions -- have the same
+// shape and the same lifecycle, so the statements are written once here and
+// parameterised by table. They differ in exactly one respect, which is the
+// point of having both: redeeming a session_tokens row consumes it, while
+// looking up an api_sessions row does not. See migrations/sqlite/00006.
+const (
+	sessionTokenTable = "session_tokens"
+	apiSessionTable   = "api_sessions"
+)
+
+// insertToken writes a row and sweeps whatever has already expired.
 //
-// tokenHash is a hash, never the token: see the migration. Minting also
-// sweeps rows that have already expired, so a container that authenticates
-// for months does not accumulate them. The sweep is deliberately here rather
-// than on a timer -- there is no long-lived process holding a write handle
-// that could run one, and mint is the only moment this table grows.
-//
-// The sweep threshold is now, NOT expiresAt. Sweeping by the new token's own
-// expiry would delete every token due to expire before it -- that is, every
-// other token outstanding -- so two people logging in at once would lock each
+// The sweep threshold is now, NOT expiresAt. Sweeping by the new row's own
+// expiry would delete every row due to expire before it -- that is, every
+// other one outstanding -- so two people logging in at once would lock each
 // other out.
-func (r *sqlRepo) MintSessionToken(
+//
+// The sweep is here rather than on a timer because no long-lived process
+// holds a write handle that could run one, and an insert is the only moment
+// these tables grow.
+func (r *sqlRepo) insertToken(
 	ctx context.Context,
-	tokenHash string,
+	table, tokenHash string,
 	identity *models.SessionIdentity,
 	now, expiresAt time.Time,
 ) error {
 	if _, err := r.exec(ctx,
-		"DELETE FROM session_tokens WHERE expires_at <= ?",
-		now.Unix()); err != nil {
-		return fmt.Errorf("sweeping expired session tokens: %w", err)
+		"DELETE FROM "+table+" WHERE expires_at <= ?", now.Unix()); err != nil {
+		return fmt.Errorf("sweeping expired rows from %s: %w", table, err)
 	}
 
 	isAdmin := 0
 	if identity.IsAdmin {
 		isAdmin = 1
 	}
-	_, err := r.exec(ctx,
-		`INSERT INTO session_tokens
-		     (token_hash, login_name, display_name, is_admin, client_id, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
+	if _, err := r.exec(ctx,
+		"INSERT INTO "+table+
+			" (token_hash, login_name, display_name, is_admin, client_id, expires_at)"+
+			" VALUES (?, ?, ?, ?, ?, ?)",
 		tokenHash, identity.User, identity.DisplayName,
-		isAdmin, identity.ClientID, expiresAt.Unix())
-	if err != nil {
-		return fmt.Errorf("minting session token: %w", err)
+		isAdmin, identity.ClientID, expiresAt.Unix()); err != nil {
+		return fmt.Errorf("inserting into %s: %w", table, err)
 	}
 	return nil
+}
+
+// scanIdentity reads one identity row.
+func scanIdentity(row interface{ Scan(...any) error }) (*models.SessionIdentity, error) {
+	var (
+		identity models.SessionIdentity
+		isAdmin  int64
+	)
+	err := row.Scan(&identity.User, &identity.DisplayName, &isAdmin, &identity.ClientID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNoSuchToken
+	}
+	if err != nil {
+		return nil, err
+	}
+	identity.IsAdmin = isAdmin != 0
+	return &identity, nil
+}
+
+// MintSessionToken records a token against the identity it was issued for.
+//
+// tokenHash is a hash, never the token: see the migration.
+func (r *sqlRepo) MintSessionToken(
+	ctx context.Context,
+	tokenHash string,
+	identity *models.SessionIdentity,
+	now, expiresAt time.Time,
+) error {
+	return r.insertToken(ctx, sessionTokenTable, tokenHash, identity, now, expiresAt)
 }
 
 // RedeemSessionToken consumes a token and reports who it belonged to.
@@ -687,24 +722,66 @@ func (r *sqlRepo) RedeemSessionToken(
 	tokenHash string,
 	now time.Time,
 ) (*models.SessionIdentity, error) {
-	var (
-		identity models.SessionIdentity
-		isAdmin  int64
-	)
-	err := r.queryRow(ctx,
+	identity, err := scanIdentity(r.queryRow(ctx,
 		`DELETE FROM session_tokens
 		  WHERE token_hash = ? AND expires_at > ?
 		 RETURNING login_name, display_name, is_admin, client_id`,
-		tokenHash, now.Unix()).
-		Scan(&identity.User, &identity.DisplayName, &isAdmin, &identity.ClientID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNoSuchToken
-	}
-	if err != nil {
+		tokenHash, now.Unix()))
+	if err != nil && !errors.Is(err, ErrNoSuchToken) {
 		return nil, fmt.Errorf("redeeming session token: %w", err)
 	}
-	identity.IsAdmin = isAdmin != 0
-	return &identity, nil
+	return identity, err
+}
+
+// --- API Sessions ---
+
+// CreateAPISession records the credential a session will use from now on.
+func (r *sqlRepo) CreateAPISession(
+	ctx context.Context,
+	tokenHash string,
+	identity *models.SessionIdentity,
+	now, expiresAt time.Time,
+) error {
+	return r.insertToken(ctx, apiSessionTable, tokenHash, identity, now, expiresAt)
+}
+
+// LookupAPISession returns the identity behind a session credential.
+//
+// This is a plain SELECT: it does NOT consume the row. A session makes
+// several calls over its life, so consuming here would break it on the
+// second request. The single-use property stays on the minted token, which
+// is where the exposure is -- see migrations/sqlite/00006.
+//
+// Expiry is applied in the statement so an expired row is never returned,
+// even before the next sweep removes it.
+func (r *sqlRepo) LookupAPISession(
+	ctx context.Context,
+	tokenHash string,
+	now time.Time,
+) (*models.SessionIdentity, error) {
+	identity, err := scanIdentity(r.queryRow(ctx,
+		`SELECT login_name, display_name, is_admin, client_id
+		   FROM api_sessions
+		  WHERE token_hash = ? AND expires_at > ?`,
+		tokenHash, now.Unix()))
+	if err != nil && !errors.Is(err, ErrNoSuchToken) {
+		return nil, fmt.Errorf("looking up api session: %w", err)
+	}
+	return identity, err
+}
+
+// RevokeAPISession drops a session credential.
+//
+// Called when a session ends, so that a credential does not stay valid for
+// the remainder of its TTL after the process holding it is gone. Revoking
+// something already absent is not an error: a session that failed early has
+// nothing to revoke, and must not report that as a failure.
+func (r *sqlRepo) RevokeAPISession(ctx context.Context, tokenHash string) error {
+	if _, err := r.exec(ctx,
+		"DELETE FROM api_sessions WHERE token_hash = ?", tokenHash); err != nil {
+		return fmt.Errorf("revoking api session: %w", err)
+	}
+	return nil
 }
 
 // --- Access Control Check ---

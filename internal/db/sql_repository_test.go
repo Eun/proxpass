@@ -715,26 +715,6 @@ func TestSessionTokenRoundTrip(t *testing.T) {
 	}
 }
 
-// bool has to survive a column that is INTEGER on both backends.
-func TestSessionTokenKeepsTheAdminFlag(t *testing.T) {
-	repo := newTestRepo(t)
-	ctx := t.Context()
-	now := time.Now()
-
-	if err := repo.MintSessionToken(ctx, "hash-admin",
-		&models.SessionIdentity{User: "u", DisplayName: "admin", IsAdmin: true},
-		now, now.Add(time.Minute)); err != nil {
-		t.Fatalf("mint: %v", err)
-	}
-	got, err := repo.RedeemSessionToken(ctx, "hash-admin", now)
-	if err != nil {
-		t.Fatalf("redeem: %v", err)
-	}
-	if !got.IsAdmin {
-		t.Errorf("is_admin did not survive the round trip: %+v", got)
-	}
-}
-
 func TestSessionTokenIsSingleUse(t *testing.T) {
 	repo := newTestRepo(t)
 	ctx := t.Context()
@@ -750,21 +730,6 @@ func TestSessionTokenIsSingleUse(t *testing.T) {
 	}
 	if _, err := repo.RedeemSessionToken(ctx, "hash", now); !errors.Is(err, ErrNoSuchToken) {
 		t.Fatalf("second redeem = %v, want ErrNoSuchToken", err)
-	}
-}
-
-func TestSessionTokenExpires(t *testing.T) {
-	repo := newTestRepo(t)
-	ctx := t.Context()
-	now := time.Now()
-
-	if err := repo.MintSessionToken(ctx, "hash",
-		&models.SessionIdentity{User: "u", DisplayName: "d"},
-		now, now.Add(time.Second)); err != nil {
-		t.Fatalf("mint: %v", err)
-	}
-	if _, err := repo.RedeemSessionToken(ctx, "hash", now.Add(2*time.Second)); !errors.Is(err, ErrNoSuchToken) {
-		t.Fatalf("expired redeem = %v, want ErrNoSuchToken", err)
 	}
 }
 
@@ -824,5 +789,175 @@ func TestMintingSweepsExpiredTokens(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("the expired token was not swept: %d rows remain", n)
+	}
+}
+
+// --- API Sessions ---
+
+func TestAPISessionRoundTrip(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := t.Context()
+	now := time.Now()
+
+	want := &models.SessionIdentity{
+		User: "tobias", DisplayName: testClientName, ClientID: 42,
+	}
+	if err := repo.CreateAPISession(ctx, "hash", want, now, now.Add(time.Hour)); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := repo.LookupAPISession(ctx, "hash", now)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if got.User != want.User || got.DisplayName != want.DisplayName ||
+		got.ClientID != want.ClientID || got.IsAdmin {
+		t.Errorf("round trip changed the identity: got %+v, want %+v", got, want)
+	}
+}
+
+// The whole reason this table exists: a session calls repeatedly, so a
+// lookup must not consume the row the way RedeemSessionToken does.
+func TestAPISessionLookupDoesNotConsume(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := t.Context()
+	now := time.Now()
+
+	if err := repo.CreateAPISession(ctx, "hash",
+		&models.SessionIdentity{User: "u", DisplayName: "d"},
+		now, now.Add(time.Hour)); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	for i := range 5 {
+		if _, err := repo.LookupAPISession(ctx, "hash", now); err != nil {
+			t.Fatalf("lookup %d: %v -- the credential was consumed", i+1, err)
+		}
+	}
+}
+
+func TestRevokeAPISession(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := t.Context()
+	now := time.Now()
+
+	if err := repo.CreateAPISession(ctx, "hash",
+		&models.SessionIdentity{User: "u", DisplayName: "d"},
+		now, now.Add(time.Hour)); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := repo.RevokeAPISession(ctx, "hash"); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if _, err := repo.LookupAPISession(ctx, "hash", now); !errors.Is(err, ErrNoSuchToken) {
+		t.Fatalf("lookup after revoke = %v, want ErrNoSuchToken", err)
+	}
+}
+
+// A session that died early has nothing to revoke and must not see an error.
+func TestRevokeAPISessionIsIdempotent(t *testing.T) {
+	repo := newTestRepo(t)
+
+	if err := repo.RevokeAPISession(t.Context(), "never-created"); err != nil {
+		t.Fatalf("revoking an absent session: %v", err)
+	}
+}
+
+// Two sessions run at once routinely, so creating one must not sweep the
+// other. Same "now" vs "expiresAt" threshold bug as MintSessionToken.
+func TestCreatingAnAPISessionDoesNotSweepLiveOnes(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := t.Context()
+	now := time.Now()
+	identity := &models.SessionIdentity{User: "u", DisplayName: "d"}
+
+	if err := repo.CreateAPISession(ctx, "first", identity, now, now.Add(time.Hour)); err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	if err := repo.CreateAPISession(ctx, "second", identity, now, now.Add(4*time.Hour)); err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+	if _, err := repo.LookupAPISession(ctx, "first", now); err != nil {
+		t.Fatalf("the first session was swept by the second: %v", err)
+	}
+}
+
+// tokenKind lets the shared properties of the two token tables be stated
+// once. They differ only in whether a lookup consumes the row, which is
+// covered separately.
+type tokenKind struct {
+	name   string
+	store  func(t *testing.T, repo Repository, hash string, id *models.SessionIdentity, now, exp time.Time)
+	lookup func(t *testing.T, repo Repository, hash string, now time.Time) (*models.SessionIdentity, error)
+}
+
+// The two cases are structurally alike because the tables are: that is the
+// point of the shared tests below. Collapsing them further would mean
+// naming the methods indirectly, which hides which call is under test.
+//
+//nolint:dupl // two near-identical cases describing two near-identical tables
+func tokenKinds() []tokenKind {
+	return []tokenKind{
+		{
+			name: "session_tokens",
+			store: func(t *testing.T, repo Repository, hash string, id *models.SessionIdentity, now, exp time.Time) {
+				t.Helper()
+				if err := repo.MintSessionToken(t.Context(), hash, id, now, exp); err != nil {
+					t.Fatalf("mint: %v", err)
+				}
+			},
+			lookup: func(t *testing.T, repo Repository, hash string, now time.Time) (*models.SessionIdentity, error) {
+				t.Helper()
+				return repo.RedeemSessionToken(t.Context(), hash, now)
+			},
+		},
+		{
+			name: "api_sessions",
+			store: func(t *testing.T, repo Repository, hash string, id *models.SessionIdentity, now, exp time.Time) {
+				t.Helper()
+				if err := repo.CreateAPISession(t.Context(), hash, id, now, exp); err != nil {
+					t.Fatalf("create: %v", err)
+				}
+			},
+			lookup: func(t *testing.T, repo Repository, hash string, now time.Time) (*models.SessionIdentity, error) {
+				t.Helper()
+				return repo.LookupAPISession(t.Context(), hash, now)
+			},
+		},
+	}
+}
+
+// bool has to survive a column that is INTEGER on both backends.
+func TestTokensKeepTheAdminFlag(t *testing.T) {
+	for _, kind := range tokenKinds() {
+		t.Run(kind.name, func(t *testing.T) {
+			repo := newTestRepo(t)
+			now := time.Now()
+			kind.store(t, repo, "hash",
+				&models.SessionIdentity{User: "u", DisplayName: "admin", IsAdmin: true},
+				now, now.Add(time.Hour))
+
+			got, err := kind.lookup(t, repo, "hash", now)
+			if err != nil {
+				t.Fatalf("lookup: %v", err)
+			}
+			if !got.IsAdmin {
+				t.Errorf("is_admin did not survive the round trip: %+v", got)
+			}
+		})
+	}
+}
+
+func TestTokensExpire(t *testing.T) {
+	for _, kind := range tokenKinds() {
+		t.Run(kind.name, func(t *testing.T) {
+			repo := newTestRepo(t)
+			now := time.Now()
+			kind.store(t, repo, "hash",
+				&models.SessionIdentity{User: "u", DisplayName: "d"},
+				now, now.Add(time.Second))
+
+			if _, err := kind.lookup(t, repo, "hash", now.Add(2*time.Second)); !errors.Is(err, ErrNoSuchToken) {
+				t.Fatalf("expired lookup = %v, want ErrNoSuchToken", err)
+			}
+		})
 	}
 }
