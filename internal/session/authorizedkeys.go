@@ -83,9 +83,9 @@ func WriteAuthorizedKeys(
 	minter := newTokenMinter(ctx, repo)
 
 	adminIdentity := &models.SessionIdentity{
-		User:        user,
-		DisplayName: AdminUser,
-		IsAdmin:     true,
+		LoginName:    user,
+		IdentityName: AdminUser,
+		IsAdmin:      true,
 	}
 	minter.writeKeys(w, []string{flagAdminKey}, adminIdentity)
 
@@ -101,9 +101,9 @@ func WriteAuthorizedKeys(
 	}
 	for _, c := range clients {
 		minter.writeKeys(w, c.PublicKeys, &models.SessionIdentity{
-			User:        user,
-			DisplayName: c.Name,
-			ClientID:    c.ID,
+			LoginName:    user,
+			IdentityName: c.Name,
+			ClientID:     c.ID,
 		})
 	}
 	return minter.err

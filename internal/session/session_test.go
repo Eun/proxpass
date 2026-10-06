@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 
 	ucli "github.com/urfave/cli/v3"
 
+	"proxpass/internal/api"
 	"proxpass/internal/console"
 	"proxpass/internal/db"
 	"proxpass/internal/models"
@@ -118,19 +120,40 @@ func TestAuthorizedKeysAdminUsesFlagKey(t *testing.T) {
 
 // The admin key never makes its holder into a client.
 //
-// The key IS offered under a client's name -- the name no longer filters
-// the key set, since it no longer selects an identity -- but presenting it
+// The key IS offered under a client's name -- the name no longer filters the
+// key set, since it no longer selects an identity -- but presenting it
 // resolves to the administrator, not to that client. The old behavior
 // (withholding it) had the perverse effect that an administrator could not
 // log in under a name a client happened to own.
+//
+// Checked at the mint, which is where the key -> identity decision is made
+// now: the admin key's line must carry a token that redeems as the admin
+// even when the login name belongs to a client.
 func TestAdminKeyUnderAClientNameStaysAdmin(t *testing.T) {
 	repo := newRepo(t)
-	addNamedClient(t, repo, userAlice, keyAlice)
+	addNamedClient(t, repo, userAlice)
 
-	id, err := session.ResolveIdentityByKey(
-		t.Context(), repo, userAlice, writeAuthInfo(t, keyAdmin), keyAdmin)
+	var out bytes.Buffer
+	if err := session.WriteAuthorizedKeys(
+		t.Context(), &out, repo, userAlice, keyAdmin); err != nil {
+		t.Fatalf("WriteAuthorizedKeys: %v", err)
+	}
+
+	// Find the admin key's line and redeem the token it carries.
+	var adminToken string
+	for _, line := range nonEmptyLines(out.String()) {
+		if strings.Contains(line, keyAdmin) {
+			adminToken = tokenIn(t, line)
+		}
+	}
+	if adminToken == "" {
+		t.Fatal("the admin key was not offered under a client's name")
+	}
+
+	id, err := repo.RedeemSessionToken(
+		t.Context(), session.HashToken(adminToken), time.Now())
 	if err != nil {
-		t.Fatalf("ResolveIdentityByKey: %v", err)
+		t.Fatalf("redeem: %v", err)
 	}
 	if !id.IsAdmin {
 		t.Error("the admin key must stay admin under a client's name")
@@ -147,113 +170,73 @@ func TestAdminKeyUnderAClientNameStaysAdmin(t *testing.T) {
 // The login name is an alias chosen by the caller, so showing it back would
 // claim an account that was never defined. The same key must also produce
 // the same display name under every name it arrives under.
-func TestDisplayNameIsTheConfiguredName(t *testing.T) {
+// The identity name is the CONFIGURED name, never the one typed.
+//
+// The login name is an alias chosen by the caller, so echoing it back would
+// claim an account that was never defined. The same key must produce the
+// same identity name under every name it arrives under.
+func TestIdentityNameIsTheConfiguredName(t *testing.T) {
 	repo := newRepo(t)
-	addNamedClient(t, repo, userAlice, keyAlice)
+	addNamedClient(t, repo, userAlice)
 
-	tests := []struct {
-		name  string
-		login string
-		key   string
-		want  string
-	}{
-		{"admin key, admin name", session.AdminUser, keyAdmin, session.AdminUser},
-		{"admin key, an alias", userAlias, keyAdmin, session.AdminUser},
-		// A second alias: were DisplayName echoing the login name, the
-		// case above would pass while this one showed a different
-		// "identity" for the very same administrator.
-		{"admin key, another alias", "someone-else", keyAdmin, session.AdminUser},
-		{"client key, own name", userAlice, keyAlice, userAlice},
-		// The key wins: alice's key under the admin name is still alice.
-		{"client key, admin name", session.AdminUser, keyAlice, userAlice},
-		{"client key, an alias", userAlias, keyAlice, userAlice},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			id, err := session.ResolveIdentityByKey(
-				t.Context(), repo, tc.login,
-				writeAuthInfo(t, tc.key), keyAdmin)
-			if err != nil {
-				t.Fatalf("ResolveIdentityByKey(%q): %v", tc.login, err)
-			}
-			if id.DisplayName != tc.want {
-				t.Errorf("login %q: DisplayName = %q, want %q",
-					tc.login, id.DisplayName, tc.want)
-			}
-			// The login name is still carried separately: it is the audit
-			// record of what actually came in, so collapsing the two would
-			// lose it from the log.
-			if id.User != tc.login {
-				t.Errorf("login %q: User = %q, want the name as given",
-					tc.login, id.User)
-			}
-		})
-	}
-}
-
-// A client named "admin" would otherwise be routed as an administrator.
-// cli.ValidateClientName prevents creating one, and this is the second line
-// of defense for a database that predates that check.
-func TestResolveIdentityRefusesShadowedAdmin(t *testing.T) {
-	repo := newRepo(t)
-	if err := repo.AddClient(t.Context(), &models.Client{
-		Name:       session.AdminUser,
-		PublicKeys: []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ2H6djoN78rkj1En9yM7XsMUUDyFgiGWn3WZZqfI3JF x"},
-	}); err != nil {
-		t.Fatalf("add client: %v", err)
-	}
-
-	if _, err := session.ResolveIdentityByKey(
-		t.Context(), repo, session.AdminUser,
-		writeAuthInfo(t, keyAdmin), keyAdmin); err == nil {
-		t.Fatal("a client shadowing the admin login must be refused")
+	for _, login := range []string{userAlice, userAlias, "whatever"} {
+		var out bytes.Buffer
+		if err := session.WriteAuthorizedKeys(
+			t.Context(), &out, repo, login, ""); err != nil {
+			t.Fatalf("%s: WriteAuthorizedKeys: %v", login, err)
+		}
+		lines := nonEmptyLines(out.String())
+		if len(lines) != 1 {
+			t.Fatalf("%s: got %d lines, want 1", login, len(lines))
+		}
+		id, err := repo.RedeemSessionToken(
+			t.Context(), session.HashToken(tokenIn(t, lines[0])), time.Now())
+		if err != nil {
+			t.Fatalf("%s: redeem: %v", login, err)
+		}
+		if id.IdentityName != userAlice {
+			t.Errorf("login %q: IdentityName = %q, want %q",
+				login, id.IdentityName, userAlice)
+		}
+		if id.LoginName != login {
+			t.Errorf("login %q: LoginName = %q, want it preserved",
+				login, id.LoginName)
+		}
 	}
 }
 
 // A client shadowing the admin name must not gain admin.
 //
-// The defense is no longer that the key is withheld -- every key is offered
-// for a name that is not a client's, because the name cannot identify
-// anyone. It is that the SESSION resolves identity from the key, and that
-// key belongs to a client row, so it can only ever produce a client
-// identity. ResolveIdentity additionally refuses the shadowed name outright.
+// cli.ValidateClientName prevents creating such a client; this is the second
+// line of defense for a database that predates that check. The key belongs
+// to a client row, so the token minted for it can only ever carry a client
+// identity -- whatever the row is called.
 func TestAShadowingClientKeyNeverResolvesToAdmin(t *testing.T) {
 	repo := newRepo(t)
-	const attacker = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ2H6djoN78rkj1En9yM7XsMUUDyFgiGWn3WZZqfI3JF attacker"
-	if err := repo.AddClient(t.Context(), &models.Client{
-		Name: session.AdminUser, PublicKeys: []string{attacker},
-	}); err != nil {
-		t.Fatalf("add client: %v", err)
+	addNamedClient(t, repo, session.AdminUser)
+
+	var out bytes.Buffer
+	if err := session.WriteAuthorizedKeys(
+		t.Context(), &out, repo, session.AdminUser, keyAdmin); err != nil {
+		t.Fatalf("WriteAuthorizedKeys: %v", err)
 	}
 
-	// The login is refused outright. A client row named "admin" makes two
-	// identities answer to one name, which is a misconfiguration rather
-	// than a login to resolve -- so proxpass stops instead of deciding
-	// which one was meant.
-	id, err := session.ResolveIdentityByKey(
-		t.Context(), repo, session.AdminUser, writeAuthInfo(t, attacker), "")
-	if err == nil {
-		t.Fatalf("a shadowed admin name must be refused, got admin=%v client=%d",
-			id.IsAdmin, id.ClientID)
+	for _, line := range nonEmptyLines(out.String()) {
+		if !strings.Contains(line, keyAlice) {
+			continue
+		}
+		id, err := repo.RedeemSessionToken(
+			t.Context(), session.HashToken(tokenIn(t, line)), time.Now())
+		if err != nil {
+			t.Fatalf("redeem: %v", err)
+		}
+		if id.IsAdmin {
+			t.Fatal("a client whose row is named \"admin\" was minted an " +
+				"administrator token")
+		}
+		return
 	}
-	if !strings.Contains(err.Error(), "shadows") {
-		t.Errorf("error does not explain the shadowing: %v", err)
-	}
-
-	// The property that must hold regardless: that key never yields admin.
-	// Here it cannot even reach a decision, but the same key under a
-	// non-shadowed database resolves to its client.
-	repo2 := newRepo(t)
-	c := addNamedClient(t, repo2, userAlice, attacker)
-	id2, err := session.ResolveIdentityByKey(
-		t.Context(), repo2, session.AdminUser, writeAuthInfo(t, attacker), "")
-	if err != nil {
-		t.Fatalf("ResolveIdentityByKey: %v", err)
-	}
-	if id2.IsAdmin || id2.ClientID != c.ID {
-		t.Errorf("a client key under the admin name resolved to admin=%v client=%d",
-			id2.IsAdmin, id2.ClientID)
-	}
+	t.Fatal("the shadowing client's key was not offered at all")
 }
 
 // A name that is not a client's is offered EVERY key, because the name
@@ -284,34 +267,49 @@ func TestAuthorizedKeysOffersEveryKeyForANonClientName(t *testing.T) {
 			"cannot log in without naming itself: %q", out.String())
 	}
 
-	// The security property that matters: presenting the CLIENT key under
-	// that alias yields the client, not the administrator.
-	id, err := session.ResolveIdentityByKey(
-		t.Context(), repo, userAlias, writeAuthInfo(t, clientKey), adminKey)
-	if err != nil {
-		t.Fatalf("ResolveIdentityByKey: %v", err)
-	}
-	if id.IsAdmin {
-		t.Error("a client key under an alias resolved to the administrator")
-	}
-	if id.DisplayName != userAlice {
-		t.Errorf("DisplayName = %q, want %q", id.DisplayName, userAlice)
+	// The security property that matters: the CLIENT key's line carries a
+	// client token, not an administrator one, even under an alias.
+	for _, line := range nonEmptyLines(out.String()) {
+		if !strings.Contains(line, clientKey) {
+			continue
+		}
+		id, err := repo.RedeemSessionToken(
+			t.Context(), session.HashToken(tokenIn(t, line)), time.Now())
+		if err != nil {
+			t.Fatalf("redeem: %v", err)
+		}
+		if id.IsAdmin {
+			t.Error("a client key under an alias was minted an administrator token")
+		}
+		if id.IdentityName != userAlice {
+			t.Errorf("IdentityName = %q, want %q", id.IdentityName, userAlice)
+		}
 	}
 }
 
-// A client's key resolves to that client and is never promoted to admin,
-// whatever name it arrives under.
+// A client's key is never promoted to admin, whatever name it arrives
+// under, because the token on its line was minted for the client row.
 func TestClientKeyIsNeverPromotedToAdmin(t *testing.T) {
 	repo := newRepo(t)
-	addNamedClient(t, repo, userAlice, keyAlice)
+	addNamedClient(t, repo, userAlice)
 
-	id, err := session.ResolveIdentityByKey(
-		t.Context(), repo, userAlice, writeAuthInfo(t, keyAlice), keyAdmin)
-	if err != nil {
-		t.Fatalf("ResolveIdentityByKey: %v", err)
+	var out bytes.Buffer
+	if err := session.WriteAuthorizedKeys(
+		t.Context(), &out, repo, userAlice, keyAdmin); err != nil {
+		t.Fatalf("WriteAuthorizedKeys: %v", err)
 	}
-	if id.IsAdmin {
-		t.Error("a client login must not resolve to the administrator")
+	for _, line := range nonEmptyLines(out.String()) {
+		if !strings.Contains(line, keyAlice) {
+			continue
+		}
+		id, err := repo.RedeemSessionToken(
+			t.Context(), session.HashToken(tokenIn(t, line)), time.Now())
+		if err != nil {
+			t.Fatalf("redeem: %v", err)
+		}
+		if id.IsAdmin {
+			t.Error("a client login must not be minted an administrator token")
+		}
 	}
 }
 
@@ -343,42 +341,67 @@ func newDeps(repo db.Repository, tb *terminalBuf, proxier console.Proxier) *sess
 		Logger:   log.New(io.Discard, "", 0),
 		Terminal: tb.term,
 	}
-	// A database-backed directory that reads the identity from Deps when
-	// it is used, not when it is built: tests routinely set IsAdmin or
-	// ClientID after this returns, and capturing them here would silently
-	// scope the session to the wrong caller.
-	d.Dir = &lazyRepoDirectory{deps: d}
+	// Serve the session the way production does: through the real API, over
+	// HTTP, against this repository. There is only one Directory
+	// implementation now, so a test double here would exercise code that
+	// never runs.
+	//
+	// The identity is read when the directory is USED, not when it is
+	// built: tests routinely set IsAdmin or ClientID after this returns,
+	// and capturing them here would scope the session to the wrong caller.
+	d.Dir = &lazyAPIDirectory{deps: d}
 	return d
 }
 
-// lazyRepoDirectory is a RepoDirectory that picks up the identity at call
-// time.
-type lazyRepoDirectory struct {
+// lazyAPIDirectory starts a real API server on first use and exchanges a
+// token for whatever identity Deps is carrying at that moment.
+type lazyAPIDirectory struct {
 	deps *session.Deps
+	dir  session.Directory
 }
 
-func (l *lazyRepoDirectory) dir() *session.RepoDirectory {
-	return &session.RepoDirectory{
-		Repo:     l.deps.Repo,
-		IsAdmin:  l.deps.IsAdmin,
-		ClientID: l.deps.ClientID,
+func (l *lazyAPIDirectory) resolve() session.Directory {
+	if l.dir != nil {
+		return l.dir
 	}
+	srv := httptest.NewServer(
+		api.NewServer(l.deps.Repo, log.New(io.Discard, "", 0)).Handler())
+
+	identity := &models.SessionIdentity{
+		LoginName:    l.deps.LoginName,
+		IdentityName: l.deps.IdentityName,
+		IsAdmin:      l.deps.IsAdmin,
+		ClientID:     l.deps.ClientID,
+	}
+	const minted = "session-test-minted-token"
+	now := time.Now()
+	ctx := context.Background()
+	if err := l.deps.Repo.MintSessionToken(
+		ctx, api.HashToken(minted), identity, now, now.Add(time.Minute)); err != nil {
+		panic("session test: mint: " + err.Error())
+	}
+	client := session.NewAPIClient(srv.URL)
+	if _, err := client.Exchange(ctx, minted); err != nil {
+		panic("session test: exchange: " + err.Error())
+	}
+	l.dir = &session.APIDirectory{Client: client}
+	return l.dir
 }
 
-func (l *lazyRepoDirectory) AccessibleGuests(ctx context.Context) ([]*session.GuestInfo, error) {
-	return l.dir().AccessibleGuests(ctx)
+func (l *lazyAPIDirectory) AccessibleGuests(ctx context.Context) ([]*session.GuestInfo, error) {
+	return l.resolve().AccessibleGuests(ctx)
 }
 
-func (l *lazyRepoDirectory) Connect(ctx context.Context, guestID int64) (*session.ConnectInfo, error) {
-	return l.dir().Connect(ctx, guestID)
+func (l *lazyAPIDirectory) Connect(ctx context.Context, guestID int64) (*session.ConnectInfo, error) {
+	return l.resolve().Connect(ctx, guestID)
 }
 
-func (l *lazyRepoDirectory) IsLoginNameReserved(ctx context.Context, name string) (bool, error) {
-	return l.dir().IsLoginNameReserved(ctx, name)
+func (l *lazyAPIDirectory) IsLoginNameReserved(ctx context.Context, name string) (bool, error) {
+	return l.resolve().IsLoginNameReserved(ctx, name)
 }
 
-func (l *lazyRepoDirectory) PublicEndpoint(ctx context.Context) (string, error) {
-	return l.dir().PublicEndpoint(ctx)
+func (l *lazyAPIDirectory) PublicEndpoint(ctx context.Context) (string, error) {
+	return l.resolve().PublicEndpoint(ctx)
 }
 
 func seedGuest(t *testing.T, repo db.Repository) *models.Guest {
@@ -432,7 +455,7 @@ func TestLoginNameConnectsToTheGuest(t *testing.T) {
 			proxier := &testenv.MockProxier{}
 			tb := newTerminal("")
 			d := newDeps(repo, tb, proxier)
-			d.User = login
+			d.LoginName = login
 			d.IsAdmin = true
 			// No command at all: this is a bare "ssh <name>@host".
 			d.Command = ""
@@ -472,7 +495,7 @@ func TestNonGuestLoginNameShowsThePicker(t *testing.T) {
 			tb := newTerminal("\x03") // Ctrl+C: quit the picker
 			tb.term.Raw = true
 			d := newDeps(repo, tb, proxier)
-			d.User = login
+			d.LoginName = login
 			d.IsAdmin = true
 
 			if code := session.Run(t.Context(), d); code != 0 {
@@ -515,7 +538,7 @@ func TestAmbiguousLoginNameIsReported(t *testing.T) {
 			tb := newTerminal("\x03")
 			tb.term.Raw = true
 			d := newDeps(repo, tb, proxier)
-			d.User = login
+			d.LoginName = login
 			d.IsAdmin = true
 
 			if code := session.Run(t.Context(), d); code == 0 {
@@ -581,7 +604,7 @@ func TestLoginNameRespectsClientAccess(t *testing.T) {
 		tb := newTerminal("")
 		d := newDeps(repo, tb, proxier)
 		// A client connecting under a guest's name rather than its own.
-		d.User = guestCT100
+		d.LoginName = guestCT100
 		d.ClientID = client.ID
 
 		if code := session.Run(t.Context(), d); code != 0 {
@@ -630,8 +653,8 @@ func TestLoginNameRespectsClientAccess(t *testing.T) {
 			tb := newTerminal("\x03")
 			tb.term.Raw = true
 			d := newDeps(repo, tb, proxier)
-			d.User = login
-			d.DisplayName = userAlice
+			d.LoginName = login
+			d.IdentityName = userAlice
 			d.ClientID = client.ID
 
 			_ = session.Run(t.Context(), d)
@@ -698,8 +721,8 @@ func TestAmbiguityHintOnlyNamesAccessibleGuests(t *testing.T) {
 	proxier := &testenv.MockProxier{}
 	tb := newTerminal("")
 	d := newDeps(repo, tb, proxier)
-	d.User = "web"
-	d.DisplayName = userAlice
+	d.LoginName = "web"
+	d.IdentityName = userAlice
 	d.ClientID = client.ID
 
 	// Only ONE "web" is reachable, so this must connect, not report an
@@ -759,8 +782,8 @@ func TestQualifiedLoginNameSelectsTheInstance(t *testing.T) {
 			proxier := &testenv.MockProxier{}
 			tb := newTerminal("")
 			d := newDeps(repo, tb, proxier)
-			d.User = tc.login
-			d.DisplayName = session.AdminUser
+			d.LoginName = tc.login
+			d.IdentityName = session.AdminUser
 			d.IsAdmin = true
 
 			if code := session.Run(t.Context(), d); code != 0 {
@@ -819,8 +842,8 @@ func TestQualifiedLoginNameDoesNotDiscloseInstances(t *testing.T) {
 		tb.term.Raw = true
 		proxier := &testenv.MockProxier{}
 		d := newDeps(repo, tb, proxier)
-		d.User = login
-		d.DisplayName = userAlice
+		d.LoginName = login
+		d.IdentityName = userAlice
 		d.ClientID = client.ID
 
 		_ = session.Run(t.Context(), d)
@@ -863,8 +886,8 @@ func TestReservedLoginNamesAreNeverTreatedAsGuests(t *testing.T) {
 			tb := newTerminal("\x03")
 			tb.term.Raw = true
 			d := newDeps(repo, tb, proxier)
-			d.User = reserved
-			d.DisplayName = session.AdminUser
+			d.LoginName = reserved
+			d.IdentityName = session.AdminUser
 			d.IsAdmin = true
 
 			if code := session.Run(t.Context(), d); code != 0 {
@@ -897,8 +920,8 @@ func TestReservedLoginNameMatchIsCaseInsensitive(t *testing.T) {
 	tb := newTerminal("\x03")
 	tb.term.Raw = true
 	d := newDeps(repo, tb, proxier)
-	d.User = "Admin"
-	d.DisplayName = session.AdminUser
+	d.LoginName = "Admin"
+	d.IdentityName = session.AdminUser
 	d.IsAdmin = true
 
 	_ = session.Run(t.Context(), d)
@@ -926,7 +949,7 @@ func TestExplicitCommandTakesPrecedenceOverTheLoginName(t *testing.T) {
 	d := newDeps(repo, tb, proxier)
 	// Login name names one guest, the command names another: the command
 	// is the explicit request and must win.
-	d.User = guestCT100
+	d.LoginName = guestCT100
 	d.IsAdmin = true
 	d.Command = "guest connect vm200"
 
@@ -965,8 +988,8 @@ func TestClientCannotRunAdminCommands(t *testing.T) {
 		t.Run(cmd, func(t *testing.T) {
 			tb := newTerminal("")
 			d := newDeps(repo, tb, &testenv.MockProxier{})
-			d.User = userAlice
-			d.DisplayName = userAlice
+			d.LoginName = userAlice
+			d.IdentityName = userAlice
 			d.ClientID = client.ID
 			d.Command = cmd
 
@@ -1010,8 +1033,8 @@ func TestClientGuestLsIsScopedToItsAccess(t *testing.T) {
 
 	tb := newTerminal("")
 	d := newDeps(repo, tb, &testenv.MockProxier{})
-	d.User = userAlice
-	d.DisplayName = userAlice
+	d.LoginName = userAlice
+	d.IdentityName = userAlice
 	d.ClientID = client.ID
 	d.Command = cmdGuestLs
 
@@ -1040,8 +1063,8 @@ func TestClientCanConnectThroughTheCLI(t *testing.T) {
 	proxier := &testenv.MockProxier{}
 	tb := newTerminal("")
 	d := newDeps(repo, tb, proxier)
-	d.User = userAlice
-	d.DisplayName = userAlice
+	d.LoginName = userAlice
+	d.IdentityName = userAlice
 	d.ClientID = client.ID
 	d.Command = cmdConnectCT100
 
@@ -1065,8 +1088,8 @@ func TestClientCLIConnectDoesNotDiscloseInaccessibleGuests(t *testing.T) {
 		tb := newTerminal("")
 		proxier := &testenv.MockProxier{}
 		d := newDeps(repo, tb, proxier)
-		d.User = userAlice
-		d.DisplayName = userAlice
+		d.LoginName = userAlice
+		d.IdentityName = userAlice
 		d.ClientID = client.ID
 		d.Command = cmd
 
@@ -1103,7 +1126,7 @@ func TestClientWithoutAccessIsDenied(t *testing.T) {
 	tb := newTerminal("")
 	proxier := &testenv.MockProxier{}
 	d := newDeps(repo, tb, proxier)
-	d.User = userAlice
+	d.LoginName = userAlice
 	d.ClientID = client.ID
 	d.Command = cmdConnectCT100
 
@@ -1126,7 +1149,7 @@ func TestClientWithAccessConnects(t *testing.T) {
 	tb := newTerminal("")
 	proxier := &testenv.MockProxier{}
 	d := newDeps(repo, tb, proxier)
-	d.User = userAlice
+	d.LoginName = userAlice
 	d.ClientID = client.ID
 	d.Command = cmdConnectCT100
 
@@ -1149,7 +1172,7 @@ func TestAdminConnectsWithoutAccessRule(t *testing.T) {
 	tb := newTerminal("")
 	proxier := &testenv.MockProxier{}
 	d := newDeps(repo, tb, proxier)
-	d.User = session.AdminUser
+	d.LoginName = session.AdminUser
 	d.IsAdmin = true
 	d.Command = cmdConnectCT100
 
@@ -1173,7 +1196,7 @@ func TestPickerConnectsToSelection(t *testing.T) {
 	tb := newTerminal("1\n")
 	proxier := &testenv.MockProxier{}
 	d := newDeps(repo, tb, proxier)
-	d.User = userAlice
+	d.LoginName = userAlice
 	d.ClientID = client.ID
 
 	if code := session.Run(t.Context(), d); code != 0 {
@@ -1195,7 +1218,7 @@ func TestPickerHidesInaccessibleGuests(t *testing.T) {
 
 	tb := newTerminal("")
 	d := newDeps(repo, tb, &testenv.MockProxier{})
-	d.User = userAlice
+	d.LoginName = userAlice
 	d.ClientID = client.ID
 
 	if code := session.Run(t.Context(), d); code == 0 {
@@ -1254,7 +1277,7 @@ func TestPickerAcceptsCarriageReturn(t *testing.T) {
 			tb := newTerminal("")
 			tb.term.In = pr
 			d := newDeps(repo, tb, proxier)
-			d.User = userAlice
+			d.LoginName = userAlice
 			d.ClientID = client.ID
 
 			done := make(chan int, 1)
@@ -1289,7 +1312,7 @@ func TestQuitFromPicker(t *testing.T) {
 			tb := newTerminal(input)
 			proxier := &testenv.MockProxier{}
 			d := newDeps(repo, tb, proxier)
-			d.User = userAlice
+			d.LoginName = userAlice
 			d.ClientID = client.ID
 
 			if code := session.Run(t.Context(), d); code != 0 {
@@ -1312,7 +1335,7 @@ func TestHelpListsAccessibleGuests(t *testing.T) {
 
 	tb := newTerminal("")
 	d := newDeps(repo, tb, &testenv.MockProxier{})
-	d.User = userAlice
+	d.LoginName = userAlice
 	d.ClientID = client.ID
 	d.Command = "--help"
 
@@ -1330,7 +1353,7 @@ func TestUnknownGuestFails(t *testing.T) {
 	tb := newTerminal("")
 
 	d := newDeps(repo, tb, &testenv.MockProxier{})
-	d.User = userAlice
+	d.LoginName = userAlice
 	d.ClientID = client.ID
 	d.Command = cmdConnectMissing
 
@@ -1356,7 +1379,7 @@ func TestAdminCanAddAClientWithAQuotedKey(t *testing.T) {
 			repo := newRepo(t)
 			tb := newTerminal("")
 			d := newDeps(repo, tb, &testenv.MockProxier{})
-			d.User = session.AdminUser
+			d.LoginName = session.AdminUser
 			d.IsAdmin = true
 			d.Command = tc.cmd
 
@@ -1431,7 +1454,7 @@ func TestInteractivePickerFiltersAndConnects(t *testing.T) {
 	tb.term.In = pr
 	tb.term.Raw = true // a PTY in raw mode, as sshd hands us
 	d := newDeps(repo, tb, proxier)
-	d.User = session.AdminUser
+	d.LoginName = session.AdminUser
 	d.IsAdmin = true
 
 	done := make(chan int, 1)
@@ -1478,7 +1501,7 @@ func TestInteractivePickerQuitsOnCtrlC(t *testing.T) {
 	tb := newTerminal("\x03")
 	tb.term.Raw = true
 	d := newDeps(repo, tb, proxier)
-	d.User = session.AdminUser
+	d.LoginName = session.AdminUser
 	d.IsAdmin = true
 
 	if code := session.Run(t.Context(), d); code != 0 {
@@ -1494,8 +1517,8 @@ func TestInteractivePickerQuitsOnCtrlC(t *testing.T) {
 // the user typed.
 //
 // This goes through session.Run so it covers the wiring as well as the
-// formatting: the title is built from Deps.DisplayName, which cmd/proxpass
-// fills from Identity.DisplayName.
+// formatting: the title is built from Deps.IdentityName, which cmd/proxpass
+// fills from Identity.IdentityName.
 func TestPickerTitleNamesTheConfiguredIdentity(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1523,8 +1546,8 @@ func TestPickerTitleNamesTheConfiguredIdentity(t *testing.T) {
 			d := newDeps(repo, tb, &testenv.MockProxier{})
 			// An admin logged in under a name of their choosing: the login
 			// name is the alias, but the identity is the administrator.
-			d.User = userAlias
-			d.DisplayName = session.AdminUser
+			d.LoginName = userAlias
+			d.IdentityName = session.AdminUser
 			d.IsAdmin = true
 
 			_ = session.Run(t.Context(), d)
@@ -1543,7 +1566,7 @@ func TestPickerTitleNamesTheConfiguredIdentity(t *testing.T) {
 
 // A client's title must show the name the client was defined under.
 //
-// This is the case where DisplayName and the login name agree, so it guards
+// This is the case where IdentityName and the login name agree, so it guards
 // the opposite failure from the test above: a fix that always printed
 // "admin" would pass that one and break this.
 func TestPickerTitleNamesTheClient(t *testing.T) {
@@ -1558,8 +1581,8 @@ func TestPickerTitleNamesTheClient(t *testing.T) {
 	tb := newTerminal("\x03")
 	tb.term.Raw = true
 	d := newDeps(repo, tb, &testenv.MockProxier{})
-	d.User = userAlice
-	d.DisplayName = userAlice
+	d.LoginName = userAlice
+	d.IdentityName = userAlice
 	d.ClientID = client.ID
 
 	_ = session.Run(t.Context(), d)
@@ -1569,7 +1592,7 @@ func TestPickerTitleNamesTheClient(t *testing.T) {
 	}
 }
 
-// Deps built without a DisplayName must still show a name rather than a
+// Deps built without a IdentityName must still show a name rather than a
 // blank, since the title is assembled from whatever the caller supplied.
 func TestPickerTitleFallsBackToTheLoginName(t *testing.T) {
 	repo := newRepo(t)
@@ -1578,9 +1601,9 @@ func TestPickerTitleFallsBackToTheLoginName(t *testing.T) {
 	tb := newTerminal("\x03")
 	tb.term.Raw = true
 	d := newDeps(repo, tb, &testenv.MockProxier{})
-	d.User = session.AdminUser
+	d.LoginName = session.AdminUser
 	d.IsAdmin = true
-	// DisplayName deliberately left unset.
+	// IdentityName deliberately left unset.
 
 	_ = session.Run(t.Context(), d)
 
@@ -1589,10 +1612,14 @@ func TestPickerTitleFallsBackToTheLoginName(t *testing.T) {
 	}
 }
 
-// The log must keep recording the login name that actually came in: it is
-// the audit record of what was attempted, and the display name would hide a
-// login under an unexpected alias.
-func TestLogRecordsTheLoginNameNotTheDisplayName(t *testing.T) {
+// The log must record WHO ACTED, not what they typed.
+//
+// The login name is an alias anybody can pick, so logging it lets one caller
+// produce entries indistinguishable from another's -- or impersonate a name
+// in the audit trail outright. The identity name comes from the client row
+// the authenticating key belongs to, resolved by root before the session
+// exists, so it cannot be chosen by the caller.
+func TestLogRecordsTheIdentityNotTheLoginName(t *testing.T) {
 	repo := newRepo(t)
 	seedGuest(t, repo)
 
@@ -1600,16 +1627,20 @@ func TestLogRecordsTheLoginNameNotTheDisplayName(t *testing.T) {
 	tb := newTerminal("")
 	d := newDeps(repo, tb, &testenv.MockProxier{})
 	d.Logger = log.New(&logb, "", 0)
-	d.User = userAlias
-	d.DisplayName = session.AdminUser
+	d.LoginName = userAlias
+	d.IdentityName = session.AdminUser
 	d.IsAdmin = true
 	d.Command = cmdConnectCT100
 
 	if code := session.Run(t.Context(), d); code != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, tb.errb.String())
 	}
-	if !strings.Contains(logb.String(), userAlias) {
-		t.Errorf("the log does not record the login name: %q", logb.String())
+	if !strings.Contains(logb.String(), session.AdminUser) {
+		t.Errorf("the log does not record the identity: %q", logb.String())
+	}
+	if strings.Contains(logb.String(), userAlias) {
+		t.Errorf("the log leaked the caller-chosen login name %q: %q",
+			userAlias, logb.String())
 	}
 }
 
@@ -1622,7 +1653,7 @@ func TestInteractivePickerRestoresTheScreen(t *testing.T) {
 	tb := newTerminal("\x03")
 	tb.term.Raw = true
 	d := newDeps(repo, tb, &testenv.MockProxier{})
-	d.User = session.AdminUser
+	d.LoginName = session.AdminUser
 	d.IsAdmin = true
 
 	_ = session.Run(t.Context(), d)
@@ -1649,7 +1680,7 @@ func TestPickerFallsBackToANumberedPromptWithoutAPTY(t *testing.T) {
 	tb := newTerminal("1\n")
 	tb.term.Raw = false // no PTY
 	d := newDeps(repo, tb, proxier)
-	d.User = session.AdminUser
+	d.LoginName = session.AdminUser
 	d.IsAdmin = true
 
 	if code := session.Run(t.Context(), d); code != 0 {
@@ -1706,7 +1737,7 @@ func TestSessionOutputIsCRLFOnRawTerminals(t *testing.T) {
 		tb := newTerminal("")
 		tb.term.Raw = true
 		d := newDeps(repo, tb, &testenv.MockProxier{})
-		d.User = userAlice
+		d.LoginName = userAlice
 		d.ClientID = client.ID
 		d.Command = "--help"
 
@@ -1720,7 +1751,7 @@ func TestSessionOutputIsCRLFOnRawTerminals(t *testing.T) {
 		tb := newTerminal("")
 		tb.term.Raw = true
 		d := newDeps(repo, tb, &testenv.MockProxier{})
-		d.User = session.AdminUser
+		d.LoginName = session.AdminUser
 		d.IsAdmin = true
 		d.Command = cmdConnectMissing
 
@@ -1737,7 +1768,7 @@ func TestSessionOutputIsCRLFOnRawTerminals(t *testing.T) {
 		tb := newTerminal("")
 		tb.term.Raw = true
 		d := newDeps(repo, tb, &testenv.MockProxier{})
-		d.User = session.AdminUser
+		d.LoginName = session.AdminUser
 		d.IsAdmin = true
 		d.Command = cmdConnectCT100
 
@@ -1762,7 +1793,7 @@ func TestSessionOutputIsCRLFOnRawTerminals(t *testing.T) {
 		tb := newTerminal("")
 		tb.term.Raw = true
 		d := newDeps(repo, tb, &testenv.MockProxier{})
-		d.User = session.AdminUser
+		d.LoginName = session.AdminUser
 		d.IsAdmin = true
 		d.Command = cmdGuestLs
 
@@ -1776,7 +1807,7 @@ func TestSessionOutputIsCRLFOnRawTerminals(t *testing.T) {
 		tb := newTerminal("\x03")
 		tb.term.Raw = true
 		d := newDeps(repo, tb, &testenv.MockProxier{})
-		d.User = session.AdminUser
+		d.LoginName = session.AdminUser
 		d.IsAdmin = true
 
 		_ = session.Run(t.Context(), d)
@@ -1791,7 +1822,7 @@ func TestSessionOutputIsPlainOnCookedTerminals(t *testing.T) {
 	tb := newTerminal("")
 	tb.term.Raw = false
 	d := newDeps(repo, tb, &testenv.MockProxier{})
-	d.User = session.AdminUser
+	d.LoginName = session.AdminUser
 	d.IsAdmin = true
 	d.Command = cmdGuestLs
 
@@ -1833,7 +1864,7 @@ func TestAdminHelpGoesToTheSessionTerminalNotStdout(t *testing.T) {
 	tb := newTerminal("")
 	tb.term.Raw = true
 	d := newDeps(repo, tb, &testenv.MockProxier{})
-	d.User = session.AdminUser
+	d.LoginName = session.AdminUser
 	d.IsAdmin = true
 	d.Command = "help"
 
@@ -1913,13 +1944,10 @@ func TestAuthorizedKeysRefusesUnservableNames(t *testing.T) {
 			t.Errorf("name %q was offered a key, so sshd would accept a login "+
 				"whose uid belongs to a different identity: %q", name, out.String())
 		}
-		// The name is also refused at the session, so a hand-run
-		// `proxpass session' cannot act on one either.
-		if _, err := session.ResolveIdentityByKey(
-			t.Context(), repo, name, writeAuthInfo(t, adminKey), adminKey,
-		); err == nil {
-			t.Errorf("name %q resolved to an identity, want it refused", name)
-		}
+		// Refusing to offer a key is the whole defense now: with no key
+		// offered, sshd never authenticates the name, so there is no
+		// session to resolve. (There used to be a second check inside the
+		// session; it went with the database fallback.)
 	}
 }
 
@@ -1939,14 +1967,17 @@ func TestAuthorizedKeysAcceptsNamesUseraddWouldReject(t *testing.T) {
 			t.Errorf("name %q was refused the admin key, but it is serviceable "+
 				"over NSS", name)
 		}
-		id, err := session.ResolveIdentityByKey(
-			t.Context(), repo, name, writeAuthInfo(t, adminKey), adminKey)
+		// And the token on that line carries the administrator, so the
+		// unusual name costs nothing beyond being servable.
+		id, err := repo.RedeemSessionToken(t.Context(),
+			session.HashToken(tokenIn(t, nonEmptyLines(out.String())[0])),
+			time.Now())
 		if err != nil {
-			t.Errorf("name %q: ResolveIdentityByKey: %v", name, err)
+			t.Errorf("name %q: redeem: %v", name, err)
 			continue
 		}
 		if !id.IsAdmin {
-			t.Errorf("name %q did not resolve to the administrator", name)
+			t.Errorf("name %q was not minted an administrator token", name)
 		}
 	}
 }

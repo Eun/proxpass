@@ -52,13 +52,13 @@ type Deps struct {
 	// User is the authenticated login name, as reported by sshd. It is what
 	// the client typed, so it is used for the log, where the name that came
 	// in is what makes the entry an audit record.
-	User string
-	// DisplayName is the configured name behind User, which is what the UI
-	// shows the user; see Identity.DisplayName for why it can differ.
+	LoginName string
+	// IdentityName is the configured name behind User, which is what the UI
+	// shows the user; see Identity.IdentityName for why it can differ.
 	//
 	// It falls back to User when unset, so a caller that does not know the
 	// difference still shows something rather than an empty name.
-	DisplayName string
+	IdentityName string
 	// IsAdmin grants access to the full admin CLI and to every guest.
 	IsAdmin bool
 	// ClientID is the database id of the authenticated client; 0 for admins.
@@ -99,7 +99,7 @@ func Run(ctx context.Context, d *Deps) int {
 func (d *Deps) runClient(ctx context.Context, cmd string) int {
 	guests, err := d.accessibleGuests(ctx)
 	if err != nil {
-		d.Logger.Printf("%s: %v", d.User, err)
+		d.Logger.Printf("%s: %v", d.IdentityName, err)
 		d.errf("internal error")
 		return 1
 	}
@@ -117,7 +117,7 @@ func (d *Deps) runClient(ctx context.Context, cmd string) int {
 	}
 	argv := append([]string{cliProgName}, splitArgs(cmd)...)
 	if err := cli.BuildClient(deps).Run(detachValues(ctx), argv); err != nil {
-		d.Logger.Printf("%s: client cli: %v", d.User, err)
+		d.Logger.Printf("%s: client cli: %v", d.IdentityName, err)
 		d.errf("Error: %v", err)
 		return 1
 	}
@@ -140,12 +140,12 @@ func (d *Deps) runClient(ctx context.Context, cmd string) int {
 func (d *Deps) connectChecked(ctx context.Context, guest *models.Guest) int {
 	info, err := d.Dir.Connect(ctx, guest.ID)
 	if errors.Is(err, ErrAccessDenied) {
-		d.Logger.Printf("%s: access denied to guest %s", d.User, guest.Name)
+		d.Logger.Printf("%s: access denied to guest %s", d.IdentityName, guest.Name)
 		d.errf("access denied")
 		return 1
 	}
 	if err != nil {
-		d.Logger.Printf("%s: connect failed: %v", d.User, err)
+		d.Logger.Printf("%s: connect failed: %v", d.IdentityName, err)
 		d.errf("internal error")
 		return 1
 	}
@@ -181,7 +181,7 @@ func (d *Deps) runAdmin(ctx context.Context, cmd string) int {
 
 func (d *Deps) attach(guest *models.Guest, inst *models.ProxmoxInstance) int {
 	d.Logger.Printf("%s: connecting to %s (%s%d) on %s",
-		d.User, guest.Name, guest.Type, guest.ProxmoxID, inst.Name)
+		d.IdentityName, guest.Name, guest.Type, guest.ProxmoxID, inst.Name)
 
 	// Announce the escape sequence before handing the terminal to the guest,
 	// because an escape hatch nobody knows about is no use when the guest
@@ -200,7 +200,7 @@ func (d *Deps) attach(guest *models.Guest, inst *models.ProxmoxInstance) int {
 	}
 
 	if err := d.Proxier.Connect(d.Terminal, guest, inst, d.Logger); err != nil {
-		d.Logger.Printf("%s: console error: %v", d.User, err)
+		d.Logger.Printf("%s: console error: %v", d.IdentityName, err)
 		d.errf("console error: %v", err)
 		return 1
 	}
@@ -302,13 +302,13 @@ func (d *Deps) writeHelp(ctx context.Context) int {
 // displayName is the name the UI shows for this session.
 //
 // Every user-facing mention of "who am I" goes through here rather than
-// reading DisplayName directly, so a caller that only set User -- a test, or
+// reading IdentityName directly, so a caller that only set User -- a test, or
 // anything constructing Deps by hand -- still gets a name instead of a blank.
 func (d *Deps) displayName() string {
-	if d.DisplayName != "" {
-		return d.DisplayName
+	if d.IdentityName != "" {
+		return d.IdentityName
 	}
-	return d.User
+	return d.LoginName
 }
 
 // errf reports an error to the user on stderr.

@@ -88,7 +88,7 @@ func TestGuestListIsScopedToTheCaller(t *testing.T) {
 	}
 
 	cred := exchange(t, h, repo, &models.SessionIdentity{
-		User: userAliasName, DisplayName: userAliceName, ClientID: client.ID,
+		LoginName: userAliasName, IdentityName: userAliceName, ClientID: client.ID,
 	})
 
 	got := listGuests(t, h, cred.Token)
@@ -108,7 +108,7 @@ func TestAdminSeesEveryGuest(t *testing.T) {
 	seedGuest(t, repo, inst.ID, 101, "two")
 
 	cred := exchange(t, h, repo, &models.SessionIdentity{
-		User: userAliasName, DisplayName: api.AdminUser, IsAdmin: true,
+		LoginName: userAliasName, IdentityName: api.AdminUser, IsAdmin: true,
 	})
 
 	if got := listGuests(t, h, cred.Token); len(got) != 2 {
@@ -124,7 +124,7 @@ func TestGuestListCarriesNoCredentials(t *testing.T) {
 	seedGuest(t, repo, inst.ID, 100, "one")
 
 	cred := exchange(t, h, repo, &models.SessionIdentity{
-		User: userAliasName, DisplayName: api.AdminUser, IsAdmin: true,
+		LoginName: userAliasName, IdentityName: api.AdminUser, IsAdmin: true,
 	})
 
 	rec := getWithToken(t, h, "/session/guests", cred.Token)
@@ -144,7 +144,7 @@ func TestConnectReturnsCredentialsForAGrantedGuest(t *testing.T) {
 		t.Fatalf("grant: %v", err)
 	}
 	cred := exchange(t, h, repo, &models.SessionIdentity{
-		User: userAliasName, DisplayName: userAliceName, ClientID: client.ID,
+		LoginName: userAliasName, IdentityName: userAliceName, ClientID: client.ID,
 	})
 
 	rec := postWithToken(t, h,
@@ -177,7 +177,7 @@ func TestConnectRefusesAGuestTheCallerMayNotReach(t *testing.T) {
 		t.Fatalf("grant: %v", err)
 	}
 	cred := exchange(t, h, repo, &models.SessionIdentity{
-		User: userAliasName, DisplayName: userAliceName, ClientID: client.ID,
+		LoginName: userAliasName, IdentityName: userAliceName, ClientID: client.ID,
 	})
 
 	rec := postWithToken(t, h,
@@ -200,7 +200,7 @@ func TestConnectHidesWhetherAGuestExists(t *testing.T) {
 
 	client := seedClient(t, repo, userAliceName, "ssh-ed25519 AAAAalice alice")
 	cred := exchange(t, h, repo, &models.SessionIdentity{
-		User: userAliasName, DisplayName: userAliceName, ClientID: client.ID,
+		LoginName: userAliasName, IdentityName: userAliceName, ClientID: client.ID,
 	})
 
 	forbidden := postWithToken(t, h,
@@ -243,7 +243,7 @@ func TestConnectResolvesAKeyPathIntoThePEM(t *testing.T) {
 	guest := seedGuest(t, repo, inst.ID, 100, "mine")
 
 	cred := exchange(t, h, repo, &models.SessionIdentity{
-		User: userAliasName, DisplayName: api.AdminUser, IsAdmin: true,
+		LoginName: userAliasName, IdentityName: api.AdminUser, IsAdmin: true,
 	})
 	rec := postWithToken(t, h,
 		fmt.Sprintf("/session/connect/%d", guest.ID), cred.Token)
@@ -277,7 +277,7 @@ func TestConnectReturnsOnlyTheHostingInstance(t *testing.T) {
 	guest := seedGuest(t, repo, mineInst.ID, 100, "mine")
 
 	cred := exchange(t, h, repo, &models.SessionIdentity{
-		User: userAliasName, DisplayName: api.AdminUser, IsAdmin: true,
+		LoginName: userAliasName, IdentityName: api.AdminUser, IsAdmin: true,
 	})
 	rec := postWithToken(t, h,
 		fmt.Sprintf("/session/connect/%d", guest.ID), cred.Token)
@@ -294,7 +294,7 @@ func TestReservedLoginNames(t *testing.T) {
 	h, repo := newTestServer(t)
 	seedClient(t, repo, userAliceName, "ssh-ed25519 AAAAalice alice")
 	cred := exchange(t, h, repo, &models.SessionIdentity{
-		User: userAliasName, DisplayName: userAliceName, ClientID: 1,
+		LoginName: userAliasName, IdentityName: userAliceName, ClientID: 1,
 	})
 
 	for name, want := range map[string]bool{
@@ -327,7 +327,7 @@ func TestPublicEndpoint(t *testing.T) {
 		t.Fatalf("set: %v", err)
 	}
 	cred := exchange(t, h, repo, &models.SessionIdentity{
-		User: userAliasName, DisplayName: api.AdminUser, IsAdmin: true,
+		LoginName: userAliasName, IdentityName: api.AdminUser, IsAdmin: true,
 	})
 
 	rec := getWithToken(t, h, "/session/public-endpoint", cred.Token)

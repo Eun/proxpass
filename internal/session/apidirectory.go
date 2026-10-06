@@ -9,7 +9,64 @@ import (
 	"strconv"
 
 	"proxpass/internal/api"
+	"proxpass/internal/models"
 )
+
+// ErrAccessDenied reports a guest this session may not reach.
+//
+// It is also what a guest that does not exist produces, deliberately:
+// telling the two apart would let a caller map the cluster by trying ids.
+var ErrAccessDenied = errors.New("access denied")
+
+// guestFromAPI converts a wire guest into the model the console and CLI
+// already take.
+func guestFromAPI(g *api.Guest) *models.Guest {
+	return &models.Guest{
+		ID:         g.ID,
+		Type:       models.GuestType(g.Type),
+		Name:       g.Name,
+		Status:     models.Status(g.Status),
+		ProxmoxID:  g.ProxmoxID,
+		InstanceID: g.InstanceID,
+	}
+}
+
+// instanceFromAPI converts wire credentials into the model.
+//
+// The pointer fields are absent rather than empty when an instance does not
+// use them -- an SSH instance has no API token -- so each is dereferenced
+// only when present.
+func instanceFromAPI(c *api.InstanceCredentials) *models.ProxmoxInstance {
+	inst := &models.ProxmoxInstance{
+		ID:             c.ID,
+		Name:           c.Name,
+		APIURL:         c.APIURL,
+		ConnectionType: models.ConnectionType(c.ConnectionType),
+		Node:           c.Node,
+	}
+	if c.APITokenID != nil {
+		inst.APITokenID = *c.APITokenID
+	}
+	if c.APITokenSecret != nil {
+		inst.APITokenSecret = *c.APITokenSecret
+	}
+	if c.SSHHost != nil {
+		inst.SSHHost = *c.SSHHost
+	}
+	if c.SSHPort != nil {
+		inst.SSHPort = *c.SSHPort
+	}
+	if c.SSHUser != nil {
+		inst.SSHUser = *c.SSHUser
+	}
+	// Always inline: the server resolved a configured key PATH by reading
+	// the file, because this process cannot. SSHKeyPath is deliberately
+	// left empty so nothing downstream tries to open it.
+	if c.SSHKey != nil {
+		inst.SSHKey = *c.SSHKey
+	}
+	return inst
+}
 
 // APIDirectory serves a session from the loopback API.
 //

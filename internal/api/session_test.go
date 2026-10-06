@@ -40,9 +40,9 @@ func getWithToken(t *testing.T, h http.Handler, path, token string) *httptest.Re
 func TestSessionIdentityReturnsTheTokensOwner(t *testing.T) {
 	h, repo := newTestServer(t)
 	cred := exchange(t, h, repo, &models.SessionIdentity{
-		User:        userAliasName,
-		DisplayName: userAliceName,
-		ClientID:    7,
+		LoginName:    userAliasName,
+		IdentityName: userAliceName,
+		ClientID:     7,
 	})
 
 	rec := getWithToken(t, h, "/session/identity", cred.Token)
@@ -54,11 +54,11 @@ func TestSessionIdentityReturnsTheTokensOwner(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.User != userAliasName {
-		t.Errorf("User = %q, want the login name", got.User)
+	if got.LoginName != userAliasName {
+		t.Errorf("User = %q, want the login name", got.LoginName)
 	}
-	if got.DisplayName != userAliceName {
-		t.Errorf("DisplayName = %q, want the client's configured name", got.DisplayName)
+	if got.IdentityName != userAliceName {
+		t.Errorf("IdentityName = %q, want the client's configured name", got.IdentityName)
 	}
 	if got.IsAdmin {
 		t.Error("a client token reported isAdmin")
@@ -73,9 +73,9 @@ func TestSessionIdentityReturnsTheTokensOwner(t *testing.T) {
 func TestAdminIdentityOmitsTheClientID(t *testing.T) {
 	h, repo := newTestServer(t)
 	cred := exchange(t, h, repo, &models.SessionIdentity{
-		User:        "whatever",
-		DisplayName: api.AdminUser,
-		IsAdmin:     true,
+		LoginName:    "whatever",
+		IdentityName: api.AdminUser,
+		IsAdmin:      true,
 	})
 
 	rec := getWithToken(t, h, "/session/identity", cred.Token)

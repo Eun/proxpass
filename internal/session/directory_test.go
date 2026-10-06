@@ -5,7 +5,6 @@ import (
 	"io"
 	"log"
 	"net/http/httptest"
-	"sort"
 	"testing"
 	"time"
 
@@ -44,90 +43,6 @@ func newAPIDirectory(
 	return &session.APIDirectory{Client: client}
 }
 
-func newRepoDirectory(repo db.Repository, identity *models.SessionIdentity) session.Directory {
-	return &session.RepoDirectory{
-		Repo:     repo,
-		IsAdmin:  identity.IsAdmin,
-		ClientID: identity.ClientID,
-	}
-}
-
-// TestDirectoriesAgree is what makes PR D safe: a client session changes
-// from reading the database to calling the API, and that must not change
-// what it sees. Any divergence is a behavior change hiding in a refactor.
-func TestDirectoriesAgree(t *testing.T) {
-	for _, name := range []string{"admin", "client"} {
-		t.Run(name, func(t *testing.T) {
-			repo := newRepo(t)
-			world := seedWorld(t, repo)
-
-			identity := &models.SessionIdentity{
-				User: userAlias, DisplayName: session.AdminUser, IsAdmin: true,
-			}
-			if name == "client" {
-				identity = &models.SessionIdentity{
-					User: userAlias, DisplayName: userAlice, ClientID: world.clientID,
-				}
-			}
-
-			repoDir := newRepoDirectory(repo, identity)
-			apiDir := newAPIDirectory(t, repo, identity)
-
-			t.Run("AccessibleGuests", func(t *testing.T) {
-				assertSameGuests(t,
-					mustGuests(t, repoDir), mustGuests(t, apiDir))
-			})
-			t.Run("Connect-allowed", func(t *testing.T) {
-				assertSameConnect(t, repoDir, apiDir, world.mine.ID)
-			})
-			t.Run("Connect-forbidden", func(t *testing.T) {
-				assertSameRefusal(t, repoDir, apiDir, world.secret.ID)
-			})
-			t.Run("Connect-missing", func(t *testing.T) {
-				assertSameRefusal(t, repoDir, apiDir, 999999)
-			})
-			t.Run("IsLoginNameReserved", func(t *testing.T) {
-				assertSameReservations(t, repoDir, apiDir)
-			})
-			t.Run("PublicEndpoint", func(t *testing.T) {
-				assertSameEndpoint(t, repoDir, apiDir)
-			})
-		})
-	}
-}
-
-func mustGuests(t *testing.T, dir session.Directory) []*session.GuestInfo {
-	t.Helper()
-	got, err := dir.AccessibleGuests(t.Context())
-	if err != nil {
-		t.Fatalf("AccessibleGuests: %v", err)
-	}
-	return got
-}
-
-func assertSameGuests(t *testing.T, a, b []*session.GuestInfo) {
-	t.Helper()
-	if len(a) != len(b) {
-		t.Fatalf("repo returned %d guests, api returned %d", len(a), len(b))
-	}
-	key := func(g *session.GuestInfo) string {
-		return g.Guest.Name + "@" + g.InstanceName
-	}
-	ka := make([]string, 0, len(a))
-	kb := make([]string, 0, len(b))
-	for i := range a {
-		ka = append(ka, key(a[i]))
-		kb = append(kb, key(b[i]))
-	}
-	sort.Strings(ka)
-	sort.Strings(kb)
-	for i := range ka {
-		if ka[i] != kb[i] {
-			t.Errorf("guest %d: repo=%q api=%q", i, ka[i], kb[i])
-		}
-	}
-}
-
 // An API-backed client session must never be handed credentials for a guest
 // it cannot reach -- the property the whole migration exists to establish.
 func TestAPIDirectoryWithholdsCredentialsForAForbiddenGuest(t *testing.T) {
@@ -135,7 +50,7 @@ func TestAPIDirectoryWithholdsCredentialsForAForbiddenGuest(t *testing.T) {
 	world := seedWorld(t, repo)
 
 	dir := newAPIDirectory(t, repo, &models.SessionIdentity{
-		User: userAlias, DisplayName: userAlice, ClientID: world.clientID,
+		LoginName: userAlias, IdentityName: userAlice, ClientID: world.clientID,
 	})
 
 	if _, err := dir.Connect(t.Context(), world.secret.ID); !errors.Is(err, session.ErrAccessDenied) {
@@ -151,7 +66,7 @@ func TestAPIDirectoryGuestListHasNoCredentials(t *testing.T) {
 	world := seedWorld(t, repo)
 
 	dir := newAPIDirectory(t, repo, &models.SessionIdentity{
-		User: userAlias, DisplayName: userAlice, ClientID: world.clientID,
+		LoginName: userAlias, IdentityName: userAlice, ClientID: world.clientID,
 	})
 
 	guests, err := dir.AccessibleGuests(t.Context())
@@ -241,70 +156,19 @@ func seedWorld(t *testing.T, repo db.Repository) world {
 	return world{instID: inst.ID, clientID: stored.ID, mine: mine, secret: secret}
 }
 
-// assertSameConnect checks both implementations hand back the same guest and
-// the same credentials.
-func assertSameConnect(t *testing.T, repoDir, apiDir session.Directory, guestID int64) {
-	t.Helper()
-	a, errA := repoDir.Connect(t.Context(), guestID)
-	b, errB := apiDir.Connect(t.Context(), guestID)
-	if (errA == nil) != (errB == nil) {
-		t.Fatalf("repo err=%v but api err=%v", errA, errB)
-	}
-	if errA != nil {
-		return
-	}
-	if a.Guest.ID != b.Guest.ID {
-		t.Errorf("guest %d vs %d", a.Guest.ID, b.Guest.ID)
-	}
-	if a.Instance.APITokenSecret != b.Instance.APITokenSecret {
-		t.Errorf("api token secret differs: %q vs %q",
-			a.Instance.APITokenSecret, b.Instance.APITokenSecret)
-	}
-	if a.Instance.Name != b.Instance.Name {
-		t.Errorf("instance %q vs %q", a.Instance.Name, b.Instance.Name)
-	}
-}
+// Test keys. Real ed25519 public keys so that anything parsing them sees a
+// well-formed value.
+const (
+	keyAdmin = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ2H6djoN78rkj1En9yM7XsMUUDyFgiGWn3WZZqfI3JF admin"
+	keyAlice = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHixnSBaUZmAX3Qd4hYl71jjgr58KXAJTdKjFrax6FHN alice"
+	keyBob   = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOG/T2Snw/38000pfUM6LhVXu4rKZrlrbfHhu7u0Yc3D bob"
+)
 
-// assertSameRefusal checks both refuse, or both allow, the same guest.
-func assertSameRefusal(t *testing.T, repoDir, apiDir session.Directory, guestID int64) {
+// addNamedClient stores a client under name, holding keyAlice.
+func addNamedClient(t *testing.T, repo db.Repository, name string) {
 	t.Helper()
-	_, errA := repoDir.Connect(t.Context(), guestID)
-	_, errB := apiDir.Connect(t.Context(), guestID)
-	if errors.Is(errA, session.ErrAccessDenied) != errors.Is(errB, session.ErrAccessDenied) {
-		t.Fatalf("repo err=%v but api err=%v", errA, errB)
-	}
-}
-
-func assertSameReservations(t *testing.T, repoDir, apiDir session.Directory) {
-	t.Helper()
-	for _, name := range []string{
-		session.AdminUser, userAlice, "ALICE", "ct100", "nobody",
-	} {
-		a, err := repoDir.IsLoginNameReserved(t.Context(), name)
-		if err != nil {
-			t.Fatalf("repo: %v", err)
-		}
-		b, err := apiDir.IsLoginNameReserved(t.Context(), name)
-		if err != nil {
-			t.Fatalf("api: %v", err)
-		}
-		if a != b {
-			t.Errorf("%q: repo=%v api=%v", name, a, b)
-		}
-	}
-}
-
-func assertSameEndpoint(t *testing.T, repoDir, apiDir session.Directory) {
-	t.Helper()
-	a, err := repoDir.PublicEndpoint(t.Context())
-	if err != nil {
-		t.Fatalf("repo: %v", err)
-	}
-	b, err := apiDir.PublicEndpoint(t.Context())
-	if err != nil {
-		t.Fatalf("api: %v", err)
-	}
-	if a != b {
-		t.Errorf("endpoint: repo=%q api=%q", a, b)
+	c := &models.Client{Name: name, PublicKeys: []string{keyAlice}}
+	if err := repo.AddClient(t.Context(), c); err != nil {
+		t.Fatalf("add client %s: %v", name, err)
 	}
 }

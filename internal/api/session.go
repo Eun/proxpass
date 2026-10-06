@@ -163,9 +163,9 @@ func (h *SessionHandler) callerIdentity(ctx context.Context) (*models.SessionIde
 // client with id 0".
 func identityResponse(identity *models.SessionIdentity) Identity {
 	out := Identity{
-		User:        identity.User,
-		DisplayName: identity.DisplayName,
-		IsAdmin:     identity.IsAdmin,
+		LoginName:    identity.LoginName,
+		IdentityName: identity.IdentityName,
+		IsAdmin:      identity.IsAdmin,
 	}
 	if identity.ClientID != 0 {
 		id := identity.ClientID

@@ -45,14 +45,14 @@ func TestExchangeReturnsACredentialAndTheIdentity(t *testing.T) {
 	h, repo := newTestServer(t)
 
 	got := exchange(t, h, repo, &models.SessionIdentity{
-		User: userAliasName, DisplayName: userAliceName, ClientID: 7,
+		LoginName: userAliasName, IdentityName: userAliceName, ClientID: 7,
 	})
 
 	if got.Token == "" {
 		t.Fatal("exchange returned an empty credential")
 	}
-	if got.Identity.DisplayName != userAliceName {
-		t.Errorf("DisplayName = %q, want %q", got.Identity.DisplayName, userAliceName)
+	if got.Identity.IdentityName != userAliceName {
+		t.Errorf("IdentityName = %q, want %q", got.Identity.IdentityName, userAliceName)
 	}
 	if got.Identity.ClientID == nil || *got.Identity.ClientID != 7 {
 		t.Errorf("ClientID = %v, want 7", got.Identity.ClientID)
@@ -67,7 +67,7 @@ func TestExchangeReturnsACredentialAndTheIdentity(t *testing.T) {
 func TestExchangeReturnsADifferentTokenThanTheOneSpent(t *testing.T) {
 	h, repo := newTestServer(t)
 	minted := mintToken(t, repo, &models.SessionIdentity{
-		User: userAliasName, DisplayName: userAliceName, ClientID: 1,
+		LoginName: userAliasName, IdentityName: userAliceName, ClientID: 1,
 	})
 
 	rec := postWithToken(t, h, "/session/exchange", minted)
@@ -88,7 +88,7 @@ func TestExchangeReturnsADifferentTokenThanTheOneSpent(t *testing.T) {
 func TestExchangeSpendsTheMintedToken(t *testing.T) {
 	h, repo := newTestServer(t)
 	minted := mintToken(t, repo, &models.SessionIdentity{
-		User: userAliasName, DisplayName: userAliceName, ClientID: 1,
+		LoginName: userAliasName, IdentityName: userAliceName, ClientID: 1,
 	})
 
 	if rec := postWithToken(t, h, "/session/exchange", minted); rec.Code != http.StatusOK {
@@ -105,7 +105,7 @@ func TestExchangeSpendsTheMintedToken(t *testing.T) {
 func TestTheCredentialIsReusable(t *testing.T) {
 	h, repo := newTestServer(t)
 	cred := exchange(t, h, repo, &models.SessionIdentity{
-		User: userAliasName, DisplayName: userAliceName, ClientID: 1,
+		LoginName: userAliasName, IdentityName: userAliceName, ClientID: 1,
 	})
 
 	for i := range 5 {
@@ -123,7 +123,7 @@ func TestTheCredentialIsReusable(t *testing.T) {
 func TestAMintedTokenIsNotACredential(t *testing.T) {
 	h, repo := newTestServer(t)
 	minted := mintToken(t, repo, &models.SessionIdentity{
-		User: userAliasName, DisplayName: userAliceName, ClientID: 1,
+		LoginName: userAliasName, IdentityName: userAliceName, ClientID: 1,
 	})
 
 	rec := getWithToken(t, h, "/session/identity", minted)
@@ -137,7 +137,7 @@ func TestAMintedTokenIsNotACredential(t *testing.T) {
 func TestACredentialCannotBeExchanged(t *testing.T) {
 	h, repo := newTestServer(t)
 	cred := exchange(t, h, repo, &models.SessionIdentity{
-		User: userAliasName, DisplayName: userAliceName, ClientID: 1,
+		LoginName: userAliasName, IdentityName: userAliceName, ClientID: 1,
 	})
 
 	rec := postWithToken(t, h, "/session/exchange", cred.Token)
@@ -150,7 +150,7 @@ func TestACredentialCannotBeExchanged(t *testing.T) {
 func TestRevokeStopsTheCredentialWorking(t *testing.T) {
 	h, repo := newTestServer(t)
 	cred := exchange(t, h, repo, &models.SessionIdentity{
-		User: userAliasName, DisplayName: userAliceName, ClientID: 1,
+		LoginName: userAliasName, IdentityName: userAliceName, ClientID: 1,
 	})
 
 	if rec := getWithToken(t, h, "/session/identity", cred.Token); rec.Code != http.StatusOK {
@@ -170,7 +170,7 @@ func TestRevokeStopsTheCredentialWorking(t *testing.T) {
 func TestRevokeIsIdempotent(t *testing.T) {
 	h, repo := newTestServer(t)
 	cred := exchange(t, h, repo, &models.SessionIdentity{
-		User: userAliasName, DisplayName: userAliceName, ClientID: 1,
+		LoginName: userAliasName, IdentityName: userAliceName, ClientID: 1,
 	})
 
 	for i := range 3 {
@@ -193,10 +193,10 @@ func TestExchangeWithoutATokenIs401(t *testing.T) {
 func TestRevokingOneCredentialLeavesOthersAlone(t *testing.T) {
 	h, repo := newTestServer(t)
 	alice := exchange(t, h, repo, &models.SessionIdentity{
-		User: userAliasName, DisplayName: userAliceName, ClientID: 1,
+		LoginName: userAliasName, IdentityName: userAliceName, ClientID: 1,
 	})
 	bob := exchange(t, h, repo, &models.SessionIdentity{
-		User: userAliasName, DisplayName: "bob", ClientID: 2,
+		LoginName: userAliasName, IdentityName: "bob", ClientID: 2,
 	})
 
 	if rec := postWithToken(t, h, "/session/revoke", alice.Token); rec.Code != http.StatusNoContent {
@@ -212,10 +212,10 @@ func TestRevokingOneCredentialLeavesOthersAlone(t *testing.T) {
 func TestExchangingDoesNotInvalidateAnEarlierCredential(t *testing.T) {
 	h, repo := newTestServer(t)
 	first := exchange(t, h, repo, &models.SessionIdentity{
-		User: userAliasName, DisplayName: userAliceName, ClientID: 1,
+		LoginName: userAliasName, IdentityName: userAliceName, ClientID: 1,
 	})
 	_ = exchange(t, h, repo, &models.SessionIdentity{
-		User: userAliasName, DisplayName: "bob", ClientID: 2,
+		LoginName: userAliasName, IdentityName: "bob", ClientID: 2,
 	})
 
 	if rec := getWithToken(t, h, "/session/identity", first.Token); rec.Code != http.StatusOK {

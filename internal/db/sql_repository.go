@@ -668,9 +668,9 @@ func (r *sqlRepo) insertToken(
 	}
 	if _, err := r.exec(ctx,
 		"INSERT INTO "+table+
-			" (token_hash, login_name, display_name, is_admin, client_id, expires_at)"+
+			" (token_hash, login_name, identity_name, is_admin, client_id, expires_at)"+
 			" VALUES (?, ?, ?, ?, ?, ?)",
-		tokenHash, identity.User, identity.DisplayName,
+		tokenHash, identity.LoginName, identity.IdentityName,
 		isAdmin, identity.ClientID, expiresAt.Unix()); err != nil {
 		return fmt.Errorf("inserting into %s: %w", table, err)
 	}
@@ -683,7 +683,7 @@ func scanIdentity(row interface{ Scan(...any) error }) (*models.SessionIdentity,
 		identity models.SessionIdentity
 		isAdmin  int64
 	)
-	err := row.Scan(&identity.User, &identity.DisplayName, &isAdmin, &identity.ClientID)
+	err := row.Scan(&identity.LoginName, &identity.IdentityName, &isAdmin, &identity.ClientID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNoSuchToken
 	}
@@ -725,7 +725,7 @@ func (r *sqlRepo) RedeemSessionToken(
 	identity, err := scanIdentity(r.queryRow(ctx,
 		`DELETE FROM session_tokens
 		  WHERE token_hash = ? AND expires_at > ?
-		 RETURNING login_name, display_name, is_admin, client_id`,
+		 RETURNING login_name, identity_name, is_admin, client_id`,
 		tokenHash, now.Unix()))
 	if err != nil && !errors.Is(err, ErrNoSuchToken) {
 		return nil, fmt.Errorf("redeeming session token: %w", err)
@@ -760,7 +760,7 @@ func (r *sqlRepo) LookupAPISession(
 	now time.Time,
 ) (*models.SessionIdentity, error) {
 	identity, err := scanIdentity(r.queryRow(ctx,
-		`SELECT login_name, display_name, is_admin, client_id
+		`SELECT login_name, identity_name, is_admin, client_id
 		   FROM api_sessions
 		  WHERE token_hash = ? AND expires_at > ?`,
 		tokenHash, now.Unix()))

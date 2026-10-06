@@ -405,17 +405,24 @@ components:
     Identity:
       type: object
       description: Who a session is, as resolved from its token.
-      required: [user, displayName, isAdmin]
+      required: [loginName, identityName, isAdmin]
       properties:
-        user:
-          type: string
-          description: The login name the session arrived with, kept for the audit log.
-        displayName:
+        loginName:
           type: string
           description: |
-            The configured identity to show the user: the admin user name, or
-            the client's own name. The login name is an alias the caller
-            chose, so it is not what the UI should display.
+            What the caller typed in `ssh <name>@host`. A REQUEST PARAMETER,
+            not an identity: any name the directory does not already serve
+            resolves to an alias, so anybody can pick anybody else's. The
+            session also accepts it as a guest target ("ssh ct100@host").
+            Never log it as the actor and never authorize from it.
+        identityName:
+          type: string
+          description: |
+            Who the caller IS: the client's own name, or the administrator's.
+            Resolved by `proxpass authorized-keys`, which runs as root before
+            the session exists and therefore knows which key authenticated,
+            so the session cannot influence it. This is the name to log and
+            the name to show.
         isAdmin:
           type: boolean
         clientId:

@@ -28,7 +28,7 @@ func newAdminRepo(
 		api.NewServer(direct, log.New(io.Discard, "", 0)).Handler())
 	t.Cleanup(srv.Close)
 
-	minted := "minted-" + identity.DisplayName
+	minted := "minted-" + identity.IdentityName
 	now := time.Now()
 	if err := direct.MintSessionToken(
 		t.Context(), api.HashToken(minted), identity, now, now.Add(time.Minute)); err != nil {
@@ -45,7 +45,7 @@ const clientAliceName = "alice"
 
 func adminIdentity() *models.SessionIdentity {
 	return &models.SessionIdentity{
-		User: userAlias, DisplayName: session.AdminUser, IsAdmin: true,
+		LoginName: userAlias, IdentityName: session.AdminUser, IsAdmin: true,
 	}
 }
 
@@ -278,7 +278,7 @@ func assertSameRest(t *testing.T, remote, direct db.Repository, clientID, guestI
 // call away from any client session.
 func TestAClientCredentialCannotUseTheAdminAPI(t *testing.T) {
 	remote, direct := newAdminRepo(t, &models.SessionIdentity{
-		User: userAlias, DisplayName: userAlice, ClientID: 1,
+		LoginName: userAlias, IdentityName: userAlice, ClientID: 1,
 	})
 
 	err := remote.AddClient(t.Context(),
@@ -305,7 +305,7 @@ func TestAClientCredentialCannotUseTheAdminAPI(t *testing.T) {
 // Reads are privileged too: the instance list carries credentials.
 func TestAClientCredentialCannotReadThroughTheAdminAPI(t *testing.T) {
 	remote, _ := newAdminRepo(t, &models.SessionIdentity{
-		User: userAlias, DisplayName: userAlice, ClientID: 1,
+		LoginName: userAlias, IdentityName: userAlice, ClientID: 1,
 	})
 
 	if _, err := remote.ListProxmoxInstances(t.Context()); !errors.Is(err, session.ErrNotAdmin) {
