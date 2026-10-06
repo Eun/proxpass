@@ -39,13 +39,13 @@ func getWithToken(t *testing.T, h http.Handler, path, token string) *httptest.Re
 
 func TestSessionIdentityReturnsTheTokensOwner(t *testing.T) {
 	h, repo := newTestServer(t)
-	token := mintToken(t, repo, &models.SessionIdentity{
+	cred := exchange(t, h, repo, &models.SessionIdentity{
 		User:        userAliasName,
 		DisplayName: userAliceName,
 		ClientID:    7,
 	})
 
-	rec := getWithToken(t, h, "/session/identity", token)
+	rec := getWithToken(t, h, "/session/identity", cred.Token)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
@@ -72,13 +72,13 @@ func TestSessionIdentityReturnsTheTokensOwner(t *testing.T) {
 // than present as 0 -- which would read as "the client with id 0".
 func TestAdminIdentityOmitsTheClientID(t *testing.T) {
 	h, repo := newTestServer(t)
-	token := mintToken(t, repo, &models.SessionIdentity{
+	cred := exchange(t, h, repo, &models.SessionIdentity{
 		User:        "whatever",
 		DisplayName: api.AdminUser,
 		IsAdmin:     true,
 	})
 
-	rec := getWithToken(t, h, "/session/identity", token)
+	rec := getWithToken(t, h, "/session/identity", cred.Token)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
@@ -109,24 +109,6 @@ func TestSessionIdentityWithAnUnknownTokenIs401(t *testing.T) {
 	rec := getWithToken(t, h, "/session/identity", "not-a-real-token")
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401: %s", rec.Code, rec.Body.String())
-	}
-}
-
-// Redeeming consumes the token, so asking twice with the same one fails.
-// This is the property that limits what a stolen token is worth.
-func TestSessionIdentityIsSingleUse(t *testing.T) {
-	h, repo := newTestServer(t)
-	token := mintToken(t, repo, &models.SessionIdentity{
-		User: "tobias", DisplayName: userAliceName, ClientID: 1,
-	})
-
-	if rec := getWithToken(t, h, "/session/identity", token); rec.Code != http.StatusOK {
-		t.Fatalf("first call: status = %d, want 200", rec.Code)
-	}
-	rec := getWithToken(t, h, "/session/identity", token)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("second call: status = %d, want 401 -- a replayed token "+
-			"must not work: %s", rec.Code, rec.Body.String())
 	}
 }
 

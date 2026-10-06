@@ -26,6 +26,17 @@ info:
     short-lived and single-use; scope is derived server-side from the identity
     the token was issued for, never from anything the caller sends.
 
+    That minted token is spent immediately, on `POST /session/exchange`, for
+    a session credential that lasts as long as the session. The two differ on
+    purpose. The minted one arrives in the session's environment, where any
+    process of the same uid can read it -- and every alias session shares one
+    uid -- so it is single-use and spent within a second of being issued. The
+    credential it buys is held in memory for the life of the process and
+    never written to the environment or to disk, so reading it means reading
+    another process's memory rather than its `/proc/<pid>/environ`. Only the
+    second one can be presented repeatedly, which is what a session needs:
+    browsing and connecting are several calls, not one.
+
 servers:
   - url: http://127.0.0.1:8080
     description: |
@@ -57,6 +68,44 @@ paths:
                 type: string
                 example: ok
 
+  /session/exchange:
+    post:
+      tags: [session]
+      summary: Trade the minted token for a session credential.
+      description: |
+        Consumes the single-use token `proxpass authorized-keys` put in the
+        session's environment and returns a credential the session can use
+        for the rest of its life, together with the identity it belongs to.
+
+        A session calls this once, at startup, and then forgets the minted
+        token. Calling it twice with the same token fails: that token is
+        spent.
+      operationId: exchangeSessionToken
+      responses:
+        "200":
+          description: The new credential and who it is for.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionCredential"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /session/revoke:
+    post:
+      tags: [session]
+      summary: Give up this session's credential.
+      description: |
+        Called when a session ends, so the credential stops working at once
+        rather than at its expiry. A session that dies without calling this
+        leaves a credential that expires on its own.
+      operationId: revokeSessionCredential
+      responses:
+        "204":
+          description: The credential is gone, or was never there.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
   /session/identity:
     get:
       tags: [session]
@@ -65,6 +114,11 @@ paths:
         The answer comes from the token, not from anything the caller sends.
         A session asks this instead of deciding for itself: it has no
         trustworthy way to know which key authenticated it.
+
+        Takes a session credential, not the minted token: that one is spent
+        by `POST /session/exchange`, which already returns the identity. This
+        is here for a caller that holds a credential and wants to re-read who
+        it is without having kept the answer.
       operationId: getSessionIdentity
       responses:
         "200":
@@ -99,6 +153,28 @@ components:
             $ref: "#/components/schemas/Error"
 
   schemas:
+    SessionCredential:
+      type: object
+      description: |
+        A session credential and the identity it speaks for.
+      required: [token, expiresAt, identity]
+      properties:
+        token:
+          type: string
+          description: |
+            Present this as the bearer token on later calls. Hold it in
+            memory only: putting it in the environment would undo the reason
+            it exists.
+        expiresAt:
+          type: string
+          format: date-time
+          description: |
+            When it stops working regardless of use. A session outliving this
+            has to exchange again, which it cannot do -- so the window is
+            generous enough to cover a long console attach.
+        identity:
+          $ref: "#/components/schemas/Identity"
+
     Identity:
       type: object
       description: Who a session is, as resolved from its token.

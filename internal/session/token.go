@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -65,6 +66,28 @@ func NewToken() (token, hash string, err error) {
 // minting side reads in one piece.
 func HashToken(token string) string {
 	return api.HashToken(token)
+}
+
+// TakeTokenFromEnv returns the minted token and removes it from this
+// process's environment.
+//
+// Unsetting is deliberate. The token arrives in the environment because that
+// is the only channel sshd offers between AuthorizedKeysCommand and the
+// session, but anything of the same uid can read /proc/<pid>/environ -- and
+// every alias session shares one uid. Dropping it as soon as it has been
+// read shrinks that window to the startup of this process, after which the
+// session holds only the exchanged credential, in memory.
+//
+// This does not rewrite the kernel's copy of the original environment block,
+// so a determined reader of /proc/<pid>/environ can still see the original
+// strings; Go's os.Unsetenv only changes what this process will pass on and
+// what it reports. The real protection is that the token is single-use and
+// is spent microseconds later -- this just avoids handing it to every child
+// process the session starts.
+func TakeTokenFromEnv() string {
+	token := os.Getenv(TokenEnv)
+	_ = os.Unsetenv(TokenEnv)
+	return token
 }
 
 // ValidTokenValue reports whether a token is safe to put in an

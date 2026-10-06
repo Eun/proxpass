@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 )
@@ -42,6 +43,22 @@ type Identity struct {
 	User string `json:"user"`
 }
 
+// SessionCredential A session credential and the identity it speaks for.
+type SessionCredential struct {
+	// ExpiresAt When it stops working regardless of use. A session outliving this
+	// has to exchange again, which it cannot do -- so the window is
+	// generous enough to cover a long console attach.
+	ExpiresAt time.Time `json:"expiresAt"`
+
+	// Identity Who a session is, as resolved from its token.
+	Identity Identity `json:"identity"`
+
+	// Token Present this as the bearer token on later calls. Hold it in
+	// memory only: putting it in the environment would undo the reason
+	// it exists.
+	Token string `json:"token"`
+}
+
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = Error
 
@@ -50,9 +67,15 @@ type ServerInterface interface {
 	// GetHealth Liveness probe.
 	// (GET /healthz)
 	GetHealth(w http.ResponseWriter, r *http.Request)
+	// ExchangeSessionToken Trade the minted token for a session credential.
+	// (POST /session/exchange)
+	ExchangeSessionToken(w http.ResponseWriter, r *http.Request)
 	// GetSessionIdentity Who the calling token belongs to.
 	// (GET /session/identity)
 	GetSessionIdentity(w http.ResponseWriter, r *http.Request)
+	// RevokeSessionCredential Give up this session's credential.
+	// (POST /session/revoke)
+	RevokeSessionCredential(w http.ResponseWriter, r *http.Request)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -78,11 +101,39 @@ func (siw *ServerInterfaceWrapper) GetHealth(w http.ResponseWriter, r *http.Requ
 	handler.ServeHTTP(w, r)
 }
 
+// ExchangeSessionToken operation middleware
+func (siw *ServerInterfaceWrapper) ExchangeSessionToken(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ExchangeSessionToken(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetSessionIdentity operation middleware
 func (siw *ServerInterfaceWrapper) GetSessionIdentity(w http.ResponseWriter, r *http.Request) {
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetSessionIdentity(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RevokeSessionCredential operation middleware
+func (siw *ServerInterfaceWrapper) RevokeSessionCredential(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RevokeSessionCredential(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -213,6 +264,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	}
 
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/healthz", wrapper.GetHealth)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/session/exchange", wrapper.ExchangeSessionToken)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/session/revoke", wrapper.RevokeSessionCredential)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/session/identity", wrapper.GetSessionIdentity)
 
 	return m
@@ -235,6 +288,41 @@ func (response GetHealth200TextResponse) VisitGetHealthResponse(w http.ResponseW
 	w.WriteHeader(200)
 
 	_, err := w.Write([]byte(fmt.Sprint(response)))
+	return err
+}
+
+type ExchangeSessionTokenRequestObject struct {
+}
+
+type ExchangeSessionTokenResponseObject interface {
+	VisitExchangeSessionTokenResponse(w http.ResponseWriter) error
+}
+
+type ExchangeSessionToken200JSONResponse SessionCredential
+
+func (response ExchangeSessionToken200JSONResponse) VisitExchangeSessionTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ExchangeSessionToken401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ExchangeSessionToken401JSONResponse) VisitExchangeSessionTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
 	return err
 }
 
@@ -273,14 +361,49 @@ func (response GetSessionIdentity401JSONResponse) VisitGetSessionIdentityRespons
 	return err
 }
 
+type RevokeSessionCredentialRequestObject struct {
+}
+
+type RevokeSessionCredentialResponseObject interface {
+	VisitRevokeSessionCredentialResponse(w http.ResponseWriter) error
+}
+
+type RevokeSessionCredential204Response struct {
+}
+
+func (response RevokeSessionCredential204Response) VisitRevokeSessionCredentialResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type RevokeSessionCredential401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response RevokeSessionCredential401JSONResponse) VisitRevokeSessionCredentialResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// GetHealth Liveness probe.
 	// (GET /healthz)
 	GetHealth(ctx context.Context, request GetHealthRequestObject) (GetHealthResponseObject, error)
+	// ExchangeSessionToken Trade the minted token for a session credential.
+	// (POST /session/exchange)
+	ExchangeSessionToken(ctx context.Context, request ExchangeSessionTokenRequestObject) (ExchangeSessionTokenResponseObject, error)
 	// GetSessionIdentity Who the calling token belongs to.
 	// (GET /session/identity)
 	GetSessionIdentity(ctx context.Context, request GetSessionIdentityRequestObject) (GetSessionIdentityResponseObject, error)
+	// RevokeSessionCredential Give up this session's credential.
+	// (POST /session/revoke)
+	RevokeSessionCredential(ctx context.Context, request RevokeSessionCredentialRequestObject) (RevokeSessionCredentialResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -346,6 +469,30 @@ func (sh *strictHandler) GetHealth(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ExchangeSessionToken operation middleware
+func (sh *strictHandler) ExchangeSessionToken(w http.ResponseWriter, r *http.Request) {
+	var request ExchangeSessionTokenRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ExchangeSessionToken(ctx, request.(ExchangeSessionTokenRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ExchangeSessionToken")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ExchangeSessionTokenResponseObject); ok {
+		if err := validResponse.VisitExchangeSessionTokenResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // GetSessionIdentity operation middleware
 func (sh *strictHandler) GetSessionIdentity(w http.ResponseWriter, r *http.Request) {
 	var request GetSessionIdentityRequestObject
@@ -370,41 +517,80 @@ func (sh *strictHandler) GetSessionIdentity(w http.ResponseWriter, r *http.Reque
 	}
 }
 
+// RevokeSessionCredential operation middleware
+func (sh *strictHandler) RevokeSessionCredential(w http.ResponseWriter, r *http.Request) {
+	var request RevokeSessionCredentialRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RevokeSessionCredential(ctx, request.(RevokeSessionCredentialRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RevokeSessionCredential")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RevokeSessionCredentialResponseObject); ok {
+		if err := validResponse.VisitRevokeSessionCredentialResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // Base64 encoded, compressed with deflate, json marshaled OpenAPI spec.
 // Stored as a slice of fixed-width chunks rather than one concatenated
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"nFfvj9vGEf1XBmyAtAaPOjtBG6ifDmgQXxE4RmWjH8yDNeSOxI2Ws+zO8iTGuP+9mF1KOt2dYbTf+HN2",
-	"5s2bt2+/FK3vB8/EUYrllyKQDJ6F0s1HxjF2Ptg/yOh96zkSR73EYXC2xWg9L34Xz/pM2o561KvvAm2K",
-	"ZfGnxTn4Ir+Vxc8h+FA8PDyUhSFpgx00SLEsPnQE0e+IwQr0VsTytgQ6DDaQKQFdIDQTjKJ3PsDIO/Z7",
-	"rgoNNUfXxfMCyy/FEPxAIdpcDB0fX656A9L5ECEQiucK/kHONhQwkpuAfQRDEa0js4TYkRCcEAIMVHMg",
-	"bDtsHEFDGx8IEFp0joJWofARRwWKTFVzURZxGqhYFhKD5W1KPdB/Ri2xWH6ak7w7feab36mNxUNZ3BoN",
-	"FKfnFfy784AgJGK9YlcCimbp3T0Z2ATfg42Soa2K8gksrbPE8dY8j6v9yG+/Fwh+D9ZUcNMIcYSNDwoH",
-	"oOktW4kBow8afONDj7FYFpbjX38812s50paCVmKsDA6nd9jTVxb1vLHbMZABO1cN0Wuf9mnRUSgsz8un",
-	"e2DsSWlRc3yct99zelWBRnZ+a/N96g4DOouSQuWm1dx2XqgE8WCjfqQU2HcY00cfbzWL0RmYi3ixp2Vh",
-	"5UYz0/Lmd433jpD1pab7cuGP0tPVji3FEKy2cm9jV8KOhkf4j8ZG/a/6JrXSspfonxN9zjidKWrHYOO0",
-	"0tnKbJlT+qBcemmW8vz22m0DzQTrIfjDgJJHISvJ1Y4mWZ9K2NEEscNY88W0lIBsoEM2ZLT7jwHxYwS/",
-	"gQbZVLDS8b1yCSFkU7PqhqOrUaiqueaLgX732wcwlOFMk4E8xc7y9iK+6lzwThLJap4fz2xaf7davf38",
-	"cfXzvz7ffPzwdg0b6xKd/J5zCrAPNmZJmC4iJKYmbiG0Dm0PDQoZ0LGN0CZiNaTIbI9ykXQtEYgwpAbO",
-	"fepiHLKKWt74r/HJDw22O7h5f5swftQPoXBPa5VXLyQJqQ+dFchRGspT8erVMfWb97evXi3zKOBFnPR+",
-	"rbUJWJZIaGr2G/AD8RFZgxG1VlUicpsKbk5gh5FFFQsZRh6CvbeOtmRgtHM/+1FiGsPO6+AdI2HbkkgJ",
-	"DbU4Cl0uox1EywLvgz/0/qDp15zZKdQGipI6pfkitwSr1VvQxTEmRgpcXT0S1YRdi6y7hAEba9abiDsC",
-	"f0+Zx60bJVKYkSQQHeOEcgB04vN1hvXdagXGBmqjDxP8eb1QYsi6hHy1UAlYVFW1rlmz3ARLbOQvaWbW",
-	"zjYs8lkJUImv3qxV27wiEgjMc7bnfpqaOwqUKG0D/HP12zuQDodE3Y095HnV5I7BYW9DImOPUacR6BAp",
-	"MLqaW88y9hTgRAPjKWvlPDuJ5XkpJayARJzSOF/pdETd5blmFQoNucDBLtKH1dbDXjOdQfesu4vlJMbG",
-	"t2NPSVyYDnHWhb6q+RdirXrmWw/7NEzByg7EOuLoJgjE2OsXCBtLLs9qEwh3+pDuKUw1Jw0uE9LsoSGm",
-	"jY2pqTdnecobLSDkqfwfZK+sed/ZtjvRPngfj9bhsQbRwcpM0qhwpA/U8AjkADuankhm3uNOIoas/dCk",
-	"1C2hixTAs+6Emu1sX+RSPeEsnn8HaX2mx1ExM5uvxBrK6qkJH7fovPFmJPYoYEVGVVkfSmAF9wXBnZ2S",
-	"KLvnrdRGp/J2AvDIEJ3goizuKUgWuNfVdXWt+6nqDA62WBY/VNfVD+pwMHZpu1p0hC52f+j1luJzlfx4",
-	"iWB2FcQxTINX4AbvnI6slWOPJGJINBPpzOwTau7URXhAlj2FkxPkacYjN7OCW/WZ94QuzYrCkKtWQ5ZY",
-	"pT6s+IXi25R3UV768TfX109seKRDXAwO7RMDTgfshwSk373gDF703rNWWYFxqC4MQLH8dFcWMvY9hqlY",
-	"Fr/ae2IS0fFvKFkP3IqajIx3cad/L2YmLuwj6/piF3T1GbrW9yRnciX4yiQs32TPeUtB2c1Nm/cjdQuG",
-	"Wmv0Vx3tvA0tddvV1rGvOYZR4t6H2E2wx+Q4ddzO03bp5iGpwku9W+UsTob9m038/89SpzW+0tKM0Pdy",
-	"GtJKB+bH69dfC3zKdHFx9ktkOLVfDxxH/FMvEscbcp63OgaPCTG3RBlxSainXvLT3YNyLHFQ0vvLcn49",
-	"ehnPbprdvJWosp9selKYxo+c3CJC8GP2YGhMSEYhm0PpDATaJLcy6MFv48Meg0mHzbxnpSXgfLDLKM6C",
-	"OQSvvkOPf/OB1HISxNidbEdyAUVZjMHNTm25WLx+8zdVrOr18qfrn64LrXYG6fmBLnms7UgSr3QD9O4s",
-	"60xkpMzanErVs925vWXB6Vx1Av6h/HJ8NA/nw93DfwMAAP//",
+	"tFldj9tGsv0rBd4AudfgSOMkuBtonwbZIPYisI3MGHkIjahElsSOqGpuV3M0ijH/fVHVTYmakeNgkX2T",
+	"RE53fZw6darmY1H7Xe+ZOEqx+FgEkt6zkH15zzjE1gf3OzX6vfYciaN+xL7vXI3ReZ7/Jp71N6lb2qF+",
+	"+iLQulgU/zM/HT5PT2X+fQg+FI+Pj2XRkNTB9XpIsSjuWoLot8TgBHZOxPGmBHroXaCmBOwCYXOAQfSb",
+	"DzDwlv2eZ4UelU/Xy9MFi49FH3xPIbrkDI0/n996A9L6ECEQiucZ/IM6t6KAkboDsI/QUETXUbOA2JIQ",
+	"HCMEGKjiQFi3uOoIVrT2gQChxq6joF5o+IijBoqaWcVFWcRDT8WikBgcb8z0QP8a1MVi8Us28sPxNb/6",
+	"jepYPJbF60YPiofnHvzcekAQEnFeY1cCilrpu3tqYB38DlyUFNpZUT4JS9054vi6eX6u5iM9/VIg+D24",
+	"ZgY3KyGOsPZBwwHY7Bw7iQGjD3r42ocdxmJROI7//83JX8eRNhTUk8ZJ3+HhDe7oE5d6XrvNEKgBl72G",
+	"6DVPe7t0EAqL0/X2HRh3pLCoOE7t9nu2RzPQkzu/cem7ZYcBO4diR6WkVVy3XqgE8eCivqQQ2LcY7aX3",
+	"r9WKoWsgO3Exp2Xh5EYtU/fys5X3HSHrQzX3suMT8/S2MaUYgtNU7l1sS9hSP4n/0Liofzf7LLTs2vPo",
+	"nwy9hLjbdP13gSwJ2F0snmxjfXwLkBuz7Zg7F0F6wq2o2SliT0rTalxu4iVwKx9EkOh7gb0PW8cbCLTB",
+	"0HQkAn6t+Z/ByRQ/xM7d62uxdVJxqxn2QA91i7whwA06LmHfurrVo2tkq3MPV1ead7V977hRxEvFG2IK",
+	"fhAg9sOm1aNqf08BEDrPG0Wr+I4AY8S6Te4dq6DBSFfRWayfo2RS0n/EmMfSfywLq+LnYXoXyOpSPYaM",
+	"6BVhoJAp1TN0GCkYzmUGr3zXGMK54h3tfDiA5+6wgH6IUWNnz+wc4nsXPO/0/L2Bf+AmhSmRZsUuAj04",
+	"ifJnOC65UE6yPgnFcyAquVM9BBcPtxqQBJmc7LvL4bjJXu+UdhpYHWDZB//QoyROTi3taksHWR5raUsH",
+	"iC3Gis9ouzRAt8gNNZr8aWX6ISoAV8jNDG61j1x1VqrITcXawDq6UnhWXPFZZ3nz9g4aSnVtFI18iG0C",
+	"7el8bbjBd2JsV3H+OdPa8ovb21e/vr/9/qdfb97fvVrC2nXGa37PyQTYBxdTbzqcnWCUaSSHUHfodrBC",
+	"oUZRogVhSV6RRmYz9i0DozGZweqU5TbGPrVzx2v/KWLz/QrrLdy8e20xnuRDKNzTUvu8FxKL1J2iOJ2y",
+	"ogTmFy9G02/evX7xYpE4Gc/OsedL9U3AsUTCpmK/Bt8Tj5FtMKL6qi2RuvWUN8LAVjvIMHAf3L3raEMN",
+	"DC7nczdItH7QavEcT8K6JpESVlTjIHR+jWYQHQu8C/5h5x/U/IoTOoXqQFEsU2ovck1we/sK9HKMhkhR",
+	"Ujp1d4tdjayVp/VbsX6JuCUwTkq9b5BIIUeSQLSfWJQDYCc+fU5hfXN7C40LVEdlgP9dzhUYsiwhfZpr",
+	"L5rPZrNlxWrlOjjiRv7PambZuRWL/KoAmImffbXUJus1IoGgeY72lM+m4pYCGaRdgH/evn0D0mJv0F27",
+	"h1Svatx4OOxdMDDuMGo1Aj1ECoxdxUq+w44CHGHQeEpNO9dOmSndBVDACkjEg5XzlVZH1PaiDMbpyDn2",
+	"bm4vzjYe9mppDrpnlTmOTRU0vh6UEKkBpoeYeWE3q/gHbRcYM952mTGDky2I64hjd4BAjDt9A2HtqEu1",
+	"ugqE1tzonsKhYhMDpUWaPayIae2iJfXmRE9J8QGek/2fob2y4tQBR9gH7+OoYacclIh97OohvaDKW3IL",
+	"3dLhCWUmsXUksdRf1SiV7dhpG/KskkytzTpaztkTTuT5d5DaJ3iMjJnQfCWuocSeU72RFGCKxB4FnMig",
+	"LOtDCazBvUC4WbKLojsXDsYxjsehRHrtgW63o8YZsEtlzOW7t7d3MM/uzkedsbTcVYyXNJJBqkMLrCQd",
+	"kbt2fjmFMO49NG69toBV3A9BSTI9y8Z5piwQZWzYpzYxad1lBjPyoeI++DqLpzgyhNLchFmMd7hJaMw6",
+	"eXREWgwkenXF+mdJNyW9fMpbSqOFTJWrY+Ox2nNjPZNMZVhuzKGKJ/FxEVbDQXMHrRaIY8gqZezWnVvT",
+	"aP/ojrF0SvFY27lhTzWMHqBhla1xg/qbBc+OkGX8QRnPK+LH47+U0YaA9ntskW20Ws71lXk1XF9/Xfeu",
+	"sQ80z5cuZ/CWu2MDTgFgsmCv1HiTbtRAoJ60fBRXWZ3K2OfG0DNRI4uKV8HvxSiEG+Umpto4R6lXNALY",
+	"JalXGhlquSVp5mKnXfvICyPxaWMqyuKegqS+/XJ2PbtWyantE3tXLIqvZ9ezr1W9Y2xNhc1bwi62v+vn",
+	"DV2Q7+/PiWGRkxHDoffKB73vOkmqNVOPRAzmiUjb5DnsqOGRZU/hOGnzIddmFp/wWuf4e8LOWoBWd/Ja",
+	"hw0jS51zix8ovjK7i/J83/HV9fWTNUekhzjvO3RPFhz0gLveAum3FwTvxd1GbsFOYOhnZ7q2WPzyoSxk",
+	"2O0wHIpF8aO7J1ZA98GvyEY73Ihq5xTv4oP+9TPGsZ2Hlwtp+C61ycwwpwpN0fsDbdwP4xgwVZ/TalL8",
+	"BYpDUCI/p7izFqCyrOKxegOJKWetHq3kEqLfkFWVcsWz+XFFypGKgdQBJycfAeS5phIwJggNfTn2LE5C",
+	"Nib3E29mDTaD77DrcvnHvavpdL+xYorQGl0S4RiP3aBi47ZLAPs+J+R2OqR8Fmv/+Urt+aT+CQgy7Z9O",
+	"6vt2ZG4dzrXev7l++akLjx7Mz1aDhuUjeu8CNjQJ9RhD7f0XeuEU3vnpE3xP5+SLLKOuZWqovcL8qAns",
+	"6kSBn236J1ChbDOm8hihUG2odtYo1JE0PSw0ckpN7CuOYZC49yG2B9ijbaxUJZ1E0vk2ELKYu8MtycXA",
+	"JLOfxjGjUBvIqEgqVqX3SRWSDBjXp2OtTitM+68C2rptktqnNaZdpxPPk/o28CDbZhECXZlu2LfetgHa",
+	"uFxsdT5u0XYxtraKx0R9gpczko8bj/9i0Zy2KpdrJbn/pZyi9FcUx8+tP2LPcGi1MaG3z1ZDoHu//SOu",
+	"V7s1E8QTWCnGx1FomsXzvZoBq6aKpwoHo9G0rWsO04HZkNE4OuX66JXBqSO8p2ddAWPe6UtaN9i+4hIc",
+	"fjJHn3PbM0x884k18kROCmw8237YRoKkEW2c+Uuy+oO7Jxj6xBmnPvlZkjvXAE+3Wr98eFRZYLJB7Pm5",
+	"kz+OWxXP3SEvuJ1EHUBtc21OrvzAtrdCCH5I2yBsmmAri7SmklZb+Nr2Jr0Ptl3eY2js/y8ZMnoFnP7X",
+	"kYojj25ZH2uqM8k4ttEstscFyFjxQ+jyzmgxn7/86m8qMmcvF99ef3tdqLc5SM/XwKaCNwNJvBo3rmea",
+	"uExTormqoDpVbVmw/avhGPjH8uP4U9ZTjx8e/x0AAP//",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,
