@@ -106,6 +106,138 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
+  /session/guests:
+    get:
+      tags: [session]
+      summary: The guests this session may reach.
+      description: |
+        Already filtered: the server decides from the caller's identity, so
+        a guest the caller may not reach is not in the answer at all rather
+        than being listed and refused later. The administrator sees every
+        guest.
+
+        Carries no credentials. Everything here is what a picker needs to
+        draw a list; what it takes to open a console comes from
+        `POST /session/connect/{guestId}`, one guest at a time.
+      operationId: listSessionGuests
+      responses:
+        "200":
+          description: The reachable guests.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Guest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /session/connect/{guestId}:
+    post:
+      tags: [session]
+      summary: What it takes to open this guest's console.
+      description: |
+        Returns the Proxmox credentials for ONE guest, after checking that
+        this caller may reach it. The check is made here, server-side, from
+        the stored identity: being able to name a guest is not permission to
+        reach it.
+
+        This is the only endpoint that returns secrets, and it returns only
+        the instance hosting the named guest. A session therefore holds
+        credentials for what it is connecting to, rather than for the whole
+        cluster.
+
+        An SSH key configured as a path is read and returned inline. The
+        session cannot read that file -- it has no business being able to --
+        so returning the path would be useless to it.
+      operationId: connectSessionGuest
+      parameters:
+        - name: guestId
+          in: path
+          required: true
+          description: The guest's row id, as given by `/session/guests`.
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: The guest and the credentials for its instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectInfo"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: |
+            The caller may not reach this guest. Deliberately the same answer
+            as for a guest that does not exist: telling them apart would turn
+            this endpoint into a way to enumerate the cluster.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /session/login-name-reserved:
+    get:
+      tags: [session]
+      summary: Whether a login name means "browse" rather than "connect".
+      description: |
+        The administrator's name and every configured client name are
+        reserved, so `ssh alice@host` opens the picker instead of looking for
+        a guest called "alice".
+
+        Asked one name at a time on purpose. The session has already been
+        told the name by whoever typed it, so answering about that one leaks
+        nothing -- whereas returning the list would tell every client who
+        else exists.
+      operationId: isLoginNameReserved
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The verdict.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [reserved]
+                properties:
+                  reserved:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /session/public-endpoint:
+    get:
+      tags: [session]
+      summary: The hostname clients use to reach this proxpass.
+      description: |
+        Shown in the console status bar. `proxpass serve` recorded it because
+        sshd gives a session a fresh environment, so the session cannot read
+        PROXPASS_PUBLIC_ENDPOINT itself.
+
+        Empty when the deployment has not been told what its endpoint is;
+        that is not an error, and the bar simply shows a shorter label.
+      operationId: getPublicEndpoint
+      responses:
+        "200":
+          description: The endpoint, possibly empty.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [endpoint]
+                properties:
+                  endpoint:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
   /session/identity:
     get:
       tags: [session]
@@ -153,6 +285,92 @@ components:
             $ref: "#/components/schemas/Error"
 
   schemas:
+    Guest:
+      type: object
+      description: |
+        A guest as a picker needs it. Deliberately carries nothing that could
+        be used to reach the guest: a session holds this list for its whole
+        life, and most of it is never connected to.
+      required: [id, name, type, status, proxmoxId, instanceId, instanceName]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: The row id, used to ask for a connection.
+        name:
+          type: string
+        type:
+          type: string
+          enum: [ct, vm]
+        status:
+          type: string
+          enum: [running, stopped]
+        proxmoxId:
+          type: integer
+          description: The guest's id within its Proxmox instance, e.g. 100.
+        instanceId:
+          type: integer
+          format: int64
+        instanceName:
+          type: string
+          description: |
+            Included so a caller can show and match on it without a second
+            request. It is the only thing about an instance a picker needs,
+            which is why there is no endpoint that lists instances.
+
+    ConnectInfo:
+      type: object
+      description: |
+        Everything needed to open one guest's console, and nothing about any
+        other guest or instance.
+      required: [guest, instance]
+      properties:
+        guest:
+          $ref: "#/components/schemas/Guest"
+        instance:
+          $ref: "#/components/schemas/InstanceCredentials"
+
+    InstanceCredentials:
+      type: object
+      description: |
+        The Proxmox credentials for the instance hosting one guest.
+
+        This is the material a session must not be able to read from the
+        database, handed over for a single connection it has been authorized
+        to make.
+      required: [id, name, apiUrl, connectionType, node]
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        apiUrl:
+          type: string
+        apiTokenId:
+          type: string
+        apiTokenSecret:
+          type: string
+          description: Present when the instance connects over the API.
+        connectionType:
+          type: string
+          enum: [termproxy, ssh]
+        node:
+          type: string
+          description: The resolved Proxmox short node name.
+        sshHost:
+          type: string
+        sshPort:
+          type: integer
+        sshUser:
+          type: string
+        sshKey:
+          type: string
+          description: |
+            PEM-encoded private key, inline. An instance configured with a
+            key PATH is resolved here by reading the file, because the
+            session cannot: the key is deliberately outside its reach.
+
     SessionCredential:
       type: object
       description: |
