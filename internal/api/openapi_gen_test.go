@@ -56,8 +56,16 @@ func TestGeneratedCodeIsUpToDate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading the checked-in file: %v", err)
 	}
-	if !bytes.Equal(got, want) {
+	// Compare with line endings normalised. On Windows git checks the file
+	// out with CRLF while the generator writes LF, so a byte comparison
+	// fails for a reason that has nothing to do with the spec.
+	if !bytes.Equal(normalizeEOL(got), normalizeEOL(want)) {
 		t.Errorf("openapi_gen.go does not match api/openapi.yaml.\n" +
 			"Run `mise run generate` and commit the result.")
 	}
+}
+
+// normalizeEOL strips carriage returns so the comparison is about content.
+func normalizeEOL(b []byte) []byte {
+	return bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
 }
