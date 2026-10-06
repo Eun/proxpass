@@ -37,6 +37,15 @@ info:
     second one can be presented repeatedly, which is what a session needs:
     browsing and connecting are several calls, not one.
 
+    The same server also exposes `POST /admin/rpc`, which is deliberately
+    NOT described here. Its body is a tagged union -- an operation name plus
+    arguments shaped per operation -- which OpenAPI describes poorly and
+    generates worse. It mirrors the `db.Repository` interface so that the
+    admin CLI can keep calling the interface it always called while the
+    database moves out of its reach; see internal/api/adminrpc.go, where that
+    constraint is documented beside the code. Every operation on it requires
+    a credential whose stored identity is the administrator's.
+
 servers:
   - url: http://127.0.0.1:8080
     description: |

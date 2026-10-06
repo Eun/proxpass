@@ -191,6 +191,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/group/gid/", s.handleGroupByGID)
 	mux.HandleFunc("/groups", s.handleGroups)
 
+	// The admin API. Hand-written rather than generated: its body is a
+	// tagged union, which OpenAPI describes poorly. Authentication is the
+	// same session credential, with an additional administrator check.
+	mux.HandleFunc("/admin/rpc", s.ServeAdminRPC)
+
 	return HandlerWithOptions(
 		NewStrictHandler(NewSessionHandler(s.repo, s.logger), nil),
 		StdHTTPServerOptions{

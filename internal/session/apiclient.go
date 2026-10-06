@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -78,6 +79,58 @@ func (c *APIClient) Revoke(ctx context.Context) error {
 	c.credential = ""
 	return err
 }
+
+// postJSON sends a JSON body and decodes a JSON reply.
+//
+// Used by the admin repository; the session endpoints take no body.
+func (c *APIClient) postJSON(ctx context.Context, path string, body, out any) error {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("encoding request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.baseURL+path, bytes.NewReader(encoded))
+	if err != nil {
+		return fmt.Errorf("building request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.credential)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("calling %s: %w", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	switch resp.StatusCode {
+	case http.StatusUnauthorized:
+		return ErrUnauthorized
+	case http.StatusForbidden:
+		return ErrNotAdmin
+	}
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", path, err)
+	}
+	// A non-2xx that is not one of the two above is a transport problem;
+	// the body is not necessarily JSON, so do not pretend it is.
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("%s: %s", path, resp.Status)
+	}
+	if out == nil {
+		return nil
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return fmt.Errorf("decoding %s: %w", path, err)
+	}
+	return nil
+}
+
+// ErrNotAdmin reports an operation refused because the caller is not the
+// administrator.
+var ErrNotAdmin = errors.New("this operation requires the administrator")
 
 // do performs one request with the given bearer token.
 func (c *APIClient) do(
