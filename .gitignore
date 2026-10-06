@@ -7,3 +7,7 @@ coverage.out
 *.db
 proxpass_host_key
 .e2e-build/
+
+# oapi-codegen writes relative to the working directory; running it from the
+# repo root instead of internal/api leaves a stray copy here.
+/openapi_gen.go

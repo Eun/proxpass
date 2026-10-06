@@ -7,6 +7,10 @@ goreleaser = "2.16.0"
 description = "Build the proxpass binary"
 run = "go build -o proxpass ./cmd/proxpass"
 
+[tasks.generate]
+description = "Regenerate the OpenAPI types from api/openapi.yaml"
+run = "go generate ./internal/api/..."
+
 [tasks.lint]
 description = "Run golangci-lint"
 run = "golangci-lint run ./..."

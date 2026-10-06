@@ -1,0 +1,21 @@
+# oapi-codegen configuration.
+#
+# Only types and the server interface are generated: the handlers stay
+# hand-written. The point of generating is that the spec and the Go types
+# cannot drift -- not to hand request routing to a framework proxpass does
+# not otherwise use.
+#
+# std-http-server matches what the server already is (net/http + ServeMux),
+# so nothing new is pulled into the dependency tree.
+package: api
+output: openapi_gen.go
+generate:
+  models: true
+  std-http-server: true
+  strict-server: true
+  embedded-spec: true
+output-options:
+  # The NSS wire format fixes these names; a generated "Uid" must stay "Uid".
+  # oapi-codegen would otherwise produce idiomatic Go names and silently
+  # change the JSON a running nss_http depends on.
+  name-normalizer: ToCamelCaseWithInitialisms
