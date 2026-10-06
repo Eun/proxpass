@@ -34,11 +34,12 @@ type guestRow struct {
 // The order here must match sortRows(rows, sortByName), since that is what
 // the picker re-applies when a filter is cleared; sortRows is used directly
 // rather than a second comparison function so the two cannot disagree.
-func newGuestRows(guests []*models.Guest, instNames map[int64]string) []guestRow {
+func newGuestRows(guests []*GuestInfo) []guestRow {
 	rows := make([]guestRow, 0, len(guests))
-	for _, g := range guests {
+	for _, info := range guests {
+		g := info.Guest
 		id := fmt.Sprintf("%s%d", g.Type, g.ProxmoxID)
-		inst := instNames[g.InstanceID]
+		inst := info.InstanceName
 		rows = append(rows, guestRow{
 			guest:    g,
 			instName: inst,

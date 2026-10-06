@@ -16,7 +16,7 @@ func rows(t *testing.T, names ...string) []guestRow {
 			ProxmoxID: 100 + i, Status: models.StatusRunning, InstanceID: 1,
 		})
 	}
-	return newGuestRows(guests, map[int64]string{1: "pve"})
+	return newGuestRows(guestInfos(guests, map[int64]string{1: "pve"}))
 }
 
 func names(rs []guestRow) []string {
@@ -264,4 +264,14 @@ func stripEscapes(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// guestInfos pairs guests with their instance names, the way the Directory
+// hands them to the picker.
+func guestInfos(guests []*models.Guest, instNames map[int64]string) []*GuestInfo {
+	out := make([]*GuestInfo, 0, len(guests))
+	for _, g := range guests {
+		out = append(out, &GuestInfo{Guest: g, InstanceName: instNames[g.InstanceID]})
+	}
+	return out
 }

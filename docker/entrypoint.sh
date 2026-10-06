@@ -77,7 +77,11 @@ export PROXPASS_GID PROXPASS_ADMIN_GID
 # journal siblings inherit it. Clients need to traverse and read it, which
 # "other" x+r provides without letting them create or unlink anything.
 chown -R "root:${PROXPASS_ADMIN_GID}" "${PROXPASS_DATA_DIR}"
-chmod 2775 "${PROXPASS_DATA_DIR}"
+# 2770, not 2775: nothing outside the administrator's group has any business
+# in here. The setgid bit keeps new files in that group so the admin CLI can
+# still write them. A client session reaches the directory API over loopback
+# and never opens this directory at all.
+chmod 2770 "${PROXPASS_DATA_DIR}"
 # PROXPASS_DATA is either a SQLite path or a postgres:// URL. Only the former
 # gets a default, because there is no sensible default for a server nobody has
 # told us about.
@@ -156,21 +160,31 @@ if [ "$#" -eq 0 ]; then
 	# after serve has created the file — a chmod beforehand would silently
 	# do nothing on a fresh volume and every write would fail with
 	# "attempt to write a readonly database".
-	# 0664 root:<admin gid>: the admin group writes, everyone else (i.e. the
-	# client logins, via their shared primary group) only reads. Clients must
-	# not be able to modify another client's access rules.
+	# 0660 root:<admin gid>. The administrator's group reads and writes;
+	# EVERYONE ELSE, which means every client login, gets nothing.
+	#
+	# It used to be 0664, world readable, because a client session opened
+	# this file itself to list its guests. That also handed it
+	# api_token_secret and the instances' ssh_key -- every Proxmox
+	# credential in the deployment -- to anyone who could log in at all.
+	# A client session now reads through the loopback API instead and
+	# holds no database handle, so the read bit can finally go.
+	#
+	# Do not widen this back without first moving the admin CLI off the
+	# file too: the mode is what enforces the separation; the code is
+	# only where the reads happen to come from.
 	fix_db_mode() {
 		# Nothing to do when the database is a server: these permissions
 		# exist to control who may write the SQLite FILE.
 		proxpass_uses_postgres && return 0
 		[ -f "${PROXPASS_DATA}" ] || return 0
 		chown "root:${PROXPASS_ADMIN_GID}" "${PROXPASS_DATA}" 2>/dev/null || true
-		chmod 0664 "${PROXPASS_DATA}" 2>/dev/null || true
+		chmod 0660 "${PROXPASS_DATA}" 2>/dev/null || true
 		# sqlite writes -wal/-shm siblings next to the database.
 		for sib in "${PROXPASS_DATA}-wal" "${PROXPASS_DATA}-shm" "${PROXPASS_DATA}-journal"; do
 			[ -e "${sib}" ] || continue
 			chown "root:${PROXPASS_ADMIN_GID}" "${sib}" 2>/dev/null || true
-			chmod 0664 "${sib}" 2>/dev/null || true
+			chmod 0660 "${sib}" 2>/dev/null || true
 		done
 	}
 

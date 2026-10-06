@@ -12,6 +12,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -31,6 +32,15 @@ const cliProgName = "proxpass"
 
 // Deps holds everything a session needs.
 type Deps struct {
+	// Dir is where this session learns about the cluster. For a client it
+	// is API-backed and therefore holds no database access; for an
+	// administrator it reads the database directly. See Directory.
+	Dir Directory
+
+	// Repo is the database handle, and is nil for a client session: that
+	// is the point of this design. It survives only for the admin CLI,
+	// which writes and so cannot be served by the read-only session API.
+	// Nothing on the client path may use it.
 	Repo       db.Repository
 	Discoverer proxmox.DiscovererFactory
 	Proxier    console.Proxier
@@ -93,23 +103,17 @@ func (d *Deps) runClient(ctx context.Context, cmd string) int {
 		d.errf("internal error")
 		return 1
 	}
-	instances, err := d.Repo.ListProxmoxInstances(ctx)
-	if err != nil {
-		d.Logger.Printf("%s: listing instances: %v", d.User, err)
-		d.errf("internal error")
-		return 1
-	}
-
 	deps := &cli.ClientDeps{
 		Deps: &cli.Deps{
-			Repo:   d.Repo,
+			// No Repo: a client session holds no database access, and
+			// nothing in this tree reads one.
 			Out:    d.Terminal.UIOut(),
 			ErrOut: d.Terminal.UIErr(),
 		},
 		// Pre-filtered: no command in the client tree can reach a guest
 		// outside this set, because none of them can see one.
-		Guests:    guests,
-		Instances: instances,
+		Guests:    guestModels(guests),
+		Instances: namedInstances(guests),
 	}
 	argv := append([]string{cliProgName}, splitArgs(cmd)...)
 	if err := cli.BuildClient(deps).Run(detachValues(ctx), argv); err != nil {
@@ -120,29 +124,32 @@ func (d *Deps) runClient(ctx context.Context, cmd string) int {
 	if deps.ConnectRequest != nil {
 		// The access check is redundant with the filtered pool and kept
 		// anyway, so that widening either one alone cannot open a hole.
-		return d.connectChecked(ctx, deps.ConnectRequest.Guest,
-			deps.ConnectRequest.Instance)
+		return d.connectChecked(ctx, deps.ConnectRequest.Guest)
 	}
 	return 0
 }
 
 // connectChecked attaches to a guest after confirming the session may
 // reach it.
-func (d *Deps) connectChecked(
-	ctx context.Context, guest *models.Guest, inst *models.ProxmoxInstance,
-) int {
-	allowed, err := d.hasAccess(ctx, guest)
-	if err != nil {
-		d.Logger.Printf("%s: access check failed: %v", d.User, err)
-		d.errf("internal error")
-		return 1
-	}
-	if !allowed {
+//
+// The check and the credentials come from the same call: asking for a
+// connection IS the check, so there is no window in which one could succeed
+// without the other. The caller has usually scoped the guest already, and
+// this is deliberately kept anyway -- widening either one alone must not
+// open a hole.
+func (d *Deps) connectChecked(ctx context.Context, guest *models.Guest) int {
+	info, err := d.Dir.Connect(ctx, guest.ID)
+	if errors.Is(err, ErrAccessDenied) {
 		d.Logger.Printf("%s: access denied to guest %s", d.User, guest.Name)
 		d.errf("access denied")
 		return 1
 	}
-	return d.attach(guest, inst)
+	if err != nil {
+		d.Logger.Printf("%s: connect failed: %v", d.User, err)
+		d.errf("internal error")
+		return 1
+	}
+	return d.attach(info.Guest, info.Instance)
 }
 
 // runAdmin runs an admin command through the admin CLI.
@@ -167,8 +174,7 @@ func (d *Deps) runAdmin(ctx context.Context, cmd string) int {
 	}
 	// "guest connect <id>" asks the caller to attach once the CLI returns.
 	if deps.ConnectRequest != nil {
-		return d.connectChecked(ctx, deps.ConnectRequest.Guest,
-			deps.ConnectRequest.Instance)
+		return d.connectChecked(ctx, deps.ConnectRequest.Guest)
 	}
 	return 0
 }
@@ -201,39 +207,11 @@ func (d *Deps) attach(guest *models.Guest, inst *models.ProxmoxInstance) int {
 	return 0
 }
 
-// hasAccess reports whether the session may reach the guest. Admins may
-// always connect.
-func (d *Deps) hasAccess(ctx context.Context, guest *models.Guest) (bool, error) {
-	if d.IsAdmin {
-		return true, nil
-	}
-	ok, err := d.Repo.HasAccess(ctx, d.ClientID, guest.ID)
-	if err != nil {
-		return false, fmt.Errorf("checking access: %w", err)
-	}
-	return ok, nil
-}
-
 // accessibleGuests returns the guests this session is allowed to reach.
-func (d *Deps) accessibleGuests(ctx context.Context) ([]*models.Guest, error) {
-	guests, err := d.Repo.ListGuests(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("listing guests: %w", err)
-	}
-	if d.IsAdmin {
-		return guests, nil
-	}
-	out := make([]*models.Guest, 0, len(guests))
-	for _, g := range guests {
-		ok, err := d.Repo.HasAccess(ctx, d.ClientID, g.ID)
-		if err != nil {
-			return nil, fmt.Errorf("checking access: %w", err)
-		}
-		if ok {
-			out = append(out, g)
-		}
-	}
-	return out, nil
+//
+// The scoping lives behind Directory, so this cannot forget to apply it.
+func (d *Deps) accessibleGuests(ctx context.Context) ([]*GuestInfo, error) {
+	return d.Dir.AccessibleGuests(ctx)
 }
 
 // splitArgs does a shell-like split that understands single and double
@@ -317,15 +295,7 @@ func (d *Deps) writeHelp(ctx context.Context) int {
 	if err != nil {
 		return 1
 	}
-	instances, err := d.Repo.ListProxmoxInstances(ctx)
-	if err != nil {
-		return 1
-	}
-	instNames := make(map[int64]string, len(instances))
-	for _, inst := range instances {
-		instNames[inst.ID] = inst.Name
-	}
-	writeGuestTable(w, newGuestRows(guests, instNames))
+	writeGuestTable(w, newGuestRows(guests))
 	return 0
 }
 

@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -158,6 +159,83 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	return nil
 }
 
+// exchangeIdentity spends the minted token for a session credential.
+//
+// Returns a nil client and a nil identity when there is no token or the
+// exchange failed, leaving the caller to fall back to the database. The
+// error is reported so an operator can see WHY a session fell back: after
+// the file permissions are tightened, a client that falls back does not
+// work at all, and the reason needs to be in the log.
+func exchangeIdentity(
+	ctx context.Context, mintedToken string,
+) (*session.APIClient, *session.Identity, error) {
+	if mintedToken == "" {
+		return nil, nil, errors.New(
+			"no session token in the environment; is PermitUserEnvironment set?")
+	}
+
+	client := session.NewAPIClient(sessionAPIBaseURL)
+	id, err := client.Exchange(ctx, mintedToken)
+	if err != nil {
+		return nil, nil, err
+	}
+	identity := &session.Identity{
+		User:        id.User,
+		DisplayName: id.DisplayName,
+		IsAdmin:     id.IsAdmin,
+	}
+	if id.ClientID != nil {
+		identity.ClientID = *id.ClientID
+	}
+	return client, identity, nil
+}
+
+// sessionDirectory picks where a session reads from.
+//
+// A client goes through the API and therefore holds no database access --
+// the database contains Proxmox API token secrets and instance SSH private
+// keys, and a session that can read them can take over the cluster. An
+// administrator reads the database directly, because the admin CLI writes
+// and the session API is read-only.
+func sessionDirectory(
+	client *session.APIClient, repo db.Repository, identity *session.Identity,
+) session.Directory {
+	if client != nil && !identity.IsAdmin {
+		return &session.APIDirectory{Client: client}
+	}
+	return &session.RepoDirectory{
+		Repo:     repo,
+		IsAdmin:  identity.IsAdmin,
+		ClientID: identity.ClientID,
+	}
+}
+
+// sessionRepo returns the database handle a session should hold.
+//
+// nil for a client: nothing on that path may touch the database, and a nil
+// here turns a mistake into a panic in testing rather than a quiet
+// privilege the design is meant to have removed.
+func sessionRepo(repo db.Repository, identity *session.Identity) db.Repository {
+	if identity.IsAdmin {
+		return repo
+	}
+	return nil
+}
+
+// sessionAPIBaseURL is where the loopback directory listens.
+//
+// Deliberately a constant and NOT configurable by environment. A session
+// sends its credential here and believes what comes back, so anything able
+// to change this address could collect the credential and answer with an
+// identity and a set of guests of its own choosing.
+//
+// sshd gives a session a scrubbed environment and the drop-in admits only
+// PROXPASS_DISABLE_STATUSBAR and PROXPASS_SESSION_TOKEN, so a client cannot
+// set this today -- this is to keep that true if the drop-in ever widens.
+// It matches the default of `proxpass serve --listen'; a deployment that
+// moves the listener has to change both.
+const sessionAPIBaseURL = "http://127.0.0.1:8080"
+
 // storeAdminKey records the startup admin key in the database if it is not
 // already present, so that later "authorized-keys" invocations can find it.
 func storeAdminKey(ctx context.Context, repo db.Repository, rawKey string, logger *log.Logger) error {
@@ -277,20 +355,60 @@ func runSession(ctx context.Context, cmd *ucli.Command) error {
 		return fmt.Errorf("no user; sshd should set $USER")
 	}
 
-	repo, err := db.NewRepository(cmd.String("data"))
-	if err != nil {
-		return fmt.Errorf("failed to open database: %w", err)
+	// Try the API first, and do NOT open the database to do it.
+	//
+	// A client session has no read access to the database file any more --
+	// that is the whole point of this design -- so opening it here would
+	// fail before the session had a chance to work. The exchange also
+	// returns the identity, so the usual path needs no database at all.
+	//
+	// The minted token is spent either way: take it from the environment
+	// before anything else, so it is not inherited by anything this
+	// process starts.
+	mintedToken := session.TakeTokenFromEnv()
+	apiClient, identity, apiErr := exchangeIdentity(ctx, mintedToken)
+	if apiClient != nil {
+		defer func() {
+			if err := apiClient.Revoke(context.WithoutCancel(ctx)); err != nil {
+				log.Printf("proxpass: revoking the session credential: %v", err)
+			}
+		}()
 	}
-	defer func() { _ = repo.Close() }()
 
-	// The key, not the login name, says who this is. The name is an alias
-	// the caller chose -- the directory serves any unused one so sshd can
-	// reach the key check at all -- so it cannot be trusted to identify
-	// anybody. See ResolveIdentityByKey.
-	identity, err := session.ResolveIdentityByKey(
-		ctx, repo, user, session.AuthInfoPath(), cmd.String("admin-key"))
-	if err != nil {
-		return err
+	// Fall back to the database when the exchange did not work. An
+	// administrator always lands here, because the admin CLI writes and
+	// cannot be served by the read-only session API; a client reaches it
+	// only when something is misconfigured, and will then fail on the file
+	// permissions instead -- which is the correct outcome, not a bypass.
+	var repo db.Repository
+	if identity == nil {
+		var err error
+		repo, err = db.NewRepository(cmd.String("data"))
+		if err != nil {
+			return fmt.Errorf("failed to open database: %w (api: %v)", err, apiErr)
+		}
+		defer func() { _ = repo.Close() }()
+
+		// The key, not the login name, says who this is. The name is an
+		// alias the caller chose -- the directory serves any unused one so
+		// sshd can reach the key check at all -- so it cannot be trusted
+		// to identify anybody. See ResolveIdentityByKey.
+		identity, err = session.ResolveIdentityByKey(
+			ctx, repo, user, session.AuthInfoPath(), cmd.String("admin-key"))
+		if err != nil {
+			return err
+		}
+	}
+
+	// An administrator needs the database for the admin CLI even when the
+	// exchange succeeded, so open it now if it is not already open.
+	if identity.IsAdmin && repo == nil {
+		var err error
+		repo, err = db.NewRepository(cmd.String("data"))
+		if err != nil {
+			return fmt.Errorf("failed to open database: %w", err)
+		}
+		defer func() { _ = repo.Close() }()
 	}
 
 	term, restore := currentTerminal()
@@ -303,19 +421,40 @@ func runSession(ctx context.Context, cmd *ucli.Command) error {
 	// session is drawing.
 	logger := log.New(term.UIErr(), "proxpass: ", log.LstdFlags)
 
-	// The endpoint comes from the database, not the flag: sshd gives this
+	// Where this session gets its view of the cluster.
+	//
+	// A client is served by the loopback API and holds NO database handle:
+	// the database contains Proxmox API token secrets and instance SSH
+	// private keys, and a session that can read them can take over the
+	// cluster. An administrator keeps the handle, because the admin CLI
+	// writes and the session API is read-only.
+	//
+	// When the exchange fails the session falls back to the database. That
+	// is not a security decision it gets to make -- it is what the session
+	// could already do, and the file permissions are what actually stop a
+	// client reading it. Logging the reason matters, because after the
+	// permissions are tightened a failure here is how an operator finds
+	// out something is wrong.
+	dir := sessionDirectory(apiClient, repo, identity)
+	if apiErr != nil {
+		logger.Printf("the session API was not usable (%v); "+
+			"reading the database directly", apiErr)
+	}
+
+	// The endpoint comes from the directory, not the flag: sshd gives this
 	// process a fresh environment, so PROXPASS_PUBLIC_ENDPOINT is never set
 	// here. `proxpass serve' recorded it for exactly this reason. A failure
 	// to read it must not cost the user their session -- the endpoint is
 	// cosmetic -- so it degrades to the shorter label.
-	publicEndpoint, err := repo.GetSetting(ctx, db.SettingPublicEndpoint)
+	publicEndpoint, err := dir.PublicEndpoint(ctx)
 	if err != nil {
 		logger.Printf("reading the public endpoint: %v", err)
 		publicEndpoint = ""
 	}
 
 	code := session.Run(ctx, &session.Deps{
-		Repo:        repo,
+		Dir:         dir,
+		Repo:        sessionRepo(repo, identity),
 		Discoverer:  proxmox.DefaultDiscovererFactory,
 		Proxier:     console.DefaultProxier{PublicEndpoint: publicEndpoint},
 		Logger:      logger,
