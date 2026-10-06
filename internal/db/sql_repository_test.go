@@ -3,17 +3,20 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"proxpass/internal/models"
 )
 
 const (
 	testKey         = "key"
+	testClientName  = "alice"
 	testTokenID     = "user@pam!token"
 	testTokenSecret = "secret"
 )
@@ -281,7 +284,7 @@ func TestClients(t *testing.T) {
 	repo := newTestRepo(t)
 	ctx := context.Background()
 
-	c := &models.Client{Name: "alice", PublicKeys: []string{"ssh-ed25519 AAAA..."}, GroupIDs: []int64{1, 2}}
+	c := &models.Client{Name: testClientName, PublicKeys: []string{"ssh-ed25519 AAAA..."}, GroupIDs: []int64{1, 2}}
 	if err := repo.AddClient(ctx, c); err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +292,7 @@ func TestClients(t *testing.T) {
 		t.Fatal("expected non-zero ID")
 	}
 
-	got, err := repo.GetClientByName(ctx, "alice")
+	got, err := repo.GetClientByName(ctx, testClientName)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,11 +300,11 @@ func TestClients(t *testing.T) {
 		t.Fatalf("unexpected client: %+v", got)
 	}
 
-	c.Name = "alice-updated"
+	c.Name = testClientName + "-updated"
 	if err := repo.UpdateClient(ctx, c); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = repo.GetClientByName(ctx, "alice-updated")
+	got, _ = repo.GetClientByName(ctx, testClientName+"-updated")
 	if got == nil {
 		t.Fatal("expected to find updated client")
 	}
@@ -309,7 +312,7 @@ func TestClients(t *testing.T) {
 	if err := repo.RemoveClient(ctx, c.ID); err != nil {
 		t.Fatal(err)
 	}
-	_, err = repo.GetClientByName(ctx, "alice-updated")
+	_, err = repo.GetClientByName(ctx, testClientName+"-updated")
 	if err == nil {
 		t.Fatal("expected error after remove")
 	}
@@ -578,7 +581,7 @@ func TestRemoveProxmoxInstanceCleansUpGuests(t *testing.T) {
 	}
 
 	// Add a client and grant access to both guests.
-	c := &models.Client{Name: "alice", PublicKeys: []string{"key"}, GroupIDs: []int64{}}
+	c := &models.Client{Name: testClientName, PublicKeys: []string{"key"}, GroupIDs: []int64{}}
 	if err := repo.AddClient(ctx, c); err != nil {
 		t.Fatal(err)
 	}
@@ -680,5 +683,146 @@ func TestSettings(t *testing.T) {
 		t.Fatal(err)
 	} else if got != "new.example.com" {
 		t.Errorf("setting changed by an unrelated key: %q", got)
+	}
+}
+
+// --- Session Tokens ---
+//
+// These run against whichever backend newTestRepo picks, so the statements
+// are exercised on Postgres in CI as well as on SQLite. DELETE ... RETURNING
+// and the INTEGER-rather-than-BOOLEAN column are exactly the kind of thing
+// that works on one backend and not the other.
+
+func TestSessionTokenRoundTrip(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := t.Context()
+	now := time.Now()
+
+	want := &models.SessionIdentity{
+		User: "tobias", DisplayName: "alice", ClientID: 42,
+	}
+	if err := repo.MintSessionToken(ctx, "hash-client", want, now, now.Add(time.Minute)); err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+
+	got, err := repo.RedeemSessionToken(ctx, "hash-client", now)
+	if err != nil {
+		t.Fatalf("redeem: %v", err)
+	}
+	if got.User != want.User || got.DisplayName != want.DisplayName ||
+		got.ClientID != want.ClientID || got.IsAdmin {
+		t.Errorf("round trip changed the identity: got %+v, want %+v", got, want)
+	}
+}
+
+// bool has to survive a column that is INTEGER on both backends.
+func TestSessionTokenKeepsTheAdminFlag(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := t.Context()
+	now := time.Now()
+
+	if err := repo.MintSessionToken(ctx, "hash-admin",
+		&models.SessionIdentity{User: "u", DisplayName: "admin", IsAdmin: true},
+		now, now.Add(time.Minute)); err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	got, err := repo.RedeemSessionToken(ctx, "hash-admin", now)
+	if err != nil {
+		t.Fatalf("redeem: %v", err)
+	}
+	if !got.IsAdmin {
+		t.Errorf("is_admin did not survive the round trip: %+v", got)
+	}
+}
+
+func TestSessionTokenIsSingleUse(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := t.Context()
+	now := time.Now()
+
+	if err := repo.MintSessionToken(ctx, "hash",
+		&models.SessionIdentity{User: "u", DisplayName: "d"},
+		now, now.Add(time.Minute)); err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	if _, err := repo.RedeemSessionToken(ctx, "hash", now); err != nil {
+		t.Fatalf("first redeem: %v", err)
+	}
+	if _, err := repo.RedeemSessionToken(ctx, "hash", now); !errors.Is(err, ErrNoSuchToken) {
+		t.Fatalf("second redeem = %v, want ErrNoSuchToken", err)
+	}
+}
+
+func TestSessionTokenExpires(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := t.Context()
+	now := time.Now()
+
+	if err := repo.MintSessionToken(ctx, "hash",
+		&models.SessionIdentity{User: "u", DisplayName: "d"},
+		now, now.Add(time.Second)); err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	if _, err := repo.RedeemSessionToken(ctx, "hash", now.Add(2*time.Second)); !errors.Is(err, ErrNoSuchToken) {
+		t.Fatalf("expired redeem = %v, want ErrNoSuchToken", err)
+	}
+}
+
+func TestRedeemingAnUnknownTokenIsNotAnError(t *testing.T) {
+	repo := newTestRepo(t)
+
+	_, err := repo.RedeemSessionToken(t.Context(), "never-minted", time.Now())
+	if !errors.Is(err, ErrNoSuchToken) {
+		t.Fatalf("got %v, want ErrNoSuchToken", err)
+	}
+}
+
+// Minting sweeps expired rows, and the threshold is "now" -- not the new
+// token's own expiry. Sweeping by the latter would delete every token due to
+// expire before it, so two people logging in at once would lock each other
+// out.
+func TestMintingDoesNotSweepOtherLiveTokens(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := t.Context()
+	now := time.Now()
+	identity := &models.SessionIdentity{User: "u", DisplayName: "d"}
+
+	// An older token that is still valid.
+	if err := repo.MintSessionToken(ctx, "first", identity, now, now.Add(30*time.Second)); err != nil {
+		t.Fatalf("mint first: %v", err)
+	}
+	// A newer one that outlives it.
+	if err := repo.MintSessionToken(ctx, "second", identity, now, now.Add(90*time.Second)); err != nil {
+		t.Fatalf("mint second: %v", err)
+	}
+
+	if _, err := repo.RedeemSessionToken(ctx, "first", now); err != nil {
+		t.Fatalf("the first token was swept by the second mint: %v", err)
+	}
+}
+
+// An expired row must not survive forever just because nobody redeemed it.
+func TestMintingSweepsExpiredTokens(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := t.Context()
+	now := time.Now()
+	identity := &models.SessionIdentity{User: "u", DisplayName: "d"}
+
+	if err := repo.MintSessionToken(ctx, "stale", identity, now, now.Add(time.Second)); err != nil {
+		t.Fatalf("mint stale: %v", err)
+	}
+	later := now.Add(time.Minute)
+	if err := repo.MintSessionToken(ctx, "fresh", identity, later, later.Add(time.Minute)); err != nil {
+		t.Fatalf("mint fresh: %v", err)
+	}
+
+	var n int
+	if err := repo.(*sqlRepo).queryRow(ctx,
+		"SELECT COUNT(*) FROM session_tokens WHERE token_hash = ?", "stale").
+		Scan(&n); err != nil {
+		t.Fatalf("counting: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("the expired token was not swept: %d rows remain", n)
 	}
 }

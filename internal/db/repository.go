@@ -2,6 +2,8 @@ package db
 
 import (
 	"context"
+	"errors"
+	"time"
 
 	"proxpass/internal/models"
 )
@@ -60,9 +62,28 @@ type Repository interface {
 	ListAdminKeys(ctx context.Context) ([]string, error)
 	RemoveAdminKey(ctx context.Context, pubKey string) error
 
+	// Session Tokens
+	//
+	// The bearer tokens a session presents to the API instead of opening
+	// this database itself. Minted by `proxpass authorized-keys', redeemed
+	// by `proxpass serve'. Two processes, so the handoff has to be stored
+	// rather than kept in memory.
+	MintSessionToken(ctx context.Context, tokenHash string, identity *models.SessionIdentity, now, expiresAt time.Time) error
+	// RedeemSessionToken atomically consumes a token and returns whoever it
+	// was issued for, or ErrNoSuchToken when it is unknown, expired or has
+	// already been used. Single use is the point: see the method comment.
+	RedeemSessionToken(ctx context.Context, tokenHash string, now time.Time) (*models.SessionIdentity, error)
+
 	// Access check (used by the proxy)
 	HasAccess(ctx context.Context, clientID, guestID int64) (bool, error)
 }
+
+// ErrNoSuchToken reports a bearer token that cannot be redeemed.
+//
+// Deliberately one error for "never existed", "expired" and "already used":
+// the caller turns all three into the same 401, and distinguishing them in
+// the API would tell an attacker which guesses were once valid.
+var ErrNoSuchToken = errors.New("no such session token")
 
 // Setting keys.
 //
