@@ -37,6 +37,7 @@ func TestLoadIDLayoutDefaults(t *testing.T) {
 	for name, id := range map[string]uint{
 		"AdminUID":       l.AdminUID,
 		"AdminGroupGID":  l.AdminGroupGID,
+		"AliasUID":       l.AliasUID,
 		"SharedGroupGID": l.SharedGroupGID,
 		"UIDBase":        l.UIDBase,
 		"GIDBase":        l.GIDBase,
@@ -51,6 +52,7 @@ func TestLoadIDLayoutDefaults(t *testing.T) {
 func TestLoadIDLayoutOverrides(t *testing.T) {
 	l, err := api.LoadIDLayout(envLookup(map[string]string{
 		api.EnvAdminUID:       "5000",
+		api.EnvAliasUID:       "4999",
 		api.EnvAdminGroupGID:  "4001",
 		api.EnvSharedGroupGID: "4000",
 		api.EnvUIDBase:        "6000",
@@ -131,6 +133,7 @@ func TestLoadIDLayoutErrorNamesTheVariable(t *testing.T) {
 func TestServerHonoursACustomLayout(t *testing.T) {
 	custom := api.IDLayout{
 		AdminUID:       5000,
+		AliasUID:       4999,
 		AdminGroupGID:  4001,
 		SharedGroupGID: 4000,
 		UIDBase:        6000,
@@ -179,5 +182,44 @@ func TestServerHonoursACustomLayout(t *testing.T) {
 	}
 	if rec := get(t, h, "/group/gid/4001"); rec.Code != http.StatusOK {
 		t.Errorf("custom admin gid must resolve, got %d", rec.Code)
+	}
+}
+
+// An alias is reachable with ANY valid key, including a client's. If it
+// shared the administrator's uid then an alias session and an admin session
+// would be the same Unix identity, and anything that tells sessions apart by
+// their owner -- process ownership now, a per-session credential later --
+// could not distinguish them.
+func TestAliasUIDDiffersFromTheAdminUID(t *testing.T) {
+	l := api.DefaultIDLayout()
+	if l.AliasUID == l.AdminUID {
+		t.Errorf("AliasUID and AdminUID are both %d", l.AliasUID)
+	}
+	if err := l.Validate(); err != nil {
+		t.Errorf("the default layout must be valid: %v", err)
+	}
+}
+
+// ...and a layout that collides them is rejected rather than quietly
+// restoring the behavior this change removes.
+func TestValidateRejectsAnAliasUIDEqualToTheAdminUID(t *testing.T) {
+	l := api.DefaultIDLayout()
+	l.AliasUID = l.AdminUID
+	err := l.Validate()
+	if err == nil {
+		t.Fatal("Validate accepted an alias uid equal to the admin uid")
+	}
+	if !strings.Contains(err.Error(), api.EnvAliasUID) {
+		t.Errorf("the error should name %s: %v", api.EnvAliasUID, err)
+	}
+}
+
+// Both fixed uids must stay below the client range, or a client row would
+// derive the same uid as the admin or an alias.
+func TestValidateRejectsAnAliasUIDInsideTheClientRange(t *testing.T) {
+	l := api.DefaultIDLayout()
+	l.AliasUID = l.UIDBase
+	if err := l.Validate(); err == nil {
+		t.Error("Validate accepted an alias uid inside the client range")
 	}
 }

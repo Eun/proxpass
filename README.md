@@ -396,11 +396,17 @@ deployment rather than of proxpass:
 | Env Var | Default | Description |
 |---------|---------|-------------|
 | `PROXPASS_ADMIN_UID` | `19999` | uid of the `admin` login |
+| `PROXPASS_ALIAS_UID` | `19998` | uid of a login name that names no configured account |
 | `PROXPASS_ADMIN_GID` | `19001` | gid of `proxpass-admin`; the only group that may write the database |
 | `PROXPASS_GID` | `19000` | gid of `proxpass`, every client's primary group (read-only) |
 | `PROXPASS_UID_BASE` | `20000` | added to a client's row id to derive its uid |
 | `PROXPASS_GID_BASE` | `40000` | added to a group's row id to derive its gid |
 | `PROXPASS_MAX_ID` | `65535` | highest id proxpass will serve |
+
+`PROXPASS_ALIAS_UID` must differ from `PROXPASS_ADMIN_UID`, and proxpass
+refuses to start if it does not. An alias is reachable with *any* valid key,
+including a client's, so an alias session must not share the administrator's
+Unix identity — the gids already differ, and the uids do too.
 
 > **Every id must stay below `PROXPASS_MAX_ID`, which defaults to 65535.** A
 > user-namespaced Docker daemon (`userns-remap`, or rootless) maps only the

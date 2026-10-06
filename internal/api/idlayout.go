@@ -37,6 +37,19 @@ const (
 type IDLayout struct {
 	// AdminUID is the uid of the reserved admin login.
 	AdminUID uint
+	// AliasUID is the uid of a login name that names no configured account.
+	//
+	// Aliases are what make "the key is the identity" work: the directory
+	// serves any unused name so that sshd gets as far as checking a key.
+	// They all share this uid, because NSS is asked only for a name and has
+	// no way to tell one alias session from another.
+	//
+	// It is deliberately NOT AdminUID. Sharing a uid means sharing an
+	// identity to everything that keys off one -- process ownership, and
+	// anything that later hands a session a credential -- so an alias
+	// session must not be indistinguishable from the administrator's. The
+	// gids already differ; this makes the uids differ too.
+	AliasUID uint
 	// AdminGroupGID is the admin's primary group: the only group permitted
 	// to write the database.
 	AdminGroupGID uint
@@ -54,6 +67,7 @@ type IDLayout struct {
 func DefaultIDLayout() IDLayout {
 	return IDLayout{
 		AdminUID:       DefaultUIDBase - 1,
+		AliasUID:       DefaultUIDBase - 2,
 		AdminGroupGID:  DefaultAdminGroupGID,
 		SharedGroupGID: DefaultSharedGroupGID,
 		UIDBase:        DefaultUIDBase,
@@ -67,6 +81,7 @@ func DefaultIDLayout() IDLayout {
 // agree with these values when it chowns the state directory.
 const (
 	EnvAdminUID       = "PROXPASS_ADMIN_UID"
+	EnvAliasUID       = "PROXPASS_ALIAS_UID"
 	EnvAdminGroupGID  = "PROXPASS_ADMIN_GID"
 	EnvSharedGroupGID = "PROXPASS_GID"
 	EnvUIDBase        = "PROXPASS_UID_BASE"
@@ -89,6 +104,7 @@ func LoadIDLayout(lookup func(string) (string, bool)) (IDLayout, error) {
 	}{
 		{EnvMaxID, &l.MaxID},
 		{EnvAdminUID, &l.AdminUID},
+		{EnvAliasUID, &l.AliasUID},
 		{EnvAdminGroupGID, &l.AdminGroupGID},
 		{EnvSharedGroupGID, &l.SharedGroupGID},
 		{EnvUIDBase, &l.UIDBase},
@@ -123,6 +139,7 @@ func (l IDLayout) Validate() error {
 		val uint
 	}{
 		{EnvAdminUID, l.AdminUID},
+		{EnvAliasUID, l.AliasUID},
 		{EnvAdminGroupGID, l.AdminGroupGID},
 		{EnvSharedGroupGID, l.SharedGroupGID},
 		{EnvUIDBase, l.UIDBase},
@@ -142,6 +159,7 @@ func (l IDLayout) Validate() error {
 		val uint
 	}{
 		{EnvAdminUID, l.AdminUID},
+		{EnvAliasUID, l.AliasUID},
 		{EnvAdminGroupGID, l.AdminGroupGID},
 		{EnvSharedGroupGID, l.SharedGroupGID},
 		{EnvUIDBase, l.UIDBase},
@@ -154,10 +172,25 @@ func (l IDLayout) Validate() error {
 		}
 	}
 
-	// The admin must not fall inside the client range.
+	// Neither fixed uid may fall inside the range derived from client ids,
+	// or a client would resolve to the same uid as the admin or an alias.
 	if l.AdminUID >= l.UIDBase {
 		return fmt.Errorf("%s=%d must be below %s=%d",
 			EnvAdminUID, l.AdminUID, EnvUIDBase, l.UIDBase)
+	}
+	if l.AliasUID >= l.UIDBase {
+		return fmt.Errorf("%s=%d must be below %s=%d",
+			EnvAliasUID, l.AliasUID, EnvUIDBase, l.UIDBase)
+	}
+	// An alias is reachable with ANY valid key, including a client's, so it
+	// must not share the administrator's uid: that would make an alias
+	// session indistinguishable from the admin's to anything that
+	// identifies a process by its owner.
+	if l.AliasUID == l.AdminUID {
+		return fmt.Errorf(
+			"%s and %s must differ: an alias is reachable with any valid key, "+
+				"so it must not share the administrator's uid",
+			EnvAliasUID, EnvAdminUID)
 	}
 	// The fixed gids must not collide with the derived group range.
 	if l.AdminGroupGID >= l.GIDBase || l.SharedGroupGID >= l.GIDBase {
