@@ -53,7 +53,7 @@ type pickerState struct {
 	height int
 	// user is the name shown in the title: the name the identity was
 	// defined under, not the login name that was typed. See
-	// Identity.DisplayName.
+	// Identity.IdentityName.
 	user   string
 	notice string
 	// sort is the column the unfiltered list is ordered by. While a filter

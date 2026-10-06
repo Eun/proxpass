@@ -699,7 +699,7 @@ func TestSessionTokenRoundTrip(t *testing.T) {
 	now := time.Now()
 
 	want := &models.SessionIdentity{
-		User: "tobias", DisplayName: "alice", ClientID: 42,
+		LoginName: "tobias", IdentityName: "alice", ClientID: 42,
 	}
 	if err := repo.MintSessionToken(ctx, "hash-client", want, now, now.Add(time.Minute)); err != nil {
 		t.Fatalf("mint: %v", err)
@@ -709,7 +709,7 @@ func TestSessionTokenRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("redeem: %v", err)
 	}
-	if got.User != want.User || got.DisplayName != want.DisplayName ||
+	if got.LoginName != want.LoginName || got.IdentityName != want.IdentityName ||
 		got.ClientID != want.ClientID || got.IsAdmin {
 		t.Errorf("round trip changed the identity: got %+v, want %+v", got, want)
 	}
@@ -721,7 +721,7 @@ func TestSessionTokenIsSingleUse(t *testing.T) {
 	now := time.Now()
 
 	if err := repo.MintSessionToken(ctx, "hash",
-		&models.SessionIdentity{User: "u", DisplayName: "d"},
+		&models.SessionIdentity{LoginName: "u", IdentityName: "d"},
 		now, now.Add(time.Minute)); err != nil {
 		t.Fatalf("mint: %v", err)
 	}
@@ -750,7 +750,7 @@ func TestMintingDoesNotSweepOtherLiveTokens(t *testing.T) {
 	repo := newTestRepo(t)
 	ctx := t.Context()
 	now := time.Now()
-	identity := &models.SessionIdentity{User: "u", DisplayName: "d"}
+	identity := &models.SessionIdentity{LoginName: "u", IdentityName: "d"}
 
 	// An older token that is still valid.
 	if err := repo.MintSessionToken(ctx, "first", identity, now, now.Add(30*time.Second)); err != nil {
@@ -771,7 +771,7 @@ func TestMintingSweepsExpiredTokens(t *testing.T) {
 	repo := newTestRepo(t)
 	ctx := t.Context()
 	now := time.Now()
-	identity := &models.SessionIdentity{User: "u", DisplayName: "d"}
+	identity := &models.SessionIdentity{LoginName: "u", IdentityName: "d"}
 
 	if err := repo.MintSessionToken(ctx, "stale", identity, now, now.Add(time.Second)); err != nil {
 		t.Fatalf("mint stale: %v", err)
@@ -800,7 +800,7 @@ func TestAPISessionRoundTrip(t *testing.T) {
 	now := time.Now()
 
 	want := &models.SessionIdentity{
-		User: "tobias", DisplayName: testClientName, ClientID: 42,
+		LoginName: "tobias", IdentityName: testClientName, ClientID: 42,
 	}
 	if err := repo.CreateAPISession(ctx, "hash", want, now, now.Add(time.Hour)); err != nil {
 		t.Fatalf("create: %v", err)
@@ -809,7 +809,7 @@ func TestAPISessionRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lookup: %v", err)
 	}
-	if got.User != want.User || got.DisplayName != want.DisplayName ||
+	if got.LoginName != want.LoginName || got.IdentityName != want.IdentityName ||
 		got.ClientID != want.ClientID || got.IsAdmin {
 		t.Errorf("round trip changed the identity: got %+v, want %+v", got, want)
 	}
@@ -823,7 +823,7 @@ func TestAPISessionLookupDoesNotConsume(t *testing.T) {
 	now := time.Now()
 
 	if err := repo.CreateAPISession(ctx, "hash",
-		&models.SessionIdentity{User: "u", DisplayName: "d"},
+		&models.SessionIdentity{LoginName: "u", IdentityName: "d"},
 		now, now.Add(time.Hour)); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -840,7 +840,7 @@ func TestRevokeAPISession(t *testing.T) {
 	now := time.Now()
 
 	if err := repo.CreateAPISession(ctx, "hash",
-		&models.SessionIdentity{User: "u", DisplayName: "d"},
+		&models.SessionIdentity{LoginName: "u", IdentityName: "d"},
 		now, now.Add(time.Hour)); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -867,7 +867,7 @@ func TestCreatingAnAPISessionDoesNotSweepLiveOnes(t *testing.T) {
 	repo := newTestRepo(t)
 	ctx := t.Context()
 	now := time.Now()
-	identity := &models.SessionIdentity{User: "u", DisplayName: "d"}
+	identity := &models.SessionIdentity{LoginName: "u", IdentityName: "d"}
 
 	if err := repo.CreateAPISession(ctx, "first", identity, now, now.Add(time.Hour)); err != nil {
 		t.Fatalf("create first: %v", err)
@@ -932,7 +932,7 @@ func TestTokensKeepTheAdminFlag(t *testing.T) {
 			repo := newTestRepo(t)
 			now := time.Now()
 			kind.store(t, repo, "hash",
-				&models.SessionIdentity{User: "u", DisplayName: "admin", IsAdmin: true},
+				&models.SessionIdentity{LoginName: "u", IdentityName: "admin", IsAdmin: true},
 				now, now.Add(time.Hour))
 
 			got, err := kind.lookup(t, repo, "hash", now)
@@ -952,7 +952,7 @@ func TestTokensExpire(t *testing.T) {
 			repo := newTestRepo(t)
 			now := time.Now()
 			kind.store(t, repo, "hash",
-				&models.SessionIdentity{User: "u", DisplayName: "d"},
+				&models.SessionIdentity{LoginName: "u", IdentityName: "d"},
 				now, now.Add(time.Second))
 
 			if _, err := kind.lookup(t, repo, "hash", now.Add(2*time.Second)); !errors.Is(err, ErrNoSuchToken) {

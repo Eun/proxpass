@@ -97,8 +97,29 @@ type DefaultAccessPolicy struct {
 //
 // ClientID is 0 for the administrator, who has no client row.
 type SessionIdentity struct {
-	User        string `json:"user"`
-	DisplayName string `json:"display_name"`
-	IsAdmin     bool   `json:"is_admin"`
-	ClientID    int64  `json:"client_id"`
+	// LoginName is what the caller typed in `ssh <name>@host'.
+	//
+	// It is a REQUEST PARAMETER, not an identity. Any name the directory
+	// does not already serve resolves to an alias, so anybody can pick
+	// anybody else's -- which is why the session also accepts it as a
+	// guest target ("ssh ct100@host"). Never log it as the actor and never
+	// make an authorization decision from it: use IdentityName and the
+	// IsAdmin/ClientID fields instead.
+	LoginName string `json:"login_name"`
+
+	// IdentityName is WHO THE CALLER IS: the clients.name row the
+	// authenticating key belongs to, or the administrator's name.
+	//
+	// Resolved by `proxpass authorized-keys', which runs as root before the
+	// session exists and therefore knows which key is which. The session
+	// cannot influence it. This is the name to log, the name to show, and
+	// the name an operator will grep for.
+	//
+	// It is deliberately not called IdentityName any more: that invited
+	// treating it as a cosmetic string safe to truncate or localize, which
+	// would quietly corrupt the audit trail.
+	IdentityName string `json:"identity_name"`
+
+	IsAdmin  bool  `json:"is_admin"`
+	ClientID int64 `json:"client_id"`
 }

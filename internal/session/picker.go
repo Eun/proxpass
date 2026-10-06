@@ -70,7 +70,7 @@ func (d *Deps) isReservedLoginName(ctx context.Context, name string) (bool, erro
 // (see ResolveIdentityByKey), so naming a guest grants nothing: a client
 // reaches exactly the guests its access rules already allow.
 func (d *Deps) connectByLoginName(ctx context.Context) int {
-	name := strings.TrimSpace(d.User)
+	name := strings.TrimSpace(d.LoginName)
 	if name == "" {
 		return d.runPicker(ctx)
 	}
@@ -78,7 +78,7 @@ func (d *Deps) connectByLoginName(ctx context.Context) int {
 	// A reserved name means "browse", even if a guest shares it.
 	reserved, err := d.isReservedLoginName(ctx, name)
 	if err != nil {
-		d.Logger.Printf("%s: %v", d.User, err)
+		d.Logger.Printf("%s: %v", d.IdentityName, err)
 		d.errf("internal error")
 		return 1
 	}
@@ -90,7 +90,7 @@ func (d *Deps) connectByLoginName(ctx context.Context) int {
 	// reach is simply "not a guest" -- see the enumeration note above.
 	guests, err := d.accessibleGuests(ctx)
 	if err != nil {
-		d.Logger.Printf("%s: %v", d.User, err)
+		d.Logger.Printf("%s: %v", d.IdentityName, err)
 		d.errf("internal error")
 		return 1
 	}
@@ -123,7 +123,7 @@ func (d *Deps) connectByLoginName(ctx context.Context) int {
 	case err != nil:
 		// Ambiguous, or a storage fault. Either way, say so rather than
 		// connecting to an arbitrary match or silently showing the picker.
-		d.Logger.Printf("%s: login name as guest: %v", d.User, err)
+		d.Logger.Printf("%s: login name as guest: %v", d.IdentityName, err)
 		d.errf("%v", err)
 		d.errf("or log in by name and pick from the list: ssh %s@<host>",
 			d.pickerLoginHint())
@@ -157,7 +157,7 @@ func (d *Deps) pickerLoginHint() string {
 func (d *Deps) runPicker(ctx context.Context) int {
 	guests, err := d.accessibleGuests(ctx)
 	if err != nil {
-		d.Logger.Printf("%s: %v", d.User, err)
+		d.Logger.Printf("%s: %v", d.IdentityName, err)
 		d.errf("internal error")
 		return 1
 	}
@@ -173,7 +173,7 @@ func (d *Deps) runPicker(ctx context.Context) int {
 		if errors.Is(err, errQuit) {
 			return 0
 		}
-		d.Logger.Printf("%s: picker: %v", d.User, err)
+		d.Logger.Printf("%s: picker: %v", d.IdentityName, err)
 		d.errf("%v", err)
 		return 1
 	}

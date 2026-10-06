@@ -121,13 +121,13 @@ func TestTokenIdentityComesFromTheKeyNotTheName(t *testing.T) {
 		t.Fatal("a client that logged in under an unused name was " +
 			"issued an administrator token")
 	}
-	if identity.User != userAlias {
+	if identity.LoginName != userAlias {
 		t.Errorf("User = %q, want the login name %q for the audit log",
-			identity.User, userAlias)
+			identity.LoginName, userAlias)
 	}
-	if identity.DisplayName != userAlice {
-		t.Errorf("DisplayName = %q, want the client's own name %q",
-			identity.DisplayName, userAlice)
+	if identity.IdentityName != userAlice {
+		t.Errorf("IdentityName = %q, want the client's own name %q",
+			identity.IdentityName, userAlice)
 	}
 }
 

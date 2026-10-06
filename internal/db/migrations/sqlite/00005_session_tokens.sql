@@ -22,7 +22,7 @@
 CREATE TABLE IF NOT EXISTS session_tokens (
     token_hash   TEXT    PRIMARY KEY,
     login_name   TEXT    NOT NULL,
-    display_name TEXT    NOT NULL,
+    identity_name TEXT   NOT NULL,
     is_admin     INTEGER NOT NULL,
     client_id    INTEGER NOT NULL,
     expires_at   INTEGER NOT NULL

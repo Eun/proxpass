@@ -159,29 +159,6 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	return nil
 }
 
-// refuseClientDatabaseFallback stops a client session continuing with a
-// database handle.
-//
-// A client only reaches the fallback when the API was unusable. Letting it
-// carry on would hand it the Proxmox API token secrets and instance SSH
-// private keys in the database -- the exposure this whole design removes --
-// and the only thing preventing that would be the file mode. That mode is
-// the right defense and it stays, but it must not be the ONLY one: it is a
-// property of the shipped image, not of the program, and retiring the
-// gid split later must not quietly turn this path back into a real one.
-//
-// An administrator is allowed through: the admin CLI writes, and nothing
-// serves it yet.
-func refuseClientDatabaseFallback(identity *session.Identity, apiErr error) error {
-	if identity.IsAdmin {
-		return nil
-	}
-	return fmt.Errorf(
-		"could not reach the proxpass API (%w), and a client session is not "+
-			"permitted to read the database directly; check that sshd sets %s",
-		apiErr, session.TokenEnv)
-}
-
 // exchangeIdentity spends the minted token for a session credential.
 //
 // Returns a nil client and a nil identity when there is no token or the
@@ -203,9 +180,9 @@ func exchangeIdentity(
 		return nil, nil, err
 	}
 	identity := &session.Identity{
-		User:        id.User,
-		DisplayName: id.DisplayName,
-		IsAdmin:     id.IsAdmin,
+		LoginName:    id.LoginName,
+		IdentityName: id.IdentityName,
+		IsAdmin:      id.IsAdmin,
 	}
 	if id.ClientID != nil {
 		identity.ClientID = *id.ClientID
@@ -213,36 +190,12 @@ func exchangeIdentity(
 	return client, identity, nil
 }
 
-// sessionDirectory picks where a session reads from.
+// sessionDirectory returns where a session reads from.
 //
-// A client goes through the API and therefore holds no database access --
-// the database contains Proxmox API token secrets and instance SSH private
-// keys, and a session that can read them can take over the cluster. An
-// administrator reads the database directly, because the admin CLI writes
-// and the session API is read-only.
-func sessionDirectory(
-	client *session.APIClient, repo db.Repository, identity *session.Identity,
-) session.Directory {
-	if client != nil && !identity.IsAdmin {
-		return &session.APIDirectory{Client: client}
-	}
-	return &session.RepoDirectory{
-		Repo:     repo,
-		IsAdmin:  identity.IsAdmin,
-		ClientID: identity.ClientID,
-	}
-}
-
-// sessionRepo returns the database handle a session should hold.
-//
-// nil for a client: nothing on that path may touch the database, and a nil
-// here turns a mistake into a panic in testing rather than a quiet
-// privilege the design is meant to have removed.
-func sessionRepo(repo db.Repository, identity *session.Identity) db.Repository {
-	if identity.IsAdmin {
-		return repo
-	}
-	return nil
+// Always the API now: no session holds a database handle, so there is one
+// implementation rather than a choice between two.
+func sessionDirectory(client *session.APIClient) session.Directory {
+	return &session.APIDirectory{Client: client}
 }
 
 // sessionAPIBaseURL is where the loopback directory listens.
@@ -398,65 +351,31 @@ func runSession(ctx context.Context, cmd *ucli.Command) error {
 		}()
 	}
 
-	// Fall back to the database when the exchange did not work. An
-	// administrator always lands here, because the admin CLI writes and
-	// cannot be served by the read-only session API.
+	// There is no database fallback. If the exchange did not work this
+	// session cannot run.
 	//
-	// A client reaches this only when something is misconfigured, and must
-	// NOT keep the handle: see below. The file permissions would refuse it
-	// anyway in the shipped image, but that is a property of the
-	// deployment, and this is the one place the program itself can say
-	// "a client session does not hold a database handle" and mean it.
-	var repo db.Repository
+	// It used to fall back to opening the file and resolving the identity
+	// from $SSH_USER_AUTH. That path is gone: the database is 0600 and no
+	// session runs as root, so it could not have worked anyway, and
+	// $SSH_USER_AUTH is written into the session's own /tmp where the
+	// session user can rewrite it -- a forgeable answer to "who are you".
+	// The token is the trustworthy one, so it is the only one.
 	if identity == nil {
-		var err error
-		repo, err = db.NewRepository(cmd.String("data"))
-		if err != nil {
-			return fmt.Errorf("failed to open database: %w (api: %v)", err, apiErr)
-		}
-		defer func() { _ = repo.Close() }()
-
-		// The key, not the login name, says who this is. The name is an
-		// alias the caller chose -- the directory serves any unused one so
-		// sshd can reach the key check at all -- so it cannot be trusted
-		// to identify anybody. See ResolveIdentityByKey.
-		identity, err = session.ResolveIdentityByKey(
-			ctx, repo, user, session.AuthInfoPath(), cmd.String("admin-key"))
-		if err != nil {
-			return err
-		}
-
-		// Resolving the identity is the ONLY thing a client may use this
-		// handle for, and it is now done.
-		if err := refuseClientDatabaseFallback(identity, apiErr); err != nil {
-			_ = repo.Close()
-			return err
-		}
+		return fmt.Errorf(
+			"could not reach the proxpass API (%w); a session cannot run "+
+				"without it -- check that `proxpass serve' is up and that "+
+				"sshd sets %s", apiErr, session.TokenEnv)
 	}
 
 	// An administrator gets a repository served by the API, not the file.
 	//
 	// The admin CLI writes, so it needs a full db.Repository -- and it gets
-	// one, backed by the loopback API rather than by a database handle. The
-	// commands are untouched: they call the same interface they always did.
-	// This is what lets the file be closed to every session, administrator
-	// included, instead of only to clients.
-	//
-	// When the exchange failed there is no API to use, so the database is
-	// opened directly. An administrator is allowed that fallback -- it is
-	// how a deployment recovers when the directory is down -- and the file
-	// permissions still decide whether it actually works.
-	if identity.IsAdmin && repo == nil {
-		if apiClient != nil {
-			repo = session.NewAdminRepository(apiClient)
-		} else {
-			var err error
-			repo, err = db.NewRepository(cmd.String("data"))
-			if err != nil {
-				return fmt.Errorf("failed to open database: %w", err)
-			}
-			defer func() { _ = repo.Close() }()
-		}
+	// one, backed by the loopback API. The commands are untouched: they
+	// call the same interface they always did. This is what lets the file
+	// be closed to every session, administrator included.
+	var repo db.Repository
+	if identity.IsAdmin {
+		repo = session.NewAdminRepository(apiClient)
 	}
 
 	term, restore := currentTerminal()
@@ -483,7 +402,7 @@ func runSession(ctx context.Context, cmd *ucli.Command) error {
 	// client reading it. Logging the reason matters, because after the
 	// permissions are tightened a failure here is how an operator finds
 	// out something is wrong.
-	dir := sessionDirectory(apiClient, repo, identity)
+	dir := sessionDirectory(apiClient)
 	if apiErr != nil {
 		logger.Printf("the session API was not usable (%v); "+
 			"reading the database directly", apiErr)
@@ -501,17 +420,17 @@ func runSession(ctx context.Context, cmd *ucli.Command) error {
 	}
 
 	code := session.Run(ctx, &session.Deps{
-		Dir:         dir,
-		Repo:        sessionRepo(repo, identity),
-		Discoverer:  proxmox.DefaultDiscovererFactory,
-		Proxier:     console.DefaultProxier{PublicEndpoint: publicEndpoint},
-		Logger:      logger,
-		Terminal:    term,
-		User:        identity.User,
-		DisplayName: identity.DisplayName,
-		IsAdmin:     identity.IsAdmin,
-		ClientID:    identity.ClientID,
-		Command:     cmd.String("command"),
+		Dir:          dir,
+		Repo:         repo,
+		Discoverer:   proxmox.DefaultDiscovererFactory,
+		Proxier:      console.DefaultProxier{PublicEndpoint: publicEndpoint},
+		Logger:       logger,
+		Terminal:     term,
+		LoginName:    identity.LoginName,
+		IdentityName: identity.IdentityName,
+		IsAdmin:      identity.IsAdmin,
+		ClientID:     identity.ClientID,
+		Command:      cmd.String("command"),
 	})
 	// The session already reported any problem to the user, so surface the
 	// status without printing a second, redundant error. Restore the

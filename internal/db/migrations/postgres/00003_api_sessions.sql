@@ -12,7 +12,7 @@
 CREATE TABLE IF NOT EXISTS api_sessions (
     token_hash   TEXT    PRIMARY KEY,
     login_name   TEXT    NOT NULL,
-    display_name TEXT    NOT NULL,
+    identity_name TEXT   NOT NULL,
     is_admin     INTEGER NOT NULL,
     client_id    BIGINT  NOT NULL,
     expires_at   BIGINT  NOT NULL
