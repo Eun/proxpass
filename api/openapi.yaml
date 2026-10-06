@@ -1,0 +1,134 @@
+openapi: 3.0.3
+
+info:
+  title: proxpass internal API
+  version: 1.0.0
+  description: |
+    The loopback API that `proxpass serve` exposes.
+
+    This describes the **session API**: what a `proxpass session` uses instead
+    of opening the database itself. A session runs as an unprivileged uid and
+    must not hold database access, because the database contains Proxmox API
+    token secrets and instance SSH private keys -- a session that can read it
+    can take over the cluster.
+
+    The same server also serves the NSS directory (`/users`, `/user/name/...`
+    and friends) for `libnss_http.so.2`. Those are deliberately NOT described
+    here: their JSON shape is fixed by the nss_http wire format, an external
+    consumer proxpass does not control, so their types stay hand-written in
+    internal/api/types.go where that constraint is documented next to them.
+    Generating them would risk silently renaming a field and breaking every
+    login, for no benefit.
+
+    Authentication is a bearer token minted by `proxpass authorized-keys`,
+    which runs as root before the session exists and therefore knows which key
+    authenticated. The session cannot mint or alter one. Tokens are
+    short-lived and single-use; scope is derived server-side from the identity
+    the token was issued for, never from anything the caller sends.
+
+servers:
+  - url: http://127.0.0.1:8080
+    description: |
+      Loopback only. The listener is never bound to a routable address, and
+      sshd refuses port forwarding, so the only reachable callers are
+      processes already inside the container.
+
+tags:
+  - name: session
+    description: What a guest-console session needs, scoped to its identity.
+  - name: health
+
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness probe.
+      description: |
+        Unauthenticated: the entrypoint polls this before starting sshd, so it
+        has to answer before any token exists. It reveals nothing.
+      operationId: getHealth
+      security: []
+      responses:
+        "200":
+          description: The server is up.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok
+
+  /session/identity:
+    get:
+      tags: [session]
+      summary: Who the calling token belongs to.
+      description: |
+        The answer comes from the token, not from anything the caller sends.
+        A session asks this instead of deciding for itself: it has no
+        trustworthy way to know which key authenticated it.
+      operationId: getSessionIdentity
+      responses:
+        "200":
+          description: The caller's identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Identity"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+components:
+  securitySchemes:
+    sessionToken:
+      type: http
+      scheme: bearer
+      description: |
+        A token minted by `proxpass authorized-keys` for the key that
+        authenticated, and handed to the session out of band. Short-lived and
+        single-use.
+
+        Deliberately NOT derived from anything the session controls: the
+        session's own `$SSH_USER_AUTH` file is owned and writable by the
+        session user, so a claim based on it could be forged.
+
+  responses:
+    Unauthorized:
+      description: The token is missing, expired, already used, or unknown.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Identity:
+      type: object
+      description: Who a session is, as resolved from its token.
+      required: [user, displayName, isAdmin]
+      properties:
+        user:
+          type: string
+          description: The login name the session arrived with, kept for the audit log.
+        displayName:
+          type: string
+          description: |
+            The configured identity to show the user: the admin user name, or
+            the client's own name. The login name is an alias the caller
+            chose, so it is not what the UI should display.
+        isAdmin:
+          type: boolean
+        clientId:
+          type: integer
+          format: int64
+          description: The client's row id. Absent for the administrator.
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: |
+            A short reason. Deliberately not detailed: these responses are
+            reachable before a caller is authenticated.
+
+security:
+  - sessionToken: []
