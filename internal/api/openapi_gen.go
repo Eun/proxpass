@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -19,7 +20,78 @@ import (
 	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/oapi-codegen/runtime"
 )
+
+// Defines values for GuestStatus.
+const (
+	Running GuestStatus = "running"
+	Stopped GuestStatus = "stopped"
+)
+
+// Valid indicates whether the value is a known member of the GuestStatus enum.
+func (e GuestStatus) Valid() bool {
+	switch e {
+	case Running:
+		return true
+	case Stopped:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GuestType.
+const (
+	Ct GuestType = "ct"
+	VM GuestType = "vm"
+)
+
+// Valid indicates whether the value is a known member of the GuestType enum.
+func (e GuestType) Valid() bool {
+	switch e {
+	case Ct:
+		return true
+	case VM:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for InstanceCredentialsConnectionType.
+const (
+	SSH       InstanceCredentialsConnectionType = "ssh"
+	Termproxy InstanceCredentialsConnectionType = "termproxy"
+)
+
+// Valid indicates whether the value is a known member of the InstanceCredentialsConnectionType enum.
+func (e InstanceCredentialsConnectionType) Valid() bool {
+	switch e {
+	case SSH:
+		return true
+	case Termproxy:
+		return true
+	default:
+		return false
+	}
+}
+
+// ConnectInfo Everything needed to open one guest's console, and nothing about any
+// other guest or instance.
+type ConnectInfo struct {
+	// Guest A guest as a picker needs it. Deliberately carries nothing that could
+	// be used to reach the guest: a session holds this list for its whole
+	// life, and most of it is never connected to.
+	Guest Guest `json:"guest"`
+
+	// Instance The Proxmox credentials for the instance hosting one guest.
+	//
+	// This is the material a session must not be able to read from the
+	// database, handed over for a single connection it has been authorized
+	// to make.
+	Instance InstanceCredentials `json:"instance"`
+}
 
 // Error defines model for Error.
 type Error struct {
@@ -27,6 +99,32 @@ type Error struct {
 	// reachable before a caller is authenticated.
 	Error string `json:"error"`
 }
+
+// Guest A guest as a picker needs it. Deliberately carries nothing that could
+// be used to reach the guest: a session holds this list for its whole
+// life, and most of it is never connected to.
+type Guest struct {
+	// ID The row id, used to ask for a connection.
+	ID         int64 `json:"id"`
+	InstanceID int64 `json:"instanceId"`
+
+	// InstanceName Included so a caller can show and match on it without a second
+	// request. It is the only thing about an instance a picker needs,
+	// which is why there is no endpoint that lists instances.
+	InstanceName string `json:"instanceName"`
+	Name         string `json:"name"`
+
+	// ProxmoxID The guest's id within its Proxmox instance, e.g. 100.
+	ProxmoxID int         `json:"proxmoxId"`
+	Status    GuestStatus `json:"status"`
+	Type      GuestType   `json:"type"`
+}
+
+// GuestStatus defines model for Guest.Status.
+type GuestStatus string
+
+// GuestType defines model for Guest.Type.
+type GuestType string
 
 // Identity Who a session is, as resolved from its token.
 type Identity struct {
@@ -42,6 +140,36 @@ type Identity struct {
 	// User The login name the session arrived with, kept for the audit log.
 	User string `json:"user"`
 }
+
+// InstanceCredentials The Proxmox credentials for the instance hosting one guest.
+//
+// This is the material a session must not be able to read from the
+// database, handed over for a single connection it has been authorized
+// to make.
+type InstanceCredentials struct {
+	APITokenID *string `json:"apiTokenId,omitempty"`
+
+	// APITokenSecret Present when the instance connects over the API.
+	APITokenSecret *string                           `json:"apiTokenSecret,omitempty"`
+	APIURL         string                            `json:"apiUrl"`
+	ConnectionType InstanceCredentialsConnectionType `json:"connectionType"`
+	ID             int64                             `json:"id"`
+	Name           string                            `json:"name"`
+
+	// Node The resolved Proxmox short node name.
+	Node    string  `json:"node"`
+	SSHHost *string `json:"sshHost,omitempty"`
+
+	// SSHKey PEM-encoded private key, inline. An instance configured with a
+	// key PATH is resolved here by reading the file, because the
+	// session cannot: the key is deliberately outside its reach.
+	SSHKey  *string `json:"sshKey,omitempty"`
+	SSHPort *int    `json:"sshPort,omitempty"`
+	SSHUser *string `json:"sshUser,omitempty"`
+}
+
+// InstanceCredentialsConnectionType defines model for InstanceCredentials.ConnectionType.
+type InstanceCredentialsConnectionType string
 
 // SessionCredential A session credential and the identity it speaks for.
 type SessionCredential struct {
@@ -62,17 +190,34 @@ type SessionCredential struct {
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = Error
 
+// IsLoginNameReservedParams defines parameters for IsLoginNameReserved.
+type IsLoginNameReservedParams struct {
+	Name string `form:"name" json:"name"`
+}
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// GetHealth Liveness probe.
 	// (GET /healthz)
 	GetHealth(w http.ResponseWriter, r *http.Request)
+	// ConnectSessionGuest What it takes to open this guest's console.
+	// (POST /session/connect/{guestId})
+	ConnectSessionGuest(w http.ResponseWriter, r *http.Request, guestID int64)
 	// ExchangeSessionToken Trade the minted token for a session credential.
 	// (POST /session/exchange)
 	ExchangeSessionToken(w http.ResponseWriter, r *http.Request)
+	// ListSessionGuests The guests this session may reach.
+	// (GET /session/guests)
+	ListSessionGuests(w http.ResponseWriter, r *http.Request)
 	// GetSessionIdentity Who the calling token belongs to.
 	// (GET /session/identity)
 	GetSessionIdentity(w http.ResponseWriter, r *http.Request)
+	// IsLoginNameReserved Whether a login name means "browse" rather than "connect".
+	// (GET /session/login-name-reserved)
+	IsLoginNameReserved(w http.ResponseWriter, r *http.Request, params IsLoginNameReservedParams)
+	// GetPublicEndpoint The hostname clients use to reach this proxpass.
+	// (GET /session/public-endpoint)
+	GetPublicEndpoint(w http.ResponseWriter, r *http.Request)
 	// RevokeSessionCredential Give up this session's credential.
 	// (POST /session/revoke)
 	RevokeSessionCredential(w http.ResponseWriter, r *http.Request)
@@ -101,6 +246,32 @@ func (siw *ServerInterfaceWrapper) GetHealth(w http.ResponseWriter, r *http.Requ
 	handler.ServeHTTP(w, r)
 }
 
+// ConnectSessionGuest operation middleware
+func (siw *ServerInterfaceWrapper) ConnectSessionGuest(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "guestId" -------------
+	var guestID int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "guestId", r.PathValue("guestId"), &guestID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "guestId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ConnectSessionGuest(w, r, guestID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ExchangeSessionToken operation middleware
 func (siw *ServerInterfaceWrapper) ExchangeSessionToken(w http.ResponseWriter, r *http.Request) {
 
@@ -115,11 +286,72 @@ func (siw *ServerInterfaceWrapper) ExchangeSessionToken(w http.ResponseWriter, r
 	handler.ServeHTTP(w, r)
 }
 
+// ListSessionGuests operation middleware
+func (siw *ServerInterfaceWrapper) ListSessionGuests(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListSessionGuests(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetSessionIdentity operation middleware
 func (siw *ServerInterfaceWrapper) GetSessionIdentity(w http.ResponseWriter, r *http.Request) {
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetSessionIdentity(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// IsLoginNameReserved operation middleware
+func (siw *ServerInterfaceWrapper) IsLoginNameReserved(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params IsLoginNameReservedParams
+
+	// ------------- Required query parameter "name" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "name", r.URL.Query(), &params.Name, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "name"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.IsLoginNameReserved(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetPublicEndpoint operation middleware
+func (siw *ServerInterfaceWrapper) GetPublicEndpoint(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetPublicEndpoint(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -266,6 +498,10 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/healthz", wrapper.GetHealth)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/session/exchange", wrapper.ExchangeSessionToken)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/session/revoke", wrapper.RevokeSessionCredential)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/session/guests", wrapper.ListSessionGuests)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/session/connect/{guestId}", wrapper.ConnectSessionGuest)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/session/login-name-reserved", wrapper.IsLoginNameReserved)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/session/public-endpoint", wrapper.GetPublicEndpoint)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/session/identity", wrapper.GetSessionIdentity)
 
 	return m
@@ -288,6 +524,56 @@ func (response GetHealth200TextResponse) VisitGetHealthResponse(w http.ResponseW
 	w.WriteHeader(200)
 
 	_, err := w.Write([]byte(fmt.Sprint(response)))
+	return err
+}
+
+type ConnectSessionGuestRequestObject struct {
+	GuestID int64 `json:"guestId"`
+}
+
+type ConnectSessionGuestResponseObject interface {
+	VisitConnectSessionGuestResponse(w http.ResponseWriter) error
+}
+
+type ConnectSessionGuest200JSONResponse ConnectInfo
+
+func (response ConnectSessionGuest200JSONResponse) VisitConnectSessionGuestResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ConnectSessionGuest401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ConnectSessionGuest401JSONResponse) VisitConnectSessionGuestResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ConnectSessionGuest403JSONResponse Error
+
+func (response ConnectSessionGuest403JSONResponse) VisitConnectSessionGuestResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
 	return err
 }
 
@@ -315,6 +601,41 @@ func (response ExchangeSessionToken200JSONResponse) VisitExchangeSessionTokenRes
 type ExchangeSessionToken401JSONResponse struct{ UnauthorizedJSONResponse }
 
 func (response ExchangeSessionToken401JSONResponse) VisitExchangeSessionTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListSessionGuestsRequestObject struct {
+}
+
+type ListSessionGuestsResponseObject interface {
+	VisitListSessionGuestsResponse(w http.ResponseWriter) error
+}
+
+type ListSessionGuests200JSONResponse []Guest
+
+func (response ListSessionGuests200JSONResponse) VisitListSessionGuestsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListSessionGuests401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ListSessionGuests401JSONResponse) VisitListSessionGuestsResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -361,6 +682,81 @@ func (response GetSessionIdentity401JSONResponse) VisitGetSessionIdentityRespons
 	return err
 }
 
+type IsLoginNameReservedRequestObject struct {
+	Params IsLoginNameReservedParams
+}
+
+type IsLoginNameReservedResponseObject interface {
+	VisitIsLoginNameReservedResponse(w http.ResponseWriter) error
+}
+
+type IsLoginNameReserved200JSONResponse struct {
+	Reserved bool `json:"reserved"`
+}
+
+func (response IsLoginNameReserved200JSONResponse) VisitIsLoginNameReservedResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type IsLoginNameReserved401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response IsLoginNameReserved401JSONResponse) VisitIsLoginNameReservedResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPublicEndpointRequestObject struct {
+}
+
+type GetPublicEndpointResponseObject interface {
+	VisitGetPublicEndpointResponse(w http.ResponseWriter) error
+}
+
+type GetPublicEndpoint200JSONResponse struct {
+	Endpoint string `json:"endpoint"`
+}
+
+func (response GetPublicEndpoint200JSONResponse) VisitGetPublicEndpointResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPublicEndpoint401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response GetPublicEndpoint401JSONResponse) VisitGetPublicEndpointResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type RevokeSessionCredentialRequestObject struct {
 }
 
@@ -395,12 +791,24 @@ type StrictServerInterface interface {
 	// GetHealth Liveness probe.
 	// (GET /healthz)
 	GetHealth(ctx context.Context, request GetHealthRequestObject) (GetHealthResponseObject, error)
+	// ConnectSessionGuest What it takes to open this guest's console.
+	// (POST /session/connect/{guestId})
+	ConnectSessionGuest(ctx context.Context, request ConnectSessionGuestRequestObject) (ConnectSessionGuestResponseObject, error)
 	// ExchangeSessionToken Trade the minted token for a session credential.
 	// (POST /session/exchange)
 	ExchangeSessionToken(ctx context.Context, request ExchangeSessionTokenRequestObject) (ExchangeSessionTokenResponseObject, error)
+	// ListSessionGuests The guests this session may reach.
+	// (GET /session/guests)
+	ListSessionGuests(ctx context.Context, request ListSessionGuestsRequestObject) (ListSessionGuestsResponseObject, error)
 	// GetSessionIdentity Who the calling token belongs to.
 	// (GET /session/identity)
 	GetSessionIdentity(ctx context.Context, request GetSessionIdentityRequestObject) (GetSessionIdentityResponseObject, error)
+	// IsLoginNameReserved Whether a login name means "browse" rather than "connect".
+	// (GET /session/login-name-reserved)
+	IsLoginNameReserved(ctx context.Context, request IsLoginNameReservedRequestObject) (IsLoginNameReservedResponseObject, error)
+	// GetPublicEndpoint The hostname clients use to reach this proxpass.
+	// (GET /session/public-endpoint)
+	GetPublicEndpoint(ctx context.Context, request GetPublicEndpointRequestObject) (GetPublicEndpointResponseObject, error)
 	// RevokeSessionCredential Give up this session's credential.
 	// (POST /session/revoke)
 	RevokeSessionCredential(ctx context.Context, request RevokeSessionCredentialRequestObject) (RevokeSessionCredentialResponseObject, error)
@@ -469,6 +877,32 @@ func (sh *strictHandler) GetHealth(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ConnectSessionGuest operation middleware
+func (sh *strictHandler) ConnectSessionGuest(w http.ResponseWriter, r *http.Request, guestID int64) {
+	var request ConnectSessionGuestRequestObject
+
+	request.GuestID = guestID
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ConnectSessionGuest(ctx, request.(ConnectSessionGuestRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ConnectSessionGuest")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ConnectSessionGuestResponseObject); ok {
+		if err := validResponse.VisitConnectSessionGuestResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // ExchangeSessionToken operation middleware
 func (sh *strictHandler) ExchangeSessionToken(w http.ResponseWriter, r *http.Request) {
 	var request ExchangeSessionTokenRequestObject
@@ -493,6 +927,30 @@ func (sh *strictHandler) ExchangeSessionToken(w http.ResponseWriter, r *http.Req
 	}
 }
 
+// ListSessionGuests operation middleware
+func (sh *strictHandler) ListSessionGuests(w http.ResponseWriter, r *http.Request) {
+	var request ListSessionGuestsRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListSessionGuests(ctx, request.(ListSessionGuestsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListSessionGuests")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListSessionGuestsResponseObject); ok {
+		if err := validResponse.VisitListSessionGuestsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // GetSessionIdentity operation middleware
 func (sh *strictHandler) GetSessionIdentity(w http.ResponseWriter, r *http.Request) {
 	var request GetSessionIdentityRequestObject
@@ -510,6 +968,56 @@ func (sh *strictHandler) GetSessionIdentity(w http.ResponseWriter, r *http.Reque
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetSessionIdentityResponseObject); ok {
 		if err := validResponse.VisitGetSessionIdentityResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// IsLoginNameReserved operation middleware
+func (sh *strictHandler) IsLoginNameReserved(w http.ResponseWriter, r *http.Request, params IsLoginNameReservedParams) {
+	var request IsLoginNameReservedRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.IsLoginNameReserved(ctx, request.(IsLoginNameReservedRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "IsLoginNameReserved")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(IsLoginNameReservedResponseObject); ok {
+		if err := validResponse.VisitIsLoginNameReservedResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetPublicEndpoint operation middleware
+func (sh *strictHandler) GetPublicEndpoint(w http.ResponseWriter, r *http.Request) {
+	var request GetPublicEndpointRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetPublicEndpoint(ctx, request.(GetPublicEndpointRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetPublicEndpoint")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetPublicEndpointResponseObject); ok {
+		if err := validResponse.VisitGetPublicEndpointResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -546,51 +1054,79 @@ func (sh *strictHandler) RevokeSessionCredential(w http.ResponseWriter, r *http.
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
+	"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",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

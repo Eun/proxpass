@@ -55,14 +55,14 @@ func (h *SessionHandler) ExchangeSessionToken(
 	minted, ok := BearerToken(ctx)
 	if !ok {
 		return ExchangeSessionToken401JSONResponse{
-			UnauthorizedJSONResponse: UnauthorizedJSONResponse{Error: "missing token"},
+			UnauthorizedJSONResponse: UnauthorizedJSONResponse{Error: reasonMissingToken},
 		}, nil
 	}
 
 	identity, err := h.repo.RedeemSessionToken(ctx, HashToken(minted), h.now())
 	if errors.Is(err, db.ErrNoSuchToken) {
 		return ExchangeSessionToken401JSONResponse{
-			UnauthorizedJSONResponse: UnauthorizedJSONResponse{Error: "invalid token"},
+			UnauthorizedJSONResponse: UnauthorizedJSONResponse{Error: reasonInvalidToken},
 		}, nil
 	}
 	if err != nil {
@@ -100,7 +100,7 @@ func (h *SessionHandler) RevokeSessionCredential(
 	token, ok := BearerToken(ctx)
 	if !ok {
 		return RevokeSessionCredential401JSONResponse{
-			UnauthorizedJSONResponse: UnauthorizedJSONResponse{Error: "missing token"},
+			UnauthorizedJSONResponse: UnauthorizedJSONResponse{Error: reasonMissingToken},
 		}, nil
 	}
 	if err := h.repo.RevokeAPISession(ctx, HashToken(token)); err != nil {
@@ -119,16 +119,23 @@ func (h *SessionHandler) GetSessionIdentity(
 ) (GetSessionIdentityResponseObject, error) {
 	identity, err := h.callerIdentity(ctx)
 	if errors.Is(err, errNoCredential) {
-		return unauthorized("missing token"), nil
+		return unauthorized(reasonMissingToken), nil
 	}
 	if errors.Is(err, db.ErrNoSuchToken) {
-		return unauthorized("invalid token"), nil
+		return unauthorized(reasonInvalidToken), nil
 	}
 	if err != nil {
 		return nil, err
 	}
 	return GetSessionIdentity200JSONResponse(identityResponse(identity)), nil
 }
+
+// The terse reasons a 401 body carries. Deliberately uninformative: these
+// responses are reachable before a caller is authenticated.
+const (
+	reasonMissingToken = "missing token"
+	reasonInvalidToken = "invalid token"
+)
 
 // errNoCredential reports a request that carried no bearer token at all, as
 // distinct from one carrying a token the server does not know.
