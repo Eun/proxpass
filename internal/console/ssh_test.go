@@ -49,11 +49,11 @@ func newPipeTerminal() *pipeTerminal {
 func sshInstance(t *testing.T, mock *testenv.MockSSHServer) *models.ProxmoxInstance {
 	t.Helper()
 	return &models.ProxmoxInstance{
-		Name:           nodePVE,
-		ConnectionType: models.ConnectionTypeSSH,
-		SSHHost:        mock.Host,
-		SSHPort:        mock.Port,
-		SSHUser:        mock.User,
+		Name:             nodePVE,
+		ConsoleTransport: models.ConsoleTransportSSH,
+		SSHHost:          mock.Host,
+		SSHPort:          mock.Port,
+		SSHUser:          mock.User,
 	}
 }
 
@@ -412,11 +412,11 @@ func TestConnectSSHUnreachableHost(t *testing.T) {
 	mock.Close() // nothing is listening any more
 
 	inst := &models.ProxmoxInstance{
-		Name:           nodePVE,
-		ConnectionType: models.ConnectionTypeSSH,
-		SSHHost:        "127.0.0.1",
-		SSHPort:        port,
-		SSHUser:        "root",
+		Name:             nodePVE,
+		ConsoleTransport: models.ConsoleTransportSSH,
+		SSHHost:          "127.0.0.1",
+		SSHPort:          port,
+		SSHUser:          "root",
 	}
 	pt := newPipeTerminal()
 	guest := &models.Guest{Type: models.GuestTypeCT, Name: guestWeb, ProxmoxID: 100}
@@ -443,11 +443,11 @@ func TestConnectSSHUnreachableHost(t *testing.T) {
 // otherwise indistinguishable from a problem with the guest.
 func TestConnectSSHMissingKey(t *testing.T) {
 	inst := &models.ProxmoxInstance{
-		Name:           nodePVE,
-		ConnectionType: models.ConnectionTypeSSH,
-		SSHHost:        "127.0.0.1",
-		SSHPort:        1,
-		SSHUser:        "root",
+		Name:             nodePVE,
+		ConsoleTransport: models.ConsoleTransportSSH,
+		SSHHost:          "127.0.0.1",
+		SSHPort:          1,
+		SSHUser:          "root",
 	}
 	pt := newPipeTerminal()
 	guest := &models.Guest{Type: models.GuestTypeCT, Name: guestWeb, ProxmoxID: 100}

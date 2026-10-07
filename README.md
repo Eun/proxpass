@@ -198,13 +198,13 @@ ssh -p 2222 admin@proxpass
 # Manage Proxmox instances
 ssh -p 2222 admin@proxpass instance ls
 
-# Add a single instance (termproxy — no SSH credentials needed)
+# Add a single instance (termproxy console — the default)
 ssh -p 2222 admin@proxpass instance add \
   --url https://pve:8006 \
   --token-id "user@pam!token" \
   --token-secret "uuid"
 
-# Add a single instance with SSH connection type.
+# Attach consoles over SSH (pct enter) instead of the termproxy websocket.
 # No key flag: proxpass uses its own key (see "The Proxmox SSH key" below).
 # --ssh-host is optional: when omitted the hostname from --url is used (pve, port 22).
 # An explicit --ssh-host may include a port: --ssh-host pve:2222
@@ -212,7 +212,7 @@ ssh -p 2222 admin@proxpass instance add \
   --url https://pve:8006 \
   --token-id "user@pam!token" \
   --token-secret "uuid" \
-  --connection-type ssh
+  --console-transport ssh
 
 # Override the SSH host/port explicitly (single --url only)
 ssh -p 2222 admin@proxpass instance add \
@@ -220,7 +220,7 @@ ssh -p 2222 admin@proxpass instance add \
   --url https://pve1:8006 \
   --token-id "user@pam!token" \
   --token-secret "uuid" \
-  --connection-type ssh \
+  --console-transport ssh \
   --ssh-host pve1.internal:2222
 
 # Add multiple instances in one call.
@@ -233,7 +233,7 @@ ssh -p 2222 admin@proxpass instance add \
   --url https://pve3:8006 \
   --token-id "user@pam!token" \
   --token-secret "uuid" \
-  --connection-type ssh
+  --console-transport ssh
 
 ssh -p 2222 admin@proxpass instance rm --name pve1
 
@@ -382,10 +382,11 @@ gets logged, so the log still records what actually came in.
 
 ### The Proxmox SSH key
 
-Instances using `--connection-type ssh` need an SSH key to reach the Proxmox
-host. proxpass owns that key: the container entrypoint generates an ed25519
-keypair on the volume at first start, and `instance add` no longer takes a
-key at all.
+proxpass reaches a Proxmox node over SSH for two things: attaching a console
+when `--console-transport ssh` is set, and **file transfer, which always uses
+it** whatever the console transport. proxpass owns the key: the container
+entrypoint generates an ed25519 keypair on the volume at first start, and
+`instance add` no longer takes a key at all.
 
 **One key for the whole deployment**, not one per instance. Its public half
 has to be installed on each Proxmox host by hand — a key per instance would
@@ -405,8 +406,7 @@ installing it once per *cluster* covers every node in it. A standalone node
 needs its own copy. Proxmox only ever appends to and de-duplicates that file,
 so the key is not removed by `pvecm updatecerts` or by a node join.
 
-`instance add --connection-type ssh` checks that the key opens the host and
-prints it if not:
+`instance add` checks that the key opens the host and prints it if not:
 
 ```
 Warning: pve1 is not reachable over SSH yet: authenticating as root: ...
@@ -458,7 +458,11 @@ Two limits worth knowing:
 | Not supported | Why |
 |---|---|
 | Virtual machines | A VM has no namespace to enter. Reaching its disk means the guest agent, whose write endpoint truncates at 60 KiB and cannot append. |
-| `--connection-type termproxy` instances | termproxy gives a console websocket, not a shell on the node, so there is nowhere to run the transfer from. Use `--connection-type ssh`. |
+| A node proxpass cannot log in to | The transfer runs commands on the node. Install the public key there — `instance inspect` reports whether it worked. |
+
+Note that `--console-transport` is **not** one of these: it selects how a
+*console* is attached and has nothing to do with file transfer. A termproxy
+instance transfers files over SSH to the node just as an `ssh` one does.
 
 The container also needs a shell and `cat`/`stat`/`dd` — BusyBox is enough, so
 Alpine works. A distroless container cannot be served.

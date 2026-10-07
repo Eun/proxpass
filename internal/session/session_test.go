@@ -408,7 +408,7 @@ func seedGuest(t *testing.T, repo db.Repository) *models.Guest {
 	t.Helper()
 	inst := &models.ProxmoxInstance{
 		Name: instPVE, APIURL: pveAPIURL, Node: instPVE,
-		ConnectionType: models.ConnectionTypeTermProxy,
+		ConsoleTransport: models.ConsoleTransportTermProxy,
 	}
 	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
 		t.Fatalf("add instance: %v", err)
@@ -525,7 +525,7 @@ func TestAmbiguousLoginNameIsReported(t *testing.T) {
 	// A distinct API URL: the schema requires it to be unique.
 	second := &models.ProxmoxInstance{
 		Name: instRome, APIURL: "https://rome:8006", Node: instRome,
-		ConnectionType: models.ConnectionTypeTermProxy,
+		ConsoleTransport: models.ConsoleTransportTermProxy,
 	}
 	if err := repo.AddProxmoxInstance(t.Context(), second); err != nil {
 		t.Fatalf("add instance: %v", err)
@@ -630,7 +630,7 @@ func TestLoginNameRespectsClientAccess(t *testing.T) {
 		// and both branches render the same frame.
 		inst := &models.ProxmoxInstance{
 			Name: instPVE, APIURL: pveAPIURL, Node: instPVE,
-			ConnectionType: models.ConnectionTypeTermProxy,
+			ConsoleTransport: models.ConsoleTransportTermProxy,
 		}
 		if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
 			t.Fatalf("add instance: %v", err)
@@ -695,11 +695,11 @@ func TestAmbiguityHintOnlyNamesAccessibleGuests(t *testing.T) {
 	// Same name "web" on two instances; the client may reach only one.
 	mine := &models.ProxmoxInstance{
 		Name: instMine, APIURL: "https://mine:8006", Node: instMine,
-		ConnectionType: models.ConnectionTypeTermProxy,
+		ConsoleTransport: models.ConsoleTransportTermProxy,
 	}
 	secret := &models.ProxmoxInstance{
 		Name: instSecret, APIURL: "https://secret:8006", Node: instSecret,
-		ConnectionType: models.ConnectionTypeTermProxy,
+		ConsoleTransport: models.ConsoleTransportTermProxy,
 	}
 	for _, i := range []*models.ProxmoxInstance{mine, secret} {
 		if err := repo.AddProxmoxInstance(t.Context(), i); err != nil {
@@ -752,11 +752,11 @@ func TestQualifiedLoginNameSelectsTheInstance(t *testing.T) {
 	repo := newRepo(t)
 	rome := &models.ProxmoxInstance{
 		Name: instRome, APIURL: "https://rome:8006", Node: instRome,
-		ConnectionType: models.ConnectionTypeTermProxy,
+		ConsoleTransport: models.ConsoleTransportTermProxy,
 	}
 	paris := &models.ProxmoxInstance{
 		Name: instParis, APIURL: "https://paris:8006", Node: instParis,
-		ConnectionType: models.ConnectionTypeTermProxy,
+		ConsoleTransport: models.ConsoleTransportTermProxy,
 	}
 	for _, i := range []*models.ProxmoxInstance{rome, paris} {
 		if err := repo.AddProxmoxInstance(t.Context(), i); err != nil {
@@ -811,11 +811,11 @@ func TestQualifiedLoginNameDoesNotDiscloseInstances(t *testing.T) {
 	client := addClient(t, repo)
 	mine := &models.ProxmoxInstance{
 		Name: instMine, APIURL: "https://mine:8006", Node: instMine,
-		ConnectionType: models.ConnectionTypeTermProxy,
+		ConsoleTransport: models.ConsoleTransportTermProxy,
 	}
 	secret := &models.ProxmoxInstance{
 		Name: instSecret, APIURL: "https://secret:8006", Node: instSecret,
-		ConnectionType: models.ConnectionTypeTermProxy,
+		ConsoleTransport: models.ConsoleTransportTermProxy,
 	}
 	for _, i := range []*models.ProxmoxInstance{mine, secret} {
 		if err := repo.AddProxmoxInstance(t.Context(), i); err != nil {
@@ -874,7 +874,7 @@ func TestReservedLoginNamesAreNeverTreatedAsGuests(t *testing.T) {
 			addClient(t, repo) // a client named "alice"
 			inst := &models.ProxmoxInstance{
 				Name: instPVE, APIURL: pveAPIURL, Node: instPVE,
-				ConnectionType: models.ConnectionTypeTermProxy,
+				ConsoleTransport: models.ConsoleTransportTermProxy,
 			}
 			if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
 				t.Fatalf("add instance: %v", err)
@@ -909,7 +909,7 @@ func TestReservedLoginNameMatchIsCaseInsensitive(t *testing.T) {
 	repo := newRepo(t)
 	inst := &models.ProxmoxInstance{
 		Name: instPVE, APIURL: pveAPIURL, Node: instPVE,
-		ConnectionType: models.ConnectionTypeTermProxy,
+		ConsoleTransport: models.ConsoleTransportTermProxy,
 	}
 	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
 		t.Fatalf("add instance: %v", err)
@@ -936,7 +936,7 @@ func TestExplicitCommandTakesPrecedenceOverTheLoginName(t *testing.T) {
 	repo := newRepo(t)
 	inst := &models.ProxmoxInstance{
 		Name: instPVE, APIURL: pveAPIURL, Node: instPVE,
-		ConnectionType: models.ConnectionTypeTermProxy,
+		ConsoleTransport: models.ConsoleTransportTermProxy,
 	}
 	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
 		t.Fatalf("add instance: %v", err)
@@ -1014,7 +1014,7 @@ func TestClientGuestLsIsScopedToItsAccess(t *testing.T) {
 	client := addClient(t, repo)
 	inst := &models.ProxmoxInstance{
 		Name: instPVE, APIURL: pveAPIURL, Node: instPVE,
-		ConnectionType: models.ConnectionTypeTermProxy,
+		ConsoleTransport: models.ConsoleTransportTermProxy,
 	}
 	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
 		t.Fatalf("add instance: %v", err)
@@ -1437,7 +1437,7 @@ func TestInteractivePickerFiltersAndConnects(t *testing.T) {
 	repo := newRepo(t)
 	inst := &models.ProxmoxInstance{
 		Name: instPVE, APIURL: pveAPIURL, Node: instPVE,
-		ConnectionType: models.ConnectionTypeTermProxy,
+		ConsoleTransport: models.ConsoleTransportTermProxy,
 	}
 	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
 		t.Fatalf("add instance: %v", err)
@@ -1723,7 +1723,7 @@ func TestSessionOutputIsCRLFOnRawTerminals(t *testing.T) {
 	repo := newRepo(t)
 	inst := &models.ProxmoxInstance{
 		Name: instPVE, APIURL: pveAPIURL, Node: instPVE,
-		ConnectionType: models.ConnectionTypeTermProxy,
+		ConsoleTransport: models.ConsoleTransportTermProxy,
 	}
 	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
 		t.Fatalf("add instance: %v", err)

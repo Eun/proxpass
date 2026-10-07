@@ -284,11 +284,11 @@ func (h *SessionHandler) findInstance(ctx context.Context, id int64) (*models.Pr
 // database -- so handing it a path would leave it unable to connect.
 func (h *SessionHandler) instanceCredentials(inst *models.ProxmoxInstance) (InstanceCredentials, error) {
 	out := InstanceCredentials{
-		ID:             inst.ID,
-		Name:           inst.Name,
-		APIURL:         inst.APIURL,
-		ConnectionType: InstanceCredentialsConnectionType(inst.ConnectionType),
-		Node:           inst.Node,
+		ID:               inst.ID,
+		Name:             inst.Name,
+		APIURL:           inst.APIURL,
+		ConsoleTransport: InstanceCredentialsConsoleTransport(inst.ConsoleTransport),
+		Node:             inst.Node,
 	}
 	setIfNotEmpty(&out.APITokenID, inst.APITokenID)
 	setIfNotEmpty(&out.APITokenSecret, inst.APITokenSecret)

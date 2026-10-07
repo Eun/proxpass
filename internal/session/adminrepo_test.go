@@ -83,7 +83,7 @@ func TestAdminRepositoryAgreesWithTheDatabase(t *testing.T) {
 
 	inst := &models.ProxmoxInstance{
 		Name: "pve", APIURL: "https://pve:8006", Node: "pve1",
-		APITokenSecret: "SECRET", ConnectionType: models.ConnectionTypeTermProxy,
+		APITokenSecret: "SECRET", ConsoleTransport: models.ConsoleTransportTermProxy,
 	}
 	if err := remote.AddProxmoxInstance(ctx, inst); err != nil {
 		t.Fatalf("AddProxmoxInstance: %v", err)

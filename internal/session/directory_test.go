@@ -100,12 +100,12 @@ func seedWorld(t *testing.T, repo db.Repository) world {
 	ctx := t.Context()
 
 	inst := &models.ProxmoxInstance{
-		Name:           "pve",
-		APIURL:         "https://pve:8006",
-		APITokenID:     "root@pam!tok",
-		APITokenSecret: "SECRET-TOKEN",
-		ConnectionType: models.ConnectionTypeTermProxy,
-		Node:           "pve1",
+		Name:             "pve",
+		APIURL:           "https://pve:8006",
+		APITokenID:       "root@pam!tok",
+		APITokenSecret:   "SECRET-TOKEN",
+		ConsoleTransport: models.ConsoleTransportTermProxy,
+		Node:             "pve1",
 	}
 	if err := repo.AddProxmoxInstance(ctx, inst); err != nil {
 		t.Fatalf("add instance: %v", err)

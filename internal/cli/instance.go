@@ -38,7 +38,7 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 						return nil
 					}
 					for _, inst := range instances {
-						if inst.ConnectionType == models.ConnectionTypeSSH {
+						if inst.ConsoleTransport == models.ConsoleTransportSSH {
 							fmt.Fprintf(deps.Out, "%-20s  API: %s  SSH: %s:%d  node: %s\n",
 								inst.Name, inst.APIURL, inst.SSHHost, inst.SSHPort, inst.Node)
 						} else {
@@ -77,13 +77,23 @@ When multiple --url flags are supplied:
 					&ucli.StringFlag{Name: "token-id", Required: true, Usage: "API token ID (e.g. user@pam!token)"},
 					&ucli.StringFlag{Name: "token-secret", Required: true, Usage: "API token secret"},
 					&ucli.StringFlag{
-						Name:  "connection-type",
-						Value: string(models.ConnectionTypeTermProxy),
-						Usage: `Connection type: "termproxy" (default) or "ssh"; applies to all supplied --url values`,
+						Name: "console-transport",
+						// The old name, kept so existing scripts and compose
+						// files keep working. It was renamed because it only
+						// ever selected the console transport, while reading
+						// as though it governed every connection to the
+						// instance -- which is how file transfer ended up
+						// gated on it.
+						Aliases: []string{"connection-type"},
+						Value:   string(models.ConsoleTransportTermProxy),
+						Usage: `How a guest CONSOLE is attached: "termproxy" ` +
+							`(default) or "ssh". Does not affect file ` +
+							`transfer, which always reaches the node over ` +
+							`SSH. Applies to all supplied --url values`,
 					},
 					&ucli.StringFlag{
 						Name: "ssh-host",
-						Usage: "SSH host — \"host\" or \"host:port\" (--connection-type ssh, single --url only)." +
+						Usage: "SSH host — \"host\" or \"host:port\" (single --url only)." +
 							" When omitted the hostname from --url is used with port 22." +
 							" Disallowed when multiple --url flags are given.",
 					},
@@ -107,9 +117,9 @@ When multiple --url flags are supplied:
 						)
 					}
 
-					connType := models.ConnectionType(cmd.String("connection-type"))
-					if connType != models.ConnectionTypeTermProxy && connType != models.ConnectionTypeSSH {
-						return fmt.Errorf("--connection-type must be %q or %q", models.ConnectionTypeTermProxy, models.ConnectionTypeSSH)
+					connType := models.ConsoleTransport(cmd.String("console-transport"))
+					if connType != models.ConsoleTransportTermProxy && connType != models.ConsoleTransportSSH {
+						return fmt.Errorf("--console-transport must be %q or %q", models.ConsoleTransportTermProxy, models.ConsoleTransportSSH)
 					}
 
 					// Validate all supplied URLs up-front before touching anything.
@@ -132,7 +142,7 @@ When multiple --url flags are supplied:
 					// hand, and a key per instance multiplies that work
 					// without isolating anything.
 					var sshKeyPEM string
-					if connType == models.ConnectionTypeSSH {
+					if connType == models.ConsoleTransportSSH {
 						var err error
 						sshKeyPEM, err = models.ReadSSHKey()
 						if err != nil {
@@ -217,9 +227,9 @@ When multiple --url flags are supplied:
 						fmt.Fprintf(deps.Out, "API URL:          %s\n", inst.APIURL)
 						fmt.Fprintf(deps.Out, "API Token ID:     %s\n", inst.APITokenID)
 						fmt.Fprintf(deps.Out, "API Token Secret: %s\n", inst.APITokenSecret)
-						fmt.Fprintf(deps.Out, "Connection Type:  %s\n", inst.ConnectionType)
+						fmt.Fprintf(deps.Out, "Connection Type:  %s\n", inst.ConsoleTransport)
 						fmt.Fprintf(deps.Out, "Node:             %s\n", inst.Node)
-						if inst.ConnectionType == models.ConnectionTypeSSH {
+						if inst.ConsoleTransport == models.ConsoleTransportSSH {
 							fmt.Fprintf(deps.Out, "SSH Host:         %s\n", inst.SSHHost)
 							fmt.Fprintf(deps.Out, "SSH Port:         %d\n", inst.SSHPort)
 							fmt.Fprintf(deps.Out, "SSH User:         %s\n", inst.SSHUser)
@@ -276,7 +286,7 @@ func addSingleInstance( //nolint:cyclop // multi-URL dispatch adds branching
 	ctx context.Context,
 	deps *Deps,
 	cmd *ucli.Command,
-	connType models.ConnectionType,
+	connType models.ConsoleTransport,
 	rawURL string,
 	sshKeyPEM string,
 ) error {
@@ -290,14 +300,12 @@ func addSingleInstance( //nolint:cyclop // multi-URL dispatch adds branching
 	//
 	// Multiple --url: always derive from --url hostname, port 22.
 	// (--ssh-host is already rejected above for the multi-URL case.)
-	var sshHost string
-	var sshPort int
-	if connType == models.ConnectionTypeSSH {
-		var err error
-		sshHost, sshPort, err = resolveSSHHostPort(cmd.String("ssh-host"), rawURL, multiURL)
-		if err != nil {
-			return err
-		}
+	// Always, whatever the console transport. The node is the same machine
+	// either way, and file transfer reaches it over SSH even when consoles
+	// go through the websocket.
+	sshHost, sshPort, err := resolveSSHHostPort(cmd.String("ssh-host"), rawURL, multiURL)
+	if err != nil {
+		return err
 	}
 
 	// Resolve the node name from the API.
@@ -311,7 +319,7 @@ func addSingleInstance( //nolint:cyclop // multi-URL dispatch adds branching
 	// For termproxy, verify the Proxmox version supports API token auth.
 	// This check runs once at instance-add time so the user gets a clear
 	// error immediately rather than at connection time.
-	if connType == models.ConnectionTypeTermProxy {
+	if connType == models.ConsoleTransportTermProxy {
 		if err := checkTermProxyVersion(ctx, rawURL, cmd.String("token-id"), cmd.String("token-secret")); err != nil {
 			return err
 		}
@@ -324,15 +332,15 @@ func addSingleInstance( //nolint:cyclop // multi-URL dispatch adds branching
 	}
 
 	inst := &models.ProxmoxInstance{
-		Name:           instName,
-		APIURL:         rawURL,
-		APITokenID:     cmd.String("token-id"),
-		APITokenSecret: cmd.String("token-secret"),
-		ConnectionType: connType,
-		Node:           nodeName,
-		SSHHost:        sshHost,
-		SSHPort:        sshPort,
-		SSHUser:        cmd.String("ssh-user"),
+		Name:             instName,
+		APIURL:           rawURL,
+		APITokenID:       cmd.String("token-id"),
+		APITokenSecret:   cmd.String("token-secret"),
+		ConsoleTransport: connType,
+		Node:             nodeName,
+		SSHHost:          sshHost,
+		SSHPort:          sshPort,
+		SSHUser:          cmd.String("ssh-user"),
 	}
 
 	// Check that the key actually opens the host BEFORE storing anything,
@@ -344,7 +352,7 @@ func addSingleInstance( //nolint:cyclop // multi-URL dispatch adds branching
 	// before an instance exists to tell them which host. Refusing here would
 	// make the obvious order impossible. So it prints the key and what to do
 	// with it, and adds the instance anyway.
-	if connType == models.ConnectionTypeSSH {
+	if connType == models.ConsoleTransportSSH {
 		if err := checkSSHAccess(ctx, inst, sshKeyPEM); err != nil {
 			pub, pubErr := publicKeyLine(sshKeyPEM)
 			if pubErr != nil {
@@ -360,7 +368,7 @@ func addSingleInstance( //nolint:cyclop // multi-URL dispatch adds branching
 	if err := deps.Repo.AddProxmoxInstance(ctx, inst); err != nil {
 		return err
 	}
-	fmt.Fprintf(deps.Out, "Instance %q added (connection: %s, node: %s).\n", inst.Name, inst.ConnectionType, inst.Node)
+	fmt.Fprintf(deps.Out, "Instance %q added (connection: %s, node: %s).\n", inst.Name, inst.ConsoleTransport, inst.Node)
 
 	// Run discovery on the new instance.
 	if deps.Discoverer != nil {

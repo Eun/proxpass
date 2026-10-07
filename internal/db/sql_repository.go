@@ -133,12 +133,12 @@ func (r *sqlRepo) AddProxmoxInstance(ctx context.Context, inst *models.ProxmoxIn
 	inst.APIURL = strings.TrimRight(inst.APIURL, "/")
 	err := r.queryRow(ctx,
 		`INSERT INTO proxmox_instances
-		(name, api_url, api_token_id, api_token_secret, connection_type, node,
+		(name, api_url, api_token_id, api_token_secret, console_transport, node,
 		 ssh_host, ssh_port, ssh_user)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		RETURNING id`,
 		inst.Name, inst.APIURL, inst.APITokenID, inst.APITokenSecret,
-		string(inst.ConnectionType), inst.Node,
+		string(inst.ConsoleTransport), inst.Node,
 		inst.SSHHost, inst.SSHPort, inst.SSHUser,
 	).Scan(&inst.ID)
 	if err != nil {
@@ -160,7 +160,7 @@ func (r *sqlRepo) ListProxmoxInstances(ctx context.Context) ([]*models.ProxmoxIn
 		// order but is not promised and changes after a row is deleted and
 		// its rowid reused.
 		`SELECT id, name, api_url, api_token_id, api_token_secret,
-		connection_type, node,
+		console_transport, node,
 		ssh_host, ssh_port, ssh_user
 		FROM proxmox_instances ORDER BY id`)
 	if err != nil {
@@ -179,7 +179,7 @@ func (r *sqlRepo) ListProxmoxInstances(ctx context.Context) ([]*models.ProxmoxIn
 		); err != nil {
 			return nil, err
 		}
-		inst.ConnectionType = models.ConnectionType(connType)
+		inst.ConsoleTransport = models.ConsoleTransport(connType)
 		list = append(list, inst)
 	}
 	return list, rows.Err()
@@ -190,12 +190,12 @@ func (r *sqlRepo) UpdateProxmoxInstance(ctx context.Context, inst *models.Proxmo
 	_, err := r.exec(ctx,
 		`UPDATE proxmox_instances SET
 		name = ?, api_url = ?, api_token_id = ?,
-		api_token_secret = ?, connection_type = ?, node = ?,
+		api_token_secret = ?, console_transport = ?, node = ?,
 		ssh_host = ?, ssh_port = ?,
 		ssh_user = ?
 		WHERE id = ?`,
 		inst.Name, inst.APIURL, inst.APITokenID,
-		inst.APITokenSecret, string(inst.ConnectionType), inst.Node,
+		inst.APITokenSecret, string(inst.ConsoleTransport), inst.Node,
 		inst.SSHHost, inst.SSHPort,
 		inst.SSHUser, inst.ID,
 	)

@@ -113,13 +113,15 @@ func (d *Deps) serveSFTP(info *ConnectInfo) int {
 			d.IdentityName, guest.Name)
 		return 1
 	}
-	// And only over the ssh connection type: termproxy gives a console
-	// websocket, not a shell on the node, so there is nothing to run
-	// nsenter with.
-	if inst.ConnectionType != models.ConnectionTypeSSH {
+	// Note there is NO check on the console transport. How a terminal is
+	// attached says nothing about whether the node answers SSH, and gating
+	// on it refused transfers for instances whose node is perfectly
+	// reachable. What matters is the node address and the key, both checked
+	// below by failing to connect.
+	if inst.SSHHost == "" {
 		d.Logger.Printf(
-			"%s: sftp: instance %s uses the %s connection type, which has no node shell",
-			d.IdentityName, inst.Name, inst.ConnectionType)
+			"%s: sftp: instance %s has no ssh host configured",
+			d.IdentityName, inst.Name)
 		return 1
 	}
 
