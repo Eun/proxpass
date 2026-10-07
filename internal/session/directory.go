@@ -90,4 +90,14 @@ func namedInstances(guests []*GuestInfo) []*models.ProxmoxInstance {
 type ConnectInfo struct {
 	Guest    *models.Guest
 	Instance *models.ProxmoxInstance
+
+	// SSHKey is the PEM private key to reach Instance's Proxmox host with,
+	// empty for a termproxy instance which needs none.
+	//
+	// It travels beside the instance rather than on it because it is not a
+	// property of the instance: there is ONE key for the whole deployment,
+	// and the API reads it per connection and sends it here. A session
+	// cannot read the file itself -- it is root-owned, and a session is not
+	// root -- so this response is the only way it arrives.
+	SSHKey string
 }

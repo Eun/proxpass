@@ -55,7 +55,7 @@ func TestConnectTermProxyHandshake(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- console.DefaultProxier{}.Connect(pt.term, guest, inst, discardLogger())
+		done <- console.DefaultProxier{}.Connect(pt.term, guest, inst, "", discardLogger())
 	}()
 
 	waitFor(t, pt.out, "root@CT100")
@@ -80,7 +80,7 @@ func TestConnectTermProxyForwardsInput(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- console.DefaultProxier{}.Connect(pt.term, guest, inst, discardLogger())
+		done <- console.DefaultProxier{}.Connect(pt.term, guest, inst, "", discardLogger())
 	}()
 
 	waitFor(t, pt.out, "root@CT100")
@@ -107,7 +107,7 @@ func TestConnectTermProxyForwardsBinaryInput(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- console.DefaultProxier{}.Connect(pt.term, guest, inst, discardLogger())
+		done <- console.DefaultProxier{}.Connect(pt.term, guest, inst, "", discardLogger())
 	}()
 	waitFor(t, pt.out, "root@CT100")
 
@@ -137,7 +137,7 @@ func TestConnectTermProxyForwardsResize(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- console.DefaultProxier{}.Connect(pt.term, guest, inst, discardLogger())
+		done <- console.DefaultProxier{}.Connect(pt.term, guest, inst, "", discardLogger())
 	}()
 	waitFor(t, pt.out, "root@CT100")
 
@@ -162,7 +162,7 @@ func TestConnectTermProxySendsInitialSize(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- console.DefaultProxier{}.Connect(pt.term, guest, inst, discardLogger())
+		done <- console.DefaultProxier{}.Connect(pt.term, guest, inst, "", discardLogger())
 	}()
 	waitFor(t, pt.out, "root@CT100")
 
@@ -197,7 +197,7 @@ func TestConnectTermProxyToVM(t *testing.T) {
 	pt := newPipeTerminal()
 	done := make(chan error, 1)
 	go func() {
-		done <- console.DefaultProxier{}.Connect(pt.term, guest, inst, discardLogger())
+		done <- console.DefaultProxier{}.Connect(pt.term, guest, inst, "", discardLogger())
 	}()
 
 	waitFor(t, pt.out, "login:")
@@ -227,7 +227,7 @@ func TestConnectTermProxyTicketFailure(t *testing.T) {
 	pt := newPipeTerminal()
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- console.DefaultProxier{}.Connect(pt.term, guest, inst, discardLogger())
+		errCh <- console.DefaultProxier{}.Connect(pt.term, guest, inst, "", discardLogger())
 	}()
 	select {
 	case err := <-errCh:
@@ -248,7 +248,7 @@ func TestConnectTermProxyRejectsBadToken(t *testing.T) {
 	pt := newPipeTerminal()
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- console.DefaultProxier{}.Connect(pt.term, guest, inst, discardLogger())
+		errCh <- console.DefaultProxier{}.Connect(pt.term, guest, inst, "", discardLogger())
 	}()
 	select {
 	case err := <-errCh:
@@ -267,7 +267,7 @@ func TestConnectTermProxyUnknownGuestType(t *testing.T) {
 
 	pt := newPipeTerminal()
 	if err := (console.DefaultProxier{}).Connect(
-		pt.term, guest, inst, discardLogger()); err == nil {
+		pt.term, guest, inst, "", discardLogger()); err == nil {
 		t.Fatal("an unknown guest type must be rejected")
 	}
 }

@@ -107,37 +107,3 @@ func TestInspectReportsAMissingDeploymentKey(t *testing.T) {
 		t.Fatalf("expected the absent key to be named as such:\n%s", got)
 	}
 }
-
-// TestInspectPrefersTheInstanceKey mirrors the credential path: an instance
-// added before proxpass owned a key keeps using its own.
-func TestInspectPrefersTheInstanceKey(t *testing.T) {
-	srv, err := testenv.NewMockSSHServer()
-	if err != nil {
-		t.Fatalf("starting the mock host: %v", err)
-	}
-	defer srv.Close()
-
-	// The deployment key is NOT the one this host accepts.
-	other, err := testenv.NewMockSSHServer()
-	if err != nil {
-		t.Fatalf("starting the second host: %v", err)
-	}
-	defer other.Close()
-	wrong := readKey(t, other.KeyPath)
-	keyPath := writeKeyFile(t, wrong)
-	t.Setenv(models.SSHKeyPathEnv, keyPath)
-
-	// ...but the instance carries the right one.
-	own := readKey(t, srv.KeyPath)
-	got := reportFor(t, &models.ProxmoxInstance{
-		Name:           testInstanceName,
-		ConnectionType: models.ConnectionTypeSSH,
-		SSHHost:        srv.Host,
-		SSHPort:        srv.Port,
-		SSHUser:        srv.User,
-		SSHKey:         string(own),
-	})
-	if !strings.Contains(got, "SSH Access:       ok") {
-		t.Fatalf("the instance's own key should have been used:\n%s", got)
-	}
-}

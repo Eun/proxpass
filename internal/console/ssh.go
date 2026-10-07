@@ -23,12 +23,13 @@ func connectSSH(
 	term *Terminal,
 	guest *models.Guest,
 	inst *models.ProxmoxInstance,
+	sshKey string,
 	logger *log.Logger,
 	label string,
 ) error {
 	term.normalize()
 
-	keyBytes, err := loadInstanceKey(inst)
+	keyBytes, err := loadInstanceKey(inst, sshKey)
 	if err != nil {
 		return err
 	}

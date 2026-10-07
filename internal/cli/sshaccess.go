@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os"
 	"strconv"
 	"time"
 
@@ -101,35 +100,18 @@ func checkSSHAccess(ctx context.Context, inst *models.ProxmoxInstance, keyPEM st
 // add', because the answer changes the moment the administrator installs the
 // public key -- and this is how they confirm that it landed.
 func reportSSHKey(ctx context.Context, deps *Deps, inst *models.ProxmoxInstance) {
-	key := inst.SSHKey
-	source := "instance (set before proxpass owned a key)"
-
-	switch {
-	case key != "":
-		// Keep the instance's own key: see instanceCredentials.
-	case inst.SSHKeyPath != "":
-		b, err := os.ReadFile(inst.SSHKeyPath)
-		if err != nil {
-			fmt.Fprintf(deps.Out, "SSH Key:          unreadable at %s: %v\n",
-				inst.SSHKeyPath, err)
-			return
-		}
-		key, source = string(b), "instance path "+inst.SSHKeyPath
-	default:
-		deployed, err := models.ReadSSHKey()
-		if err != nil {
-			fmt.Fprintf(deps.Out, "SSH Key:          %v\n", err)
-			return
-		}
-		if deployed == "" {
-			fmt.Fprintf(deps.Out, "SSH Key:          none at %s\n", models.SSHKeyPath())
-			return
-		}
-		key, source = deployed, models.SSHKeyPath()
+	key, err := models.ReadSSHKey()
+	if err != nil {
+		fmt.Fprintf(deps.Out, "SSH Key:          %v\n", err)
+		return
+	}
+	if key == "" {
+		fmt.Fprintf(deps.Out, "SSH Key:          none at %s\n", models.SSHKeyPath())
+		return
 	}
 
-	fmt.Fprintf(deps.Out, "SSH Key:          %s\n", source)
-	if pub, err := publicKeyLine(key); err == nil {
+	fmt.Fprintf(deps.Out, "SSH Key:          %s\n", models.SSHKeyPath())
+	if pub, pubErr := publicKeyLine(key); pubErr == nil {
 		fmt.Fprintf(deps.Out, "SSH Public Key:   %s", pub)
 	}
 

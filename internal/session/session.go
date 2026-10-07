@@ -149,7 +149,7 @@ func (d *Deps) connectChecked(ctx context.Context, guest *models.Guest) int {
 		d.errf("internal error")
 		return 1
 	}
-	return d.attach(info.Guest, info.Instance)
+	return d.attach(info.Guest, info.Instance, info.SSHKey)
 }
 
 // runAdmin runs an admin command through the admin CLI.
@@ -179,7 +179,7 @@ func (d *Deps) runAdmin(ctx context.Context, cmd string) int {
 	return 0
 }
 
-func (d *Deps) attach(guest *models.Guest, inst *models.ProxmoxInstance) int {
+func (d *Deps) attach(guest *models.Guest, inst *models.ProxmoxInstance, sshKey string) int {
 	d.Logger.Printf("%s: connecting to %s (%s%d) on %s",
 		d.IdentityName, guest.Name, guest.Type, guest.ProxmoxID, inst.Name)
 
@@ -199,7 +199,7 @@ func (d *Deps) attach(guest *models.Guest, inst *models.ProxmoxInstance) int {
 			guest.Name, inst.Name, console.EscapeHint)
 	}
 
-	if err := d.Proxier.Connect(d.Terminal, guest, inst, d.Logger); err != nil {
+	if err := d.Proxier.Connect(d.Terminal, guest, inst, sshKey, d.Logger); err != nil {
 		d.Logger.Printf("%s: console error: %v", d.IdentityName, err)
 		d.errf("console error: %v", err)
 		return 1

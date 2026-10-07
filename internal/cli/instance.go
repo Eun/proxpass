@@ -333,7 +333,6 @@ func addSingleInstance( //nolint:cyclop // multi-URL dispatch adds branching
 		SSHHost:        sshHost,
 		SSHPort:        sshPort,
 		SSHUser:        cmd.String("ssh-user"),
-		SSHKey:         sshKeyPEM,
 	}
 
 	// Check that the key actually opens the host BEFORE storing anything,

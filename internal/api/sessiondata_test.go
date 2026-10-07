@@ -225,50 +225,6 @@ func TestConnectHidesWhetherAGuestExists(t *testing.T) {
 			forbidden.Body.String(), missing.Body.String())
 	}
 }
-
-// An instance whose key is a PATH must come back with the key inline: the
-// session cannot read that file, which is the point.
-func TestConnectResolvesAKeyPathIntoThePEM(t *testing.T) {
-	h, repo := newTestServer(t)
-
-	keyPath := t.TempDir() + "/id_ed25519"
-	if err := os.WriteFile(keyPath, []byte(secretKeyValue), 0o600); err != nil {
-		t.Fatalf("write key: %v", err)
-	}
-	inst := &models.ProxmoxInstance{
-		Name:           testInstanceName,
-		APIURL:         testInstanceURL,
-		ConnectionType: models.ConnectionTypeSSH,
-		Node:           testNodeName,
-		SSHHost:        testInstanceName,
-		SSHPort:        22,
-		SSHUser:        testSSHUser,
-		SSHKeyPath:     keyPath,
-	}
-	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
-		t.Fatalf("add instance: %v", err)
-	}
-	guest := seedGuest(t, repo, inst.ID, 100, "mine")
-
-	cred := exchange(t, h, repo, &models.SessionIdentity{
-		LoginName: userAliasName, IdentityName: api.AdminUser, IsAdmin: true,
-	})
-	rec := postWithToken(t, h,
-		fmt.Sprintf("/session/connect/%d", guest.ID), cred.Token)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
-	}
-	var info api.ConnectInfo
-	if err := json.Unmarshal(rec.Body.Bytes(), &info); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if info.Instance.SSHKey == nil || *info.Instance.SSHKey != secretKeyValue {
-		t.Fatalf("the key path was not resolved into the PEM: %+v", info.Instance)
-	}
-}
-
-// An instance with no key of its own is handed the deployment's key, which
-// the entrypoint generated on the volume.
 func TestConnectFallsBackToTheDeploymentKey(t *testing.T) {
 	h, repo := newTestServer(t)
 
@@ -289,8 +245,8 @@ func TestConnectFallsBackToTheDeploymentKey(t *testing.T) {
 		SSHHost:        testInstanceName,
 		SSHPort:        22,
 		SSHUser:        testSSHUser,
-		// No SSHKey and no SSHKeyPath: this is how `instance add' stores
-		// an instance now.
+		// No key on the instance: there is no such field any more, so
+		// the deployment key is the only one it can connect with.
 	}
 	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
 		t.Fatalf("add instance: %v", err)
@@ -313,55 +269,6 @@ func TestConnectFallsBackToTheDeploymentKey(t *testing.T) {
 		t.Fatalf("the deployment key was not used: %+v", info.Instance)
 	}
 }
-
-// An instance that carries its own key keeps it.
-//
-// Those are the instances added before proxpass owned a key: the
-// administrator installed THAT key on THAT host, so overriding it here would
-// break the instance at its next connection with nothing to point at.
-func TestConnectPrefersTheInstanceKeyOverTheDeploymentKey(t *testing.T) {
-	h, repo := newTestServer(t)
-
-	keyPath := t.TempDir() + "/proxpass_key"
-	if err := os.WriteFile(keyPath, []byte("DEPLOYMENT-WIDE-KEY"), 0o600); err != nil {
-		t.Fatalf("write key: %v", err)
-	}
-	t.Setenv(models.SSHKeyPathEnv, keyPath)
-
-	inst := &models.ProxmoxInstance{
-		Name:           testInstanceName,
-		APIURL:         testInstanceURL,
-		ConnectionType: models.ConnectionTypeSSH,
-		Node:           testNodeName,
-		SSHHost:        testInstanceName,
-		SSHPort:        22,
-		SSHUser:        testSSHUser,
-		SSHKey:         secretKeyValue,
-	}
-	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
-		t.Fatalf("add instance: %v", err)
-	}
-	guest := seedGuest(t, repo, inst.ID, 100, "mine")
-
-	cred := exchange(t, h, repo, &models.SessionIdentity{
-		LoginName: userAliasName, IdentityName: api.AdminUser, IsAdmin: true,
-	})
-	rec := postWithToken(t, h,
-		fmt.Sprintf("/session/connect/%d", guest.ID), cred.Token)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
-	}
-	var info api.ConnectInfo
-	if err := json.Unmarshal(rec.Body.Bytes(), &info); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if info.Instance.SSHKey == nil || *info.Instance.SSHKey != secretKeyValue {
-		t.Fatalf("the instance's own key was not preferred: %+v", info.Instance)
-	}
-}
-
-// A termproxy instance connects with no key at all, so a deployment that has
-// never generated one still works.
 func TestConnectNeedsNoKeyForTermProxy(t *testing.T) {
 	h, repo := newTestServer(t)
 	t.Setenv(models.SSHKeyPathEnv, t.TempDir()+"/absent")

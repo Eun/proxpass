@@ -18,21 +18,26 @@ func instanceFor(t *testing.T, srv *testenv.MockSSHServer) *models.ProxmoxInstan
 	if err != nil {
 		t.Fatalf("reading the mock server key: %v", err)
 	}
+	_ = key
 	return &models.ProxmoxInstance{
 		Name:           testInstanceName,
 		ConnectionType: models.ConnectionTypeSSH,
 		SSHHost:        srv.Host,
 		SSHPort:        srv.Port,
 		SSHUser:        srv.User,
-		SSHKey:         string(key),
 	}
+}
+
+// keyFor returns the PEM key the mock host accepts.
+func keyFor(t *testing.T, srv *testenv.MockSSHServer) string {
+	t.Helper()
+	return string(readKey(t, srv.KeyPath))
 }
 
 // checkSSHAccessFor runs the check with the instance's own key.
 func checkSSHAccessFor(t *testing.T, srv *testenv.MockSSHServer) error {
 	t.Helper()
-	inst := instanceFor(t, srv)
-	return checkSSHAccess(t.Context(), inst, inst.SSHKey)
+	return checkSSHAccess(t.Context(), instanceFor(t, srv), keyFor(t, srv))
 }
 
 // TestCheckSSHAccessAcceptsAWorkingKey is the case the administrator sees
@@ -66,11 +71,7 @@ func TestCheckSSHAccessRejectsAnUninstalledKey(t *testing.T) {
 	defer other.Close()
 
 	// A valid key that this host does not know.
-	inst := instanceFor(t, srv)
-	wrong := readKey(t, other.KeyPath)
-	inst.SSHKey = string(wrong)
-
-	err = checkSSHAccess(t.Context(), inst, inst.SSHKey)
+	err = checkSSHAccess(t.Context(), instanceFor(t, srv), string(readKey(t, other.KeyPath)))
 	if err == nil {
 		t.Fatal("expected a key the host does not know to be refused")
 	}
@@ -104,9 +105,8 @@ func TestCheckSSHAccessReportsAClosedPort(t *testing.T) {
 		SSHHost:        testLoopback,
 		SSHPort:        port,
 		SSHUser:        testSSHUser,
-		SSHKey:         testKeyPEM(t),
 	}
-	err = checkSSHAccess(t.Context(), inst, inst.SSHKey)
+	err = checkSSHAccess(t.Context(), inst, testKeyPEM(t))
 	if err == nil {
 		t.Fatal("expected a closed port to be reported")
 	}
@@ -124,9 +124,8 @@ func TestCheckSSHAccessRejectsAnUnparseableKey(t *testing.T) {
 		SSHHost:        testLoopback,
 		SSHPort:        22,
 		SSHUser:        testSSHUser,
-		SSHKey:         "not a key",
 	}
-	err := checkSSHAccess(t.Context(), inst, inst.SSHKey)
+	err := checkSSHAccess(t.Context(), inst, "not a key")
 	if err == nil {
 		t.Fatal("expected a malformed key to be refused")
 	}

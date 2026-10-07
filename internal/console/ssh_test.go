@@ -3,6 +3,7 @@ package console_test
 import (
 	"io"
 	"log"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -53,8 +54,19 @@ func sshInstance(t *testing.T, mock *testenv.MockSSHServer) *models.ProxmoxInsta
 		SSHHost:        mock.Host,
 		SSHPort:        mock.Port,
 		SSHUser:        mock.User,
-		SSHKeyPath:     mock.KeyPath,
 	}
+}
+
+// sshKeyOf returns the PEM key the mock host accepts. The key is no longer
+// part of the instance: the API reads the deployment's key and passes it to
+// Connect for that one connection.
+func sshKeyOf(t *testing.T, mock *testenv.MockSSHServer) string {
+	t.Helper()
+	b, err := os.ReadFile(mock.KeyPath)
+	if err != nil {
+		t.Fatalf("reading the mock host key: %v", err)
+	}
+	return string(b)
 }
 
 func discardLogger() *log.Logger { return log.New(io.Discard, "", 0) }
@@ -74,7 +86,7 @@ func TestConnectSSHToContainer(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- console.DefaultProxier{}.Connect(
-			pt.term, guest, sshInstance(t, mock), discardLogger())
+			pt.term, guest, sshInstance(t, mock), sshKeyOf(t, mock), discardLogger())
 	}()
 
 	waitFor(t, pt.out, "entering LXC container 100")
@@ -110,7 +122,7 @@ func TestConnectSSHToVM(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- console.DefaultProxier{}.Connect(
-			pt.term, guest, sshInstance(t, mock), discardLogger())
+			pt.term, guest, sshInstance(t, mock), sshKeyOf(t, mock), discardLogger())
 	}()
 
 	waitFor(t, pt.out, "starting serial terminal on VM 200")
@@ -137,7 +149,7 @@ func TestConnectSSHForwardsInput(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- console.DefaultProxier{}.Connect(
-			pt.term, guest, sshInstance(t, mock), discardLogger())
+			pt.term, guest, sshInstance(t, mock), sshKeyOf(t, mock), discardLogger())
 	}()
 
 	waitFor(t, pt.out, "root@CT100")
@@ -165,7 +177,7 @@ func TestConnectSSHHandlesResize(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- console.DefaultProxier{}.Connect(
-			pt.term, guest, sshInstance(t, mock), discardLogger())
+			pt.term, guest, sshInstance(t, mock), sshKeyOf(t, mock), discardLogger())
 	}()
 
 	waitFor(t, pt.out, "root@CT100")
@@ -205,7 +217,7 @@ func TestConnectSSHEscapeDisconnectsWedgedGuest(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- console.DefaultProxier{}.Connect(
-			pt.term, guest, sshInstance(t, mock), discardLogger())
+			pt.term, guest, sshInstance(t, mock), sshKeyOf(t, mock), discardLogger())
 	}()
 
 	waitFor(t, pt.out, "entering LXC container")
@@ -250,7 +262,7 @@ func TestConnectSSHEscapeBytesDoNotReachTheGuest(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- console.DefaultProxier{}.Connect(
-			pt.term, guest, sshInstance(t, mock), discardLogger())
+			pt.term, guest, sshInstance(t, mock), sshKeyOf(t, mock), discardLogger())
 	}()
 
 	waitFor(t, pt.out, "root@CT100")
@@ -287,7 +299,7 @@ func TestConnectSSHForwardsLoneCtrlA(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- console.DefaultProxier{}.Connect(
-			pt.term, guest, sshInstance(t, mock), discardLogger())
+			pt.term, guest, sshInstance(t, mock), sshKeyOf(t, mock), discardLogger())
 	}()
 
 	waitFor(t, pt.out, "root@CT100")
@@ -333,7 +345,7 @@ func TestConnectSSHStatusBarYieldsToFullScreenApp(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- console.DefaultProxier{}.Connect(
-			pt.term, guest, sshInstance(t, mock), discardLogger())
+			pt.term, guest, sshInstance(t, mock), sshKeyOf(t, mock), discardLogger())
 	}()
 
 	// One row is reserved: 24 rows of terminal, 23 for the guest.
@@ -372,7 +384,7 @@ func TestConnectSSHWithoutStatusBarLeavesTerminalAlone(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- console.DefaultProxier{}.Connect(
-			pt.term, guest, sshInstance(t, mock), discardLogger())
+			pt.term, guest, sshInstance(t, mock), sshKeyOf(t, mock), discardLogger())
 	}()
 
 	waitFor(t, pt.out, "root@CT100")
@@ -394,7 +406,8 @@ func TestConnectSSHUnreachableHost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start mock proxmox host: %v", err)
 	}
-	keyPath := mock.KeyPath
+	// Read the key BEFORE closing: Close removes the temp key file.
+	keyPEM := sshKeyOf(t, mock)
 	port := mock.Port
 	mock.Close() // nothing is listening any more
 
@@ -404,14 +417,13 @@ func TestConnectSSHUnreachableHost(t *testing.T) {
 		SSHHost:        "127.0.0.1",
 		SSHPort:        port,
 		SSHUser:        "root",
-		SSHKeyPath:     keyPath,
 	}
 	pt := newPipeTerminal()
 	guest := &models.Guest{Type: models.GuestTypeCT, Name: guestWeb, ProxmoxID: 100}
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- console.DefaultProxier{}.Connect(pt.term, guest, inst, discardLogger())
+		errCh <- console.DefaultProxier{}.Connect(pt.term, guest, inst, keyPEM, discardLogger())
 	}()
 	select {
 	case err := <-errCh:
@@ -423,7 +435,12 @@ func TestConnectSSHUnreachableHost(t *testing.T) {
 	}
 }
 
-// A missing key file must be reported, not panic.
+// No key at all must be reported, not panic.
+//
+// This is what a deployment with no key file looks like from here: the API
+// has none to send, so Connect is called with an empty one. The error has to
+// name the instance and the file, because an SSH failure at this point is
+// otherwise indistinguishable from a problem with the guest.
 func TestConnectSSHMissingKey(t *testing.T) {
 	inst := &models.ProxmoxInstance{
 		Name:           nodePVE,
@@ -431,14 +448,17 @@ func TestConnectSSHMissingKey(t *testing.T) {
 		SSHHost:        "127.0.0.1",
 		SSHPort:        1,
 		SSHUser:        "root",
-		SSHKeyPath:     "/nonexistent/key",
 	}
 	pt := newPipeTerminal()
 	guest := &models.Guest{Type: models.GuestTypeCT, Name: guestWeb, ProxmoxID: 100}
 
-	if err := (console.DefaultProxier{}).Connect(
-		pt.term, guest, inst, discardLogger()); err == nil {
-		t.Fatal("a missing key file must be reported")
+	err := (console.DefaultProxier{}).Connect(
+		pt.term, guest, inst, "", discardLogger())
+	if err == nil {
+		t.Fatal("a missing key must be reported")
+	}
+	if !strings.Contains(err.Error(), nodePVE) {
+		t.Fatalf("the error should name the instance: %v", err)
 	}
 }
 
@@ -455,7 +475,7 @@ func TestConnectSSHUnknownGuestType(t *testing.T) {
 	guest := &models.Guest{Type: models.GuestType("bogus"), Name: "x", ProxmoxID: 1}
 
 	if err := (console.DefaultProxier{}).Connect(
-		pt.term, guest, sshInstance(t, mock), discardLogger()); err == nil {
+		pt.term, guest, sshInstance(t, mock), sshKeyOf(t, mock), discardLogger()); err == nil {
 		t.Fatal("an unknown guest type must be rejected")
 	}
 }
@@ -498,7 +518,7 @@ func TestEscapeWorksInEveryBarConfiguration(t *testing.T) {
 			done := make(chan error, 1)
 			go func() {
 				done <- console.DefaultProxier{}.Connect(
-					pt.term, guest, sshInstance(t, mock), discardLogger())
+					pt.term, guest, sshInstance(t, mock), sshKeyOf(t, mock), discardLogger())
 			}()
 
 			waitFor(t, pt.out, "entering LXC container")
@@ -549,7 +569,7 @@ func TestEscapeWorksWhileFullScreenAppOwnsTheScreen(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- console.DefaultProxier{}.Connect(
-			pt.term, guest, sshInstance(t, mock), discardLogger())
+			pt.term, guest, sshInstance(t, mock), sshKeyOf(t, mock), discardLogger())
 	}()
 
 	// Wait until the bar has yielded the scroll region to the application.
@@ -588,7 +608,7 @@ func TestConnectSSHBarSurvivesCtrlL(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- console.DefaultProxier{}.Connect(
-			pt.term, guest, sshInstance(t, mock), discardLogger())
+			pt.term, guest, sshInstance(t, mock), sshKeyOf(t, mock), discardLogger())
 	}()
 
 	waitFor(t, pt.out, "root@CT100")

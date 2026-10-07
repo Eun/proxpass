@@ -110,7 +110,6 @@ func TestProxmoxInstances(t *testing.T) {
 		SSHHost:        "pve1.local",
 		SSHPort:        22,
 		SSHUser:        "root",
-		SSHKeyPath:     "/tmp/key",
 	}
 	if err := repo.AddProxmoxInstance(ctx, inst); err != nil {
 		t.Fatal(err)

@@ -30,7 +30,8 @@ import (
 // PROXPASS_SSH_KEY_FILE overrides the location for a deployment that mounts
 // its own key.
 //
-// Kept in sync with docker/entrypoint.sh by TestEntrypointUsesTheSSHKeyPath.
+// Kept in sync with docker/entrypoint.sh by
+// TestEntrypointDefaultsToTheSSHKeyPath.
 const DefaultSSHKeyPath = "/var/lib/proxpass/ssh/proxpass_key"
 
 // SSHKeyPathEnv names the environment variable that overrides

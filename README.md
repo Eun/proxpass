@@ -426,9 +426,12 @@ Proxmox credential stays out of a table an admin session can read through
 deployment that manages its own key; nothing is generated when that file
 already exists.
 
-> **Instances added before this** kept their own key, and it is still used in
-> preference to the deployment key — the key you installed on that host keeps
-> working. Removing an instance's own key makes it fall back to the shared one.
+> **Upgrading:** instances added before this could carry their own key, and
+> the migration that removes the columns **discards it**. Such an instance
+> falls back to the deployment key, so install that key's public half on its
+> Proxmox host before upgrading, or the instance stops connecting until you
+> do. `instance inspect` reports exactly that, and the host's existing
+> `authorized_keys` entry for the old key can be removed afterwards.
 
 ### How identity is decided
 

@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"proxpass/internal/db"
@@ -300,46 +299,22 @@ func (h *SessionHandler) instanceCredentials(inst *models.ProxmoxInstance) (Inst
 		out.SSHPort = &port
 	}
 
-	key, err := instanceSSHKey(inst)
+	// The deployment's key, which is the only one there is.
+	//
+	// Resolved HERE rather than passed along as a path, because the session
+	// cannot read the file: it is root-owned, and the session is not root.
+	// That is the point -- the key reaches a session only through this
+	// response, and only once the access check above has passed.
+	//
+	// Read per connection rather than cached at startup, so replacing the
+	// file takes effect on the next connection instead of at the next
+	// restart. It is a small local read on a path that already does several.
+	key, err := models.ReadSSHKey()
 	if err != nil {
 		return InstanceCredentials{}, err
 	}
 	setIfNotEmpty(&out.SSHKey, key)
 	return out, nil
-}
-
-// instanceSSHKey returns the PEM private key a session should connect with.
-//
-// The instance's own key wins, then the deployment's. An instance carries one
-// only when it was added before proxpass owned a key: the administrator
-// installed THAT key on THAT host, so quietly swapping it for the deployment
-// key would break the instance at its next connection with nothing to point
-// at.
-//
-// SSHKeyPath is still honored even though `instance add' can no longer set
-// one, because a row written by an older proxpass can still carry it and the
-// column still exists. It is resolved HERE rather than passed along, because
-// the session cannot read that file -- that is the whole point of moving
-// sessions off the database -- so handing it a path would leave it unable to
-// connect. A path that no longer resolves is an error rather than a silent
-// fall through to the deployment key, which would swap the key underneath an
-// instance that plainly asked for a specific one.
-//
-// The deployment key is read per connection rather than cached at startup, so
-// replacing the file takes effect on the next connection instead of at the
-// next restart. It is a small local read on a path that already does several.
-func instanceSSHKey(inst *models.ProxmoxInstance) (string, error) {
-	if inst.SSHKey != "" {
-		return inst.SSHKey, nil
-	}
-	if inst.SSHKeyPath != "" {
-		b, err := os.ReadFile(inst.SSHKeyPath)
-		if err != nil {
-			return "", fmt.Errorf("reading proxmox key %s: %w", inst.SSHKeyPath, err)
-		}
-		return string(b), nil
-	}
-	return models.ReadSSHKey()
 }
 
 func setIfNotEmpty(dst **string, value string) {
