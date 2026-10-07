@@ -2,10 +2,7 @@ package cli
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"net/url"
 	"strings"
@@ -14,7 +11,6 @@ import (
 	"proxpass/internal/proxmox"
 
 	ucli "github.com/urfave/cli/v3"
-	gossh "golang.org/x/crypto/ssh"
 )
 
 func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo // CLI command tree
@@ -92,18 +88,6 @@ When multiple --url flags are supplied:
 							" Disallowed when multiple --url flags are given.",
 					},
 					&ucli.StringFlag{Name: "ssh-user", Value: "root", Usage: "SSH username"},
-					&ucli.StringFlag{
-						Name:  "ssh-key-path",
-						Usage: "Path to SSH private key (--connection-type ssh only; exclusive with --ssh-key, --generate-ssh-key)",
-					},
-					&ucli.StringFlag{
-						Name:  "ssh-key",
-						Usage: "PEM-encoded private key (--connection-type ssh only; exclusive with --ssh-key-path, --generate-ssh-key)",
-					},
-					&ucli.BoolFlag{
-						Name:  "generate-ssh-key",
-						Usage: "Generate ED25519 key pair (--connection-type ssh only)",
-					},
 				},
 				Action: func(ctx context.Context, cmd *ucli.Command) error { //nolint:cyclop // CLI command validation is inherently branchy
 					urls := cmd.StringSlice("url")
@@ -128,30 +112,6 @@ When multiple --url flags are supplied:
 						return fmt.Errorf("--connection-type must be %q or %q", models.ConnectionTypeTermProxy, models.ConnectionTypeSSH)
 					}
 
-					generateKey := cmd.Bool("generate-ssh-key")
-					keyPath := cmd.String("ssh-key-path")
-					keyInline := cmd.String("ssh-key")
-
-					//nolint:nestif // SSH key validation is inherently nested
-					if connType == models.ConnectionTypeSSH {
-						set := 0
-						if keyPath != "" {
-							set++
-						}
-						if keyInline != "" {
-							set++
-						}
-						if generateKey {
-							set++
-						}
-						if set == 0 {
-							return fmt.Errorf("one of --ssh-key-path, --ssh-key, or --generate-ssh-key is required when --connection-type ssh")
-						}
-						if set > 1 {
-							return fmt.Errorf("--ssh-key-path, --ssh-key, and --generate-ssh-key are mutually exclusive")
-						}
-					}
-
 					// Validate all supplied URLs up-front before touching anything.
 					for _, rawURL := range urls {
 						if err := validateAPIURL(rawURL); err != nil {
@@ -166,37 +126,29 @@ When multiple --url flags are supplied:
 						}
 					}
 
+					// The deployment's own key, which the entrypoint generated
+					// on the volume. Instances no longer carry one: its
+					// public half has to be installed on the Proxmox host by
+					// hand, and a key per instance multiplies that work
+					// without isolating anything.
 					var sshKeyPEM string
-					var pubKeyAuthorized string
 					if connType == models.ConnectionTypeSSH {
-						switch {
-						case keyInline != "":
-							// Validate that the supplied value is a parseable private key.
-							if _, err := gossh.ParsePrivateKey([]byte(keyInline)); err != nil {
-								return fmt.Errorf("--ssh-key: not a valid PEM private key: %w", err)
-							}
-							sshKeyPEM = keyInline
-						case generateKey:
-							pub, priv, err := ed25519.GenerateKey(rand.Reader)
-							if err != nil {
-								return fmt.Errorf("generating SSH key: %w", err)
-							}
-							privPEM, err := gossh.MarshalPrivateKey(priv, "")
-							if err != nil {
-								return fmt.Errorf("marshaling SSH private key: %w", err)
-							}
-							sshKeyPEM = string(pem.EncodeToMemory(privPEM))
-							pubSSH, err := gossh.NewPublicKey(pub)
-							if err != nil {
-								return fmt.Errorf("marshaling SSH public key: %w", err)
-							}
-							pubKeyAuthorized = string(gossh.MarshalAuthorizedKey(pubSSH))
+						var err error
+						sshKeyPEM, err = models.ReadSSHKey()
+						if err != nil {
+							return err
+						}
+						if sshKeyPEM == "" {
+							return fmt.Errorf(
+								"no ssh key at %s: the container entrypoint generates one at "+
+									"startup, so this deployment is either running an older "+
+									"image or has had the file removed", models.SSHKeyPath())
 						}
 					}
 
 					// Add each instance in sequence.
 					for _, rawURL := range urls {
-						if err := addSingleInstance(ctx, deps, cmd, connType, rawURL, sshKeyPEM, pubKeyAuthorized, keyPath); err != nil {
+						if err := addSingleInstance(ctx, deps, cmd, connType, rawURL, sshKeyPEM); err != nil {
 							return err
 						}
 					}
@@ -271,11 +223,7 @@ When multiple --url flags are supplied:
 							fmt.Fprintf(deps.Out, "SSH Host:         %s\n", inst.SSHHost)
 							fmt.Fprintf(deps.Out, "SSH Port:         %d\n", inst.SSHPort)
 							fmt.Fprintf(deps.Out, "SSH User:         %s\n", inst.SSHUser)
-							if inst.SSHKey != "" {
-								fmt.Fprintf(deps.Out, "SSH Key:          (generated, stored in DB)\n")
-							} else {
-								fmt.Fprintf(deps.Out, "SSH Key Path:     %s\n", inst.SSHKeyPath)
-							}
+							reportSSHKey(ctx, deps, inst)
 						}
 					}
 					return nil
@@ -331,8 +279,6 @@ func addSingleInstance( //nolint:cyclop // multi-URL dispatch adds branching
 	connType models.ConnectionType,
 	rawURL string,
 	sshKeyPEM string,
-	pubKeyAuthorized string,
-	keyPath string,
 ) error {
 	multiURL := len(cmd.StringSlice("url")) > 1
 
@@ -387,16 +333,35 @@ func addSingleInstance( //nolint:cyclop // multi-URL dispatch adds branching
 		SSHHost:        sshHost,
 		SSHPort:        sshPort,
 		SSHUser:        cmd.String("ssh-user"),
-		SSHKeyPath:     keyPath,
 		SSHKey:         sshKeyPEM,
 	}
+
+	// Check that the key actually opens the host BEFORE storing anything,
+	// so a mistake is reported against the command that made it rather than
+	// against the first guest somebody tries to reach.
+	//
+	// A failure is NOT fatal, and that is deliberate: the administrator has
+	// to install the public key on the host by hand, and they cannot do that
+	// before an instance exists to tell them which host. Refusing here would
+	// make the obvious order impossible. So it prints the key and what to do
+	// with it, and adds the instance anyway.
+	if connType == models.ConnectionTypeSSH {
+		if err := checkSSHAccess(ctx, inst, sshKeyPEM); err != nil {
+			pub, pubErr := publicKeyLine(sshKeyPEM)
+			if pubErr != nil {
+				return fmt.Errorf("deriving the public key: %w", pubErr)
+			}
+			fmt.Fprintf(deps.ErrOut,
+				"Warning: %s is not reachable over SSH yet: %v\n"+
+					"Add this key to %s on %s, then run `instance inspect %s' to re-check:\n%s",
+				inst.SSHHost, err, authorizedKeysPath, inst.SSHHost, instName, pub)
+		}
+	}
+
 	if err := deps.Repo.AddProxmoxInstance(ctx, inst); err != nil {
 		return err
 	}
 	fmt.Fprintf(deps.Out, "Instance %q added (connection: %s, node: %s).\n", inst.Name, inst.ConnectionType, inst.Node)
-	if pubKeyAuthorized != "" {
-		fmt.Fprintf(deps.Out, "Public key (add to Proxmox authorized_keys on %s):\n%s", inst.SSHHost, pubKeyAuthorized)
-	}
 
 	// Run discovery on the new instance.
 	if deps.Discoverer != nil {

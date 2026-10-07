@@ -304,6 +304,22 @@ func (h *SessionHandler) instanceCredentials(inst *models.ProxmoxInstance) (Inst
 	if err != nil {
 		return InstanceCredentials{}, err
 	}
+	// Fall back to the deployment-wide key on disk.
+	//
+	// An instance carries its own key only when it was added before proxpass
+	// owned one. Those keep working untouched: the administrator installed
+	// that key on that host, and quietly swapping it here would break the
+	// instance at its next connection with nothing to point at.
+	//
+	// Read per connection rather than cached at startup so that replacing
+	// the file takes effect on the next connection instead of at the next
+	// restart. It is a small local read on a path that already does several.
+	if key == "" {
+		key, err = models.ReadSSHKey()
+		if err != nil {
+			return InstanceCredentials{}, err
+		}
+	}
 	setIfNotEmpty(&out.SSHKey, key)
 	return out, nil
 }

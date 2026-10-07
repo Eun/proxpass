@@ -151,6 +151,54 @@ for type in rsa ecdsa ed25519; do
 	chmod 0600 "${key}"
 done
 
+# The key proxpass uses to reach the Proxmox hosts, as an SSH *client*.
+#
+# This is the opposite direction from the host keys above: those identify this
+# container to connecting users, this one identifies proxpass to Proxmox. It
+# is ONE key for every instance, because the administrator has to install its
+# public half on each host by hand and a key per instance multiplies that work
+# without buying any isolation -- whoever can read one can read them all.
+#
+# Generated here rather than by `proxpass serve' so that it lives on the
+# volume as an ordinary file whose public half the administrator can read:
+#
+#     docker compose exec proxpass cat /var/lib/proxpass/ssh/proxpass_key.pub
+#
+# `proxpass instance add' also prints it, but only when the host is not yet
+# reachable; a deployment that has lost that output needs somewhere to look it
+# up. Keeping it on the volume also means recreating the container does NOT
+# invalidate the key already installed on every Proxmox host.
+#
+# PROXPASS_SSH_KEY_FILE names the file, so a deployment that manages the key
+# itself can point this at a secrets mount instead. The key is passed by PATH
+# rather than by value because only `proxpass serve' ever opens it: handing it
+# through the environment would put a Proxmox credential in the environment of
+# a process whose /proc/<pid>/environ is readable by anything running as the
+# same user.
+#
+# Must stay in sync with models.DefaultSSHKeyPath, which is what reads it.
+PROXPASS_SSH_KEY_FILE="${PROXPASS_SSH_KEY_FILE:-${PROXPASS_HOST_KEY_DIR}/proxpass_key}"
+if [ ! -f "${PROXPASS_SSH_KEY_FILE}" ]; then
+	log "generating the proxmox client key"
+	mkdir -p "$(dirname "${PROXPASS_SSH_KEY_FILE}")"
+	# ed25519: Proxmox reads this only as an authorized_keys line, which has
+	# no algorithm restriction. (PVE's own known_hosts handling is RSA-only,
+	# but that concerns HOST keys -- the ones verified in the other
+	# direction -- not this one.)
+	ssh-keygen -q -t ed25519 -f "${PROXPASS_SSH_KEY_FILE}" -N "" -C "proxpass"
+	log "proxmox client key generated; install the public half on each Proxmox host:"
+	log "  $(cat "${PROXPASS_SSH_KEY_FILE}.pub")"
+fi
+# Root-only, like the host keys: `proxpass serve' runs as root and is the only
+# process that opens it. A session is handed the contents by the API after its
+# access check, and could not read the file even if it tried.
+chmod 0600 "${PROXPASS_SSH_KEY_FILE}"
+# The public half is what the administrator installs, so it stays readable.
+if [ -f "${PROXPASS_SSH_KEY_FILE}.pub" ]; then
+	chmod 0644 "${PROXPASS_SSH_KEY_FILE}.pub"
+fi
+export PROXPASS_SSH_KEY_FILE
+
 # A 200 on the user list endpoint means `proxpass serve' is far enough along
 # that NSS lookups will succeed. --fail turns any non-2xx into a non-zero exit.
 nss_api_ready() {
