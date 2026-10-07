@@ -59,13 +59,19 @@ func instanceFromAPI(c *api.InstanceCredentials) *models.ProxmoxInstance {
 	if c.SSHUser != nil {
 		inst.SSHUser = *c.SSHUser
 	}
-	// Always inline: the server resolved a configured key PATH by reading
-	// the file, because this process cannot. SSHKeyPath is deliberately
-	// left empty so nothing downstream tries to open it.
-	if c.SSHKey != nil {
-		inst.SSHKey = *c.SSHKey
-	}
 	return inst
+}
+
+// instanceSSHKey returns the key the server sent for an instance.
+//
+// Separate from instanceFromAPI because the key is not part of the instance:
+// it belongs to the deployment, and the server read it for this one
+// connection.
+func instanceSSHKey(c *api.InstanceCredentials) string {
+	if c.SSHKey == nil {
+		return ""
+	}
+	return *c.SSHKey
 }
 
 // APIDirectory serves a session from the loopback API.
@@ -113,6 +119,7 @@ func (d *APIDirectory) Connect(ctx context.Context, guestID int64) (*ConnectInfo
 	return &ConnectInfo{
 		Guest:    guestFromAPI(&info.Guest),
 		Instance: instanceFromAPI(&info.Instance),
+		SSHKey:   instanceSSHKey(&info.Instance),
 	}, nil
 }
 

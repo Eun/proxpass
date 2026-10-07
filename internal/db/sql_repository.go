@@ -134,12 +134,12 @@ func (r *sqlRepo) AddProxmoxInstance(ctx context.Context, inst *models.ProxmoxIn
 	err := r.queryRow(ctx,
 		`INSERT INTO proxmox_instances
 		(name, api_url, api_token_id, api_token_secret, connection_type, node,
-		 ssh_host, ssh_port, ssh_user, ssh_key_path, ssh_key)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ssh_host, ssh_port, ssh_user)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		RETURNING id`,
 		inst.Name, inst.APIURL, inst.APITokenID, inst.APITokenSecret,
 		string(inst.ConnectionType), inst.Node,
-		inst.SSHHost, inst.SSHPort, inst.SSHUser, inst.SSHKeyPath, inst.SSHKey,
+		inst.SSHHost, inst.SSHPort, inst.SSHUser,
 	).Scan(&inst.ID)
 	if err != nil {
 		if r.d.isUniqueViolation(err) {
@@ -161,7 +161,7 @@ func (r *sqlRepo) ListProxmoxInstances(ctx context.Context) ([]*models.ProxmoxIn
 		// its rowid reused.
 		`SELECT id, name, api_url, api_token_id, api_token_secret,
 		connection_type, node,
-		ssh_host, ssh_port, ssh_user, ssh_key_path, ssh_key
+		ssh_host, ssh_port, ssh_user
 		FROM proxmox_instances ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -176,7 +176,6 @@ func (r *sqlRepo) ListProxmoxInstances(ctx context.Context) ([]*models.ProxmoxIn
 			&inst.APITokenID, &inst.APITokenSecret,
 			&connType, &inst.Node,
 			&inst.SSHHost, &inst.SSHPort, &inst.SSHUser,
-			&inst.SSHKeyPath, &inst.SSHKey,
 		); err != nil {
 			return nil, err
 		}
@@ -193,12 +192,12 @@ func (r *sqlRepo) UpdateProxmoxInstance(ctx context.Context, inst *models.Proxmo
 		name = ?, api_url = ?, api_token_id = ?,
 		api_token_secret = ?, connection_type = ?, node = ?,
 		ssh_host = ?, ssh_port = ?,
-		ssh_user = ?, ssh_key_path = ?, ssh_key = ?
+		ssh_user = ?
 		WHERE id = ?`,
 		inst.Name, inst.APIURL, inst.APITokenID,
 		inst.APITokenSecret, string(inst.ConnectionType), inst.Node,
 		inst.SSHHost, inst.SSHPort,
-		inst.SSHUser, inst.SSHKeyPath, inst.SSHKey, inst.ID,
+		inst.SSHUser, inst.ID,
 	)
 	if err != nil && r.d.isUniqueViolation(err) {
 		if strings.Contains(err.Error(), "api_url") {

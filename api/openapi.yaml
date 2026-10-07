@@ -376,9 +376,14 @@ components:
         sshKey:
           type: string
           description: |
-            PEM-encoded private key, inline. An instance configured with a
-            key PATH is resolved here by reading the file, because the
-            session cannot: the key is deliberately outside its reach.
+            PEM-encoded private key, inline.
+
+            One key serves every instance: proxpass generates it on its
+            volume and the administrator installs its public half on each
+            Proxmox host. It is read here and sent inline because a session
+            cannot read the file -- it is root-owned, and the session is not
+            root. The key is therefore handed over per connection, only
+            after the access check has passed.
 
     SessionCredential:
       type: object

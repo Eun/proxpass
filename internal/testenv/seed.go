@@ -3,6 +3,7 @@ package testenv
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"proxpass/internal/db"
 	"proxpass/internal/models"
@@ -20,8 +21,17 @@ type SeedData struct {
 // Seed populates the repository with a standard test dataset.
 // The instance fields (APIURL, SSHHost, etc.) are set to the
 // provided values so they can point at mock servers.
+// sshKeyPath names the key the mock Proxmox host accepts. Instances no longer
+// store a key, so it is published as the DEPLOYMENT key by setting
+// PROXPASS_SSH_KEY_FILE -- the same mechanism the container entrypoint uses.
 func Seed(repo db.Repository, apiURL, sshHost string, sshPort int, sshKeyPath string) (*SeedData, error) {
 	ctx := context.Background()
+
+	if sshKeyPath != "" {
+		if err := os.Setenv(models.SSHKeyPathEnv, sshKeyPath); err != nil {
+			return nil, fmt.Errorf("setting %s: %w", models.SSHKeyPathEnv, err)
+		}
+	}
 
 	// 1. Proxmox instance
 	inst := &models.ProxmoxInstance{
@@ -32,7 +42,6 @@ func Seed(repo db.Repository, apiURL, sshHost string, sshPort int, sshKeyPath st
 		SSHHost:        sshHost,
 		SSHPort:        sshPort,
 		SSHUser:        defaultSSHUser,
-		SSHKeyPath:     sshKeyPath,
 	}
 	if err := repo.AddProxmoxInstance(ctx, inst); err != nil {
 		return nil, fmt.Errorf("add instance: %w", err)

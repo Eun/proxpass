@@ -408,6 +408,7 @@ func (p *MockProxier) Connect(
 	term *console.Terminal,
 	guest *models.Guest,
 	inst *models.ProxmoxInstance,
+	_ string,
 	_ *log.Logger,
 ) error {
 	p.mu.Lock()

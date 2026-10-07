@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"proxpass/internal/db"
@@ -300,32 +299,22 @@ func (h *SessionHandler) instanceCredentials(inst *models.ProxmoxInstance) (Inst
 		out.SSHPort = &port
 	}
 
-	key, err := instanceKey(inst)
+	// The deployment's key, which is the only one there is.
+	//
+	// Resolved HERE rather than passed along as a path, because the session
+	// cannot read the file: it is root-owned, and the session is not root.
+	// That is the point -- the key reaches a session only through this
+	// response, and only once the access check above has passed.
+	//
+	// Read per connection rather than cached at startup, so replacing the
+	// file takes effect on the next connection instead of at the next
+	// restart. It is a small local read on a path that already does several.
+	key, err := models.ReadSSHKey()
 	if err != nil {
 		return InstanceCredentials{}, err
 	}
 	setIfNotEmpty(&out.SSHKey, key)
 	return out, nil
-}
-
-// instanceKey returns the PEM private key for an instance, reading it from
-// disk when the instance names a path rather than storing the key inline.
-//
-// Mirrors console.loadInstanceKey, which this replaces for sessions. A
-// missing path is an error here rather than at connect time, where it would
-// surface as an unexplained console failure.
-func instanceKey(inst *models.ProxmoxInstance) (string, error) {
-	if inst.SSHKey != "" {
-		return inst.SSHKey, nil
-	}
-	if inst.SSHKeyPath == "" {
-		return "", nil
-	}
-	b, err := os.ReadFile(inst.SSHKeyPath)
-	if err != nil {
-		return "", fmt.Errorf("reading proxmox key %s: %w", inst.SSHKeyPath, err)
-	}
-	return string(b), nil
 }
 
 func setIfNotEmpty(dst **string, value string) {

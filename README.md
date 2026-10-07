@@ -205,14 +205,14 @@ ssh -p 2222 admin@proxpass instance add \
   --token-secret "uuid"
 
 # Add a single instance with SSH connection type.
+# No key flag: proxpass uses its own key (see "The Proxmox SSH key" below).
 # --ssh-host is optional: when omitted the hostname from --url is used (pve, port 22).
 # An explicit --ssh-host may include a port: --ssh-host pve:2222
 ssh -p 2222 admin@proxpass instance add \
   --url https://pve:8006 \
   --token-id "user@pam!token" \
   --token-secret "uuid" \
-  --connection-type ssh \
-  --ssh-key-path /root/.ssh/id_ed25519
+  --connection-type ssh
 
 # Override the SSH host/port explicitly (single --url only)
 ssh -p 2222 admin@proxpass instance add \
@@ -221,8 +221,7 @@ ssh -p 2222 admin@proxpass instance add \
   --token-id "user@pam!token" \
   --token-secret "uuid" \
   --connection-type ssh \
-  --ssh-host pve1.internal:2222 \
-  --ssh-key-path /root/.ssh/id_ed25519
+  --ssh-host pve1.internal:2222
 
 # Add multiple instances in one call.
 # --name and --ssh-host are disallowed with multiple --url.
@@ -234,8 +233,7 @@ ssh -p 2222 admin@proxpass instance add \
   --url https://pve3:8006 \
   --token-id "user@pam!token" \
   --token-secret "uuid" \
-  --connection-type ssh \
-  --ssh-key-path /root/.ssh/id_ed25519
+  --connection-type ssh
 
 ssh -p 2222 admin@proxpass instance rm --name pve1
 
@@ -381,6 +379,59 @@ Because such a name is only a label, the UI names the identity the key
 resolves to rather than echoing it back: logging in as `tobias@` with an
 admin key shows `guests available to admin`. The login name as typed is what
 gets logged, so the log still records what actually came in.
+
+### The Proxmox SSH key
+
+Instances using `--connection-type ssh` need an SSH key to reach the Proxmox
+host. proxpass owns that key: the container entrypoint generates an ed25519
+keypair on the volume at first start, and `instance add` no longer takes a
+key at all.
+
+**One key for the whole deployment**, not one per instance. Its public half
+has to be installed on each Proxmox host by hand — a key per instance would
+multiply that work without isolating anything, since whoever can read one can
+read them all.
+
+Read the public half to install it:
+
+```bash
+docker compose exec proxpass cat /var/lib/proxpass/ssh/proxpass_key.pub
+```
+
+and append it to `~/.ssh/authorized_keys` for the user named by `--ssh-user`
+(`root` by default) on each Proxmox host. On a **clustered** node that file is
+a symlink into `/etc/pve/priv/authorized_keys`, which pmxcfs replicates, so
+installing it once per *cluster* covers every node in it. A standalone node
+needs its own copy. Proxmox only ever appends to and de-duplicates that file,
+so the key is not removed by `pvecm updatecerts` or by a node join.
+
+`instance add --connection-type ssh` checks that the key opens the host and
+prints it if not:
+
+```
+Warning: pve1 is not reachable over SSH yet: authenticating as root: ...
+Add this key to ~/.ssh/authorized_keys on pve1, then run `instance inspect pve1' to re-check:
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5... proxpass
+```
+
+The warning is **not** fatal and the instance is still added — you cannot
+install the key before there is an instance telling you which host to install
+it on. `instance inspect` re-runs the check, so it is the way to confirm the
+key landed.
+
+The key lives on the volume rather than in the database, so recreating the
+container does not invalidate what you have already installed, and so a
+Proxmox credential stays out of a table an admin session can read through
+`/admin/rpc`. `PROXPASS_SSH_KEY_FILE` points at a different file for a
+deployment that manages its own key; nothing is generated when that file
+already exists.
+
+> **Upgrading:** instances added before this could carry their own key, and
+> the migration that removes the columns **discards it**. Such an instance
+> falls back to the deployment key, so install that key's public half on its
+> Proxmox host before upgrading, or the instance stops connecting until you
+> do. `instance inspect` reports exactly that, and the host's existing
+> `authorized_keys` entry for the old key can be removed afterwards.
 
 ### How identity is decided
 
