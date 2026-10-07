@@ -76,6 +76,14 @@ func Run(ctx context.Context, d *Deps) int {
 	case isHelp(cmd):
 		return d.writeHelp(ctx)
 
+	case isSFTPRequest(cmd):
+		// sshd replaced a subsystem request with this command, so the
+		// client wants to transfer files rather than run anything. It must
+		// come before the admin/client split: a transfer is served the same
+		// way for both, and the guest comes from the login name because a
+		// subsystem request carries no arguments.
+		return d.runSFTP(ctx)
+
 	case cmd == "":
 		// No command. The login name may itself name a guest -- "ssh
 		// ct100@host" -- so try that before falling back to the picker.

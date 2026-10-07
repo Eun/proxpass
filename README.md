@@ -433,6 +433,40 @@ already exists.
 > do. `instance inspect` reports exactly that, and the host's existing
 > `authorized_keys` entry for the old key can be removed afterwards.
 
+### File transfer with scp and sftp
+
+Files can be copied into and out of a **container** by naming the guest as the
+login name:
+
+```bash
+scp ./app.tar.gz ct100@proxpass:/opt/
+scp ct100@proxpass:/var/log/syslog ./
+sftp ct100@proxpass
+```
+
+The same resolution as `ssh ct100@proxpass` applies, including the
+instance-qualified `ct100@rome` form, and it is scoped to the guests your key
+already reaches — naming a guest grants nothing.
+
+A transfer runs **inside the container's namespaces**, so a path means what it
+means in the container: a symlink there cannot point at a file on the Proxmox
+node. Nothing is staged on the node either; the bytes stream straight through.
+
+Two limits worth knowing:
+
+| Not supported | Why |
+|---|---|
+| Virtual machines | A VM has no namespace to enter. Reaching its disk means the guest agent, whose write endpoint truncates at 60 KiB and cannot append. |
+| `--connection-type termproxy` instances | termproxy gives a console websocket, not a shell on the node, so there is nowhere to run the transfer from. Use `--connection-type ssh`. |
+
+The container also needs a shell and `cat`/`stat`/`dd` — BusyBox is enough, so
+Alpine works. A distroless container cannot be served.
+
+> **Why `scp` works without `-O`:** since OpenSSH 9.0 `scp` speaks the SFTP
+> protocol by default and does *not* fall back to the legacy one, so serving
+> SFTP is what makes a plain `scp` work. Both commands are the same protocol
+> here.
+
 ### How identity is decided
 
 sshd is configured with `ExposeAuthInfo yes`, which tells the session which
