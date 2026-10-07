@@ -12,9 +12,7 @@ import (
 // This is the boundary that keeps a client-chosen path from becoming code, so
 // it is tested against sh rather than against an idea of what sh does.
 func TestShellQuoteSurvivesAShell(t *testing.T) {
-	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("no sh available")
-	}
+	requireShell(t)
 	hostile := []string{
 		"plain.txt",
 		"with space.txt",
@@ -54,9 +52,7 @@ func TestShellQuoteSurvivesAShell(t *testing.T) {
 // space stays ONE argument, which is what stops a crafted name from adding
 // another.
 func TestShellQuoteAllKeepsArgumentsSeparate(t *testing.T) {
-	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("no sh available")
-	}
+	requireShell(t)
 	// Three arguments, two of which would split on whitespace unquoted.
 	cmd := "printf '[%s]' " + shellQuoteAll("a b", "c;d", "e")
 	out, err := exec.CommandContext(t.Context(), "sh", "-c", cmd).Output()
@@ -119,9 +115,7 @@ func TestCommandVerifiesThePidTwice(t *testing.T) {
 // TestCommandIsValidShell checks every generated command parses, which a
 // quoting mistake would break.
 func TestCommandIsValidShell(t *testing.T) {
-	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("no sh available")
-	}
+	requireShell(t)
 	c := Container{VMID: 101, Unprivileged: true}
 	hostile := "it's a/file name;with$stuff"
 	cmds := map[string]string{
