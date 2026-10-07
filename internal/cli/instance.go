@@ -182,6 +182,7 @@ When multiple --url flags are supplied:
 					return fmt.Errorf("instance %q not found", name)
 				},
 			},
+			instanceUpdateCmd(deps),
 			{
 				Name:      cmdInspect,
 				Usage:     "Show details for one or more instances",
