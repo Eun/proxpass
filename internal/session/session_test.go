@@ -930,9 +930,22 @@ func TestReservedLoginNameMatchIsCaseInsensitive(t *testing.T) {
 	}
 }
 
-// An explicit command still wins over the login name, so the documented
-// "ssh alice@host ct100" form keeps working unchanged.
-func TestExplicitCommandTakesPrecedenceOverTheLoginName(t *testing.T) {
+// A command runs IN the guest the login name addresses.
+//
+// "ssh ct100@host whoami" is addressed to ct100, so the command belongs to
+// that container rather than to proxpass. This replaces the older rule, where
+// an explicit command won over the login name and "ssh ct100@host guest
+// connect vm200" connected to vm200: naming one guest and then asking for
+// another is a contradiction, and resolving it by vocabulary -- is this word
+// a proxpass command or a program in the container? -- would mean the answer
+// depends on knowing proxpass's command list.
+//
+// The guest here has no reachable node, so the command cannot actually run;
+// the assertion is that it was ROUTED there, which the error proves.
+// The proxpass command the precedence tests use.
+const cmdConnectVM200 = "guest connect vm200"
+
+func TestACommandRunsInTheGuestNamedByTheLoginName(t *testing.T) {
 	repo := newRepo(t)
 	inst := &models.ProxmoxInstance{
 		Name: instPVE, APIURL: pveAPIURL, Node: instPVE,
@@ -947,18 +960,88 @@ func TestExplicitCommandTakesPrecedenceOverTheLoginName(t *testing.T) {
 	proxier := &testenv.MockProxier{}
 	tb := newTerminal("")
 	d := newDeps(repo, tb, proxier)
-	// Login name names one guest, the command names another: the command
-	// is the explicit request and must win.
 	d.LoginName = guestCT100
 	d.IsAdmin = true
-	d.Command = "guest connect vm200"
+	d.Command = cmdConnectVM200
+
+	if code := session.Run(t.Context(), d); code == 0 {
+		t.Fatal("the command should have been routed to ct100, which has no node")
+	}
+	// Crucially NOT connected to vm200: the command was not read as a
+	// proxpass command.
+	if sessions := proxierSessions(proxier); len(sessions) != 0 {
+		t.Errorf("the command was handled by proxpass and connected to %+v", sessions)
+	}
+	if got := tb.errb.String(); !strings.Contains(got, "ssh host") {
+		t.Errorf("expected a routing failure naming the instance, got %q", got)
+	}
+}
+
+// A login name that names NO guest leaves the command to proxpass.
+//
+// This is the ordinary case -- "ssh alice@host guest ls" -- and the fallback
+// that keeps the CLI reachable. Without it, adding guest routing would have
+// taken the client CLI away from everyone.
+func TestACommandFallsBackToProxpassWhenTheNameIsNotAGuest(t *testing.T) {
+	repo := newRepo(t)
+	inst := &models.ProxmoxInstance{
+		Name: instPVE, APIURL: pveAPIURL, Node: instPVE,
+		ConsoleTransport: models.ConsoleTransportTermProxy,
+	}
+	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
+		t.Fatalf("add instance: %v", err)
+	}
+	seedGuestOn(t, repo, inst.ID, models.GuestTypeVM, 200, "db")
+
+	proxier := &testenv.MockProxier{}
+	tb := newTerminal("")
+	d := newDeps(repo, tb, proxier)
+	// Names no guest at all.
+	d.LoginName = "nobody-in-particular"
+	d.IsAdmin = true
+	d.Command = cmdConnectVM200
 
 	if code := session.Run(t.Context(), d); code != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, tb.errb.String())
 	}
 	sessions := proxierSessions(proxier)
 	if len(sessions) != 1 || sessions[0].ProxmoxID != 200 {
-		t.Errorf("connected to %+v, want vmid 200 from the command", sessions)
+		t.Errorf("connected to %+v, want vmid 200 from the proxpass command", sessions)
+	}
+}
+
+// A reserved name means proxpass even when a guest shares it.
+//
+// The administrator's name and every configured client name are reserved, so
+// a guest called "admin" cannot take the CLI away from the administrator.
+func TestAReservedNameKeepsTheProxpassCLI(t *testing.T) {
+	repo := newRepo(t)
+	inst := &models.ProxmoxInstance{
+		Name: instPVE, APIURL: pveAPIURL, Node: instPVE,
+		ConsoleTransport: models.ConsoleTransportTermProxy,
+	}
+	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
+		t.Fatalf("add instance: %v", err)
+	}
+	// A guest named exactly like the administrator.
+	seedGuestOn(t, repo, inst.ID, models.GuestTypeCT, 100, session.AdminUser)
+	seedGuestOn(t, repo, inst.ID, models.GuestTypeVM, 200, "db")
+
+	proxier := &testenv.MockProxier{}
+	tb := newTerminal("")
+	d := newDeps(repo, tb, proxier)
+	d.LoginName = session.AdminUser
+	d.IdentityName = session.AdminUser
+	d.IsAdmin = true
+	d.Command = cmdConnectVM200
+
+	if code := session.Run(t.Context(), d); code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, tb.errb.String())
+	}
+	sessions := proxierSessions(proxier)
+	if len(sessions) != 1 || sessions[0].ProxmoxID != 200 {
+		t.Errorf("a guest named %q hijacked the admin CLI: %+v",
+			session.AdminUser, sessions)
 	}
 }
 

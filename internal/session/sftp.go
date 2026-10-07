@@ -2,11 +2,9 @@ package session
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"strings"
 
-	"proxpass/internal/cli"
 	"proxpass/internal/console"
 	"proxpass/internal/guestfs"
 	"proxpass/internal/models"
@@ -156,28 +154,6 @@ func (d *Deps) serveSFTP(info *ConnectInfo) int {
 		return 1
 	}
 	return 0
-}
-
-// resolveLoginNameGuest resolves a login name to one reachable guest.
-//
-// The same resolution the console uses for "ssh ct100@host", via the same
-// helpers, so the two cannot drift: scoped to the guests this session may
-// reach, so a name it may not reach is simply not a guest, and an ambiguity
-// can only ever name guests the caller already sees. It also accepts the
-// "ct100@rome" form for an instance-qualified name.
-func (d *Deps) resolveLoginNameGuest(ctx context.Context, name string) (*models.Guest, error) {
-	guests, err := d.accessibleGuests(ctx)
-	if err != nil {
-		return nil, err
-	}
-	visible := namedInstances(guests)
-	instName, identifier := cli.ParseGuestTarget(name, cli.InstanceLookup(visible))
-	guest, _, err := cli.ResolveGuestAndInstance(
-		identifier, instName, guestModels(guests), visible)
-	if err != nil {
-		return nil, fmt.Errorf("%q: %w", name, err)
-	}
-	return guest, nil
 }
 
 // sessionStream adapts the session's terminal streams to the
