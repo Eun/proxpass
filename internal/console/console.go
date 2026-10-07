@@ -140,10 +140,22 @@ func guestConsoleCmd(guest *models.Guest) (string, error) {
 }
 
 // loadInstanceKey returns the PEM private key bytes for a Proxmox instance.
-// An inline key stored in the database takes precedence over a path on disk.
+//
+// In a session SSHKey is always set: the API resolved whichever key applies --
+// the instance's own, or the deployment's from the volume -- and sent it
+// inline, because this process can read neither the database nor a key file.
+// SSHKeyPath is the fallback for a caller holding an instance straight from
+// the database, and names the file in its error so a stale path says so
+// rather than surfacing as an unexplained console failure.
 func loadInstanceKey(inst *models.ProxmoxInstance) ([]byte, error) {
 	if inst.SSHKey != "" {
 		return []byte(inst.SSHKey), nil
+	}
+	if inst.SSHKeyPath == "" {
+		return nil, fmt.Errorf(
+			"instance %q has no ssh key: the session was given none, which "+
+				"means the deployment has no key at %s",
+			inst.Name, models.SSHKeyPath())
 	}
 	b, err := os.ReadFile(inst.SSHKeyPath)
 	if err != nil {

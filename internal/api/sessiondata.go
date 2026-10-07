@@ -300,48 +300,46 @@ func (h *SessionHandler) instanceCredentials(inst *models.ProxmoxInstance) (Inst
 		out.SSHPort = &port
 	}
 
-	key, err := instanceKey(inst)
+	key, err := instanceSSHKey(inst)
 	if err != nil {
 		return InstanceCredentials{}, err
-	}
-	// Fall back to the deployment-wide key on disk.
-	//
-	// An instance carries its own key only when it was added before proxpass
-	// owned one. Those keep working untouched: the administrator installed
-	// that key on that host, and quietly swapping it here would break the
-	// instance at its next connection with nothing to point at.
-	//
-	// Read per connection rather than cached at startup so that replacing
-	// the file takes effect on the next connection instead of at the next
-	// restart. It is a small local read on a path that already does several.
-	if key == "" {
-		key, err = models.ReadSSHKey()
-		if err != nil {
-			return InstanceCredentials{}, err
-		}
 	}
 	setIfNotEmpty(&out.SSHKey, key)
 	return out, nil
 }
 
-// instanceKey returns the PEM private key for an instance, reading it from
-// disk when the instance names a path rather than storing the key inline.
+// instanceSSHKey returns the PEM private key a session should connect with.
 //
-// Mirrors console.loadInstanceKey, which this replaces for sessions. A
-// missing path is an error here rather than at connect time, where it would
-// surface as an unexplained console failure.
-func instanceKey(inst *models.ProxmoxInstance) (string, error) {
+// The instance's own key wins, then the deployment's. An instance carries one
+// only when it was added before proxpass owned a key: the administrator
+// installed THAT key on THAT host, so quietly swapping it for the deployment
+// key would break the instance at its next connection with nothing to point
+// at.
+//
+// SSHKeyPath is still honored even though `instance add' can no longer set
+// one, because a row written by an older proxpass can still carry it and the
+// column still exists. It is resolved HERE rather than passed along, because
+// the session cannot read that file -- that is the whole point of moving
+// sessions off the database -- so handing it a path would leave it unable to
+// connect. A path that no longer resolves is an error rather than a silent
+// fall through to the deployment key, which would swap the key underneath an
+// instance that plainly asked for a specific one.
+//
+// The deployment key is read per connection rather than cached at startup, so
+// replacing the file takes effect on the next connection instead of at the
+// next restart. It is a small local read on a path that already does several.
+func instanceSSHKey(inst *models.ProxmoxInstance) (string, error) {
 	if inst.SSHKey != "" {
 		return inst.SSHKey, nil
 	}
-	if inst.SSHKeyPath == "" {
-		return "", nil
+	if inst.SSHKeyPath != "" {
+		b, err := os.ReadFile(inst.SSHKeyPath)
+		if err != nil {
+			return "", fmt.Errorf("reading proxmox key %s: %w", inst.SSHKeyPath, err)
+		}
+		return string(b), nil
 	}
-	b, err := os.ReadFile(inst.SSHKeyPath)
-	if err != nil {
-		return "", fmt.Errorf("reading proxmox key %s: %w", inst.SSHKeyPath, err)
-	}
-	return string(b), nil
+	return models.ReadSSHKey()
 }
 
 func setIfNotEmpty(dst **string, value string) {

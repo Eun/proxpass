@@ -47,15 +47,17 @@ func TestReadSSHKeyTrimsTheFile(t *testing.T) {
 // TestReadSSHKeyReportsAnUnreadableFile distinguishes "no key configured"
 // from "the key is there but we cannot read it". The first is ordinary, the
 // second is a misconfiguration the administrator has to see.
+//
+// A directory stands in for the unreadable file rather than a 0o000 mode:
+// Windows does not enforce that mode, so the read would succeed there and the
+// test would fail on a platform where the distinction still matters. Opening
+// a directory fails everywhere.
 func TestReadSSHKeyReportsAnUnreadableFile(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root ignores the mode, so there is nothing to fail on")
+	dir := filepath.Join(t.TempDir(), "key")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatalf("creating the directory: %v", err)
 	}
-	path := filepath.Join(t.TempDir(), "key")
-	if err := os.WriteFile(path, []byte("PEM"), 0o000); err != nil {
-		t.Fatalf("writing key: %v", err)
-	}
-	t.Setenv(models.SSHKeyPathEnv, path)
+	t.Setenv(models.SSHKeyPathEnv, dir)
 
 	if _, err := models.ReadSSHKey(); err == nil {
 		t.Fatal("expected an unreadable key to be reported, got nil")
