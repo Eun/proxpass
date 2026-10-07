@@ -77,15 +77,8 @@ When multiple --url flags are supplied:
 					&ucli.StringFlag{Name: "token-id", Required: true, Usage: "API token ID (e.g. user@pam!token)"},
 					&ucli.StringFlag{Name: "token-secret", Required: true, Usage: "API token secret"},
 					&ucli.StringFlag{
-						Name: "console-transport",
-						// The old name, kept so existing scripts and compose
-						// files keep working. It was renamed because it only
-						// ever selected the console transport, while reading
-						// as though it governed every connection to the
-						// instance -- which is how file transfer ended up
-						// gated on it.
-						Aliases: []string{"connection-type"},
-						Value:   string(models.ConsoleTransportTermProxy),
+						Name:  "console-transport",
+						Value: string(models.ConsoleTransportTermProxy),
 						Usage: `How a guest CONSOLE is attached: "termproxy" ` +
 							`(default) or "ssh". Does not affect file ` +
 							`transfer, which always reaches the node over ` +
