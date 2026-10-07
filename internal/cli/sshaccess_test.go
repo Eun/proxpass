@@ -20,11 +20,11 @@ func instanceFor(t *testing.T, srv *testenv.MockSSHServer) *models.ProxmoxInstan
 	}
 	_ = key
 	return &models.ProxmoxInstance{
-		Name:           testInstanceName,
-		ConnectionType: models.ConnectionTypeSSH,
-		SSHHost:        srv.Host,
-		SSHPort:        srv.Port,
-		SSHUser:        srv.User,
+		Name:             testInstanceName,
+		ConsoleTransport: models.ConsoleTransportSSH,
+		SSHHost:          srv.Host,
+		SSHPort:          srv.Port,
+		SSHUser:          srv.User,
 	}
 }
 
@@ -100,11 +100,11 @@ func TestCheckSSHAccessReportsAClosedPort(t *testing.T) {
 	}
 
 	inst := &models.ProxmoxInstance{
-		Name:           testInstanceName,
-		ConnectionType: models.ConnectionTypeSSH,
-		SSHHost:        testLoopback,
-		SSHPort:        port,
-		SSHUser:        testSSHUser,
+		Name:             testInstanceName,
+		ConsoleTransport: models.ConsoleTransportSSH,
+		SSHHost:          testLoopback,
+		SSHPort:          port,
+		SSHUser:          testSSHUser,
 	}
 	err = checkSSHAccess(t.Context(), inst, testKeyPEM(t))
 	if err == nil {
@@ -119,11 +119,11 @@ func TestCheckSSHAccessReportsAClosedPort(t *testing.T) {
 // reaching the dialer, where it would be reported as a connection problem.
 func TestCheckSSHAccessRejectsAnUnparseableKey(t *testing.T) {
 	inst := &models.ProxmoxInstance{
-		Name:           testInstanceName,
-		ConnectionType: models.ConnectionTypeSSH,
-		SSHHost:        testLoopback,
-		SSHPort:        22,
-		SSHUser:        testSSHUser,
+		Name:             testInstanceName,
+		ConsoleTransport: models.ConsoleTransportSSH,
+		SSHHost:          testLoopback,
+		SSHPort:          22,
+		SSHUser:          testSSHUser,
 	}
 	err := checkSSHAccess(t.Context(), inst, "not a key")
 	if err == nil {

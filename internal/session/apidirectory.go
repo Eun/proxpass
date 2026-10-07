@@ -38,11 +38,11 @@ func guestFromAPI(g *api.Guest) *models.Guest {
 // only when present.
 func instanceFromAPI(c *api.InstanceCredentials) *models.ProxmoxInstance {
 	inst := &models.ProxmoxInstance{
-		ID:             c.ID,
-		Name:           c.Name,
-		APIURL:         c.APIURL,
-		ConnectionType: models.ConnectionType(c.ConnectionType),
-		Node:           c.Node,
+		ID:               c.ID,
+		Name:             c.Name,
+		APIURL:           c.APIURL,
+		ConsoleTransport: models.ConsoleTransport(c.ConsoleTransport),
+		Node:             c.Node,
 	}
 	if c.APITokenID != nil {
 		inst.APITokenID = *c.APITokenID

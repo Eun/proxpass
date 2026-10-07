@@ -64,7 +64,7 @@ func discoveryEnv(t *testing.T, fake *fakeDiscoverer) (db.Repository, *proxmox.D
 
 	inst := &models.ProxmoxInstance{
 		Name: node, APIURL: "https://pve:8006", Node: node,
-		ConnectionType: models.ConnectionTypeTermProxy,
+		ConsoleTransport: models.ConsoleTransportTermProxy,
 	}
 	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
 		t.Fatalf("add instance: %v", err)

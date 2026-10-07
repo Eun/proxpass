@@ -97,7 +97,7 @@ func (p DefaultProxier) Connect(
 	logger *log.Logger,
 ) error {
 	label := barLabel(guest, inst, p.PublicEndpoint)
-	if inst.ConnectionType == models.ConnectionTypeTermProxy {
+	if inst.ConsoleTransport == models.ConsoleTransportTermProxy {
 		return connectTermProxy(term, guest, inst, logger, label)
 	}
 	return connectSSH(term, guest, inst, sshKey, logger, label)

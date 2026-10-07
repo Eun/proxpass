@@ -14,29 +14,44 @@ const (
 	StatusStopped Status = "stopped"
 )
 
-// ConnectionType controls how proxpass connects to a guest console.
-type ConnectionType string
+// ConsoleTransport selects how a guest CONSOLE is attached.
+//
+// It says nothing about whether proxpass can reach the Proxmox node, and
+// nothing about file transfer. It used to: only the ssh value populated the
+// instance's SSH fields, so choosing the websocket transport silently meant
+// "this node is unreachable", and transfers were refused on instances whose
+// node answers SSH perfectly well. The two are independent -- how a terminal
+// is attached is unrelated to whether sshd is listening -- so the SSH fields
+// are now filled in either way and this selects only the console.
+type ConsoleTransport string
 
 const (
-	// ConnectionTypeTermProxy uses the Proxmox REST API termproxy endpoint
-	// and a WebSocket to attach a terminal. This is the default and does not
-	// require SSH credentials on the Proxmox host.
-	ConnectionTypeTermProxy ConnectionType = "termproxy"
+	// ConsoleTransportTermProxy attaches the terminal through the Proxmox
+	// REST API's termproxy endpoint over a WebSocket. It is the default,
+	// and needs no SSH access for the console itself.
+	ConsoleTransportTermProxy ConsoleTransport = "termproxy"
 
-	// ConnectionTypeSSH SSHes into the Proxmox host and runs
-	// pct enter / qm terminal. Requires ssh_host and an SSH key.
-	ConnectionTypeSSH ConnectionType = "ssh"
+	// ConsoleTransportSSH attaches the terminal by running pct enter or qm
+	// terminal over SSH on the node.
+	ConsoleTransportSSH ConsoleTransport = "ssh"
 )
 
 type ProxmoxInstance struct {
-	ID             int64          `json:"id"`
-	Name           string         `json:"name"`
-	APIURL         string         `json:"api_url"`
-	APITokenID     string         `json:"api_token_id"`
-	APITokenSecret string         `json:"api_token_secret"`
-	ConnectionType ConnectionType `json:"connection_type"` // "termproxy" (default) or "ssh"
-	Node           string         `json:"node"`            // resolved Proxmox short node name
+	ID             int64  `json:"id"`
+	Name           string `json:"name"`
+	APIURL         string `json:"api_url"`
+	APITokenID     string `json:"api_token_id"`
+	APITokenSecret string `json:"api_token_secret"`
+	// ConsoleTransport selects how a console is attached; see the type. It
+	// does NOT decide whether the SSH fields below are set.
+	ConsoleTransport ConsoleTransport `json:"console_transport"`
+	Node             string           `json:"node"` // resolved Proxmox short node name
 
+	// How to reach the Proxmox NODE over SSH. Populated for every instance,
+	// whatever the console transport: the node is the same machine either
+	// way, and file transfer runs commands there regardless of how consoles
+	// are attached. Whether proxpass may actually log in is decided by the
+	// key, not by these.
 	SSHHost string `json:"ssh_host"`
 	SSHPort int    `json:"ssh_port"`
 	SSHUser string `json:"ssh_user"`

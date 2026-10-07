@@ -18,12 +18,12 @@ import (
 func seedInstance(t *testing.T, repo db.Repository, name string) *models.ProxmoxInstance {
 	t.Helper()
 	inst := &models.ProxmoxInstance{
-		Name:           name,
-		APIURL:         "https://" + name + ":8006",
-		APITokenID:     "root@pam!tok",
-		APITokenSecret: secretTokenValue,
-		ConnectionType: models.ConnectionTypeTermProxy,
-		Node:           "pve1",
+		Name:             name,
+		APIURL:           "https://" + name + ":8006",
+		APITokenID:       "root@pam!tok",
+		APITokenSecret:   secretTokenValue,
+		ConsoleTransport: models.ConsoleTransportTermProxy,
+		Node:             "pve1",
 	}
 	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
 		t.Fatalf("add instance %q: %v", name, err)
@@ -238,13 +238,13 @@ func TestConnectFallsBackToTheDeploymentKey(t *testing.T) {
 	t.Setenv(models.SSHKeyPathEnv, keyPath)
 
 	inst := &models.ProxmoxInstance{
-		Name:           testInstanceName,
-		APIURL:         testInstanceURL,
-		ConnectionType: models.ConnectionTypeSSH,
-		Node:           testNodeName,
-		SSHHost:        testInstanceName,
-		SSHPort:        22,
-		SSHUser:        testSSHUser,
+		Name:             testInstanceName,
+		APIURL:           testInstanceURL,
+		ConsoleTransport: models.ConsoleTransportSSH,
+		Node:             testNodeName,
+		SSHHost:          testInstanceName,
+		SSHPort:          22,
+		SSHUser:          testSSHUser,
 		// No key on the instance: there is no such field any more, so
 		// the deployment key is the only one it can connect with.
 	}
@@ -291,11 +291,11 @@ func TestConnectReturnsOnlyTheHostingInstance(t *testing.T) {
 	h, repo := newTestServer(t)
 	mineInst := seedInstance(t, repo, "mine")
 	otherInst := &models.ProxmoxInstance{
-		Name:           "other",
-		APIURL:         "https://other:8006",
-		APITokenSecret: "OTHER-INSTANCE-SECRET",
-		ConnectionType: models.ConnectionTypeTermProxy,
-		Node:           "pve2",
+		Name:             "other",
+		APIURL:           "https://other:8006",
+		APITokenSecret:   "OTHER-INSTANCE-SECRET",
+		ConsoleTransport: models.ConsoleTransportTermProxy,
+		Node:             "pve2",
 	}
 	if err := repo.AddProxmoxInstance(t.Context(), otherInst); err != nil {
 		t.Fatalf("add instance: %v", err)

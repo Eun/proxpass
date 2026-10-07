@@ -334,10 +334,10 @@ func (c *APIClient) CheckTermProxySupport(ctx context.Context) error {
 		(got[0] == required[0] && got[1] < required[1]) ||
 		(got[0] == required[0] && got[1] == required[1] && got[2] < required[2]) {
 		return fmt.Errorf(
-			"proxmox VE %s does not support termproxy connection type: "+
+			"proxmox VE %s does not support the termproxy console transport: "+
 				"requires pve-manager >= %d.%d.%d "+
 				"(pve-container 6.1.3 + pve-manager 9.1.9, released 2026-04-21); "+
-				"use --connection-type ssh instead, or upgrade your proxmox host",
+				"use --console-transport ssh instead, or upgrade your proxmox host",
 			version, required[0], required[1], required[2],
 		)
 	}

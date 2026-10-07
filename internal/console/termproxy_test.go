@@ -33,12 +33,12 @@ func termProxyEnv(t *testing.T) (*testenv.MockAPIServer, *models.ProxmoxInstance
 	api.SetTermProxyGreeting("root@CT100:~# ")
 
 	inst := &models.ProxmoxInstance{
-		Name:           nodePVE,
-		APIURL:         api.URL(),
-		APITokenID:     mockTokenID,
-		APITokenSecret: mockTokenSecret,
-		ConnectionType: models.ConnectionTypeTermProxy,
-		Node:           nodePVE,
+		Name:             nodePVE,
+		APIURL:           api.URL(),
+		APITokenID:       mockTokenID,
+		APITokenSecret:   mockTokenSecret,
+		ConsoleTransport: models.ConsoleTransportTermProxy,
+		Node:             nodePVE,
 	}
 	guest := &models.Guest{
 		Type: models.GuestTypeCT, Name: guestWeb, Status: models.StatusRunning,
@@ -190,7 +190,7 @@ func TestConnectTermProxyToVM(t *testing.T) {
 	inst := &models.ProxmoxInstance{
 		Name: nodePVE, APIURL: api.URL(),
 		APITokenID: mockTokenID, APITokenSecret: mockTokenSecret,
-		ConnectionType: models.ConnectionTypeTermProxy, Node: nodePVE,
+		ConsoleTransport: models.ConsoleTransportTermProxy, Node: nodePVE,
 	}
 	guest := &models.Guest{Type: models.GuestTypeVM, Name: "db", ProxmoxID: 200}
 
@@ -220,7 +220,7 @@ func TestConnectTermProxyTicketFailure(t *testing.T) {
 	inst := &models.ProxmoxInstance{
 		Name: nodePVE, APIURL: api.URL(),
 		APITokenID: mockTokenID, APITokenSecret: mockTokenSecret,
-		ConnectionType: models.ConnectionTypeTermProxy, Node: nodePVE,
+		ConsoleTransport: models.ConsoleTransportTermProxy, Node: nodePVE,
 	}
 	guest := &models.Guest{Type: models.GuestTypeCT, Name: guestWeb, ProxmoxID: 100}
 

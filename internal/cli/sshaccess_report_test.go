@@ -34,11 +34,11 @@ func TestInspectReportsAccessOnceTheKeyIsInstalled(t *testing.T) {
 
 	// An instance with no key of its own, as `instance add' stores them now.
 	inst := &models.ProxmoxInstance{
-		Name:           testInstanceName,
-		ConnectionType: models.ConnectionTypeSSH,
-		SSHHost:        srv.Host,
-		SSHPort:        srv.Port,
-		SSHUser:        srv.User,
+		Name:             testInstanceName,
+		ConsoleTransport: models.ConsoleTransportSSH,
+		SSHHost:          srv.Host,
+		SSHPort:          srv.Port,
+		SSHUser:          srv.User,
 	}
 
 	got := reportFor(t, inst)
@@ -73,11 +73,11 @@ func TestInspectReportsTheKeyIsNotInstalledYet(t *testing.T) {
 	t.Setenv(models.SSHKeyPathEnv, keyPath)
 
 	got := reportFor(t, &models.ProxmoxInstance{
-		Name:           testInstanceName,
-		ConnectionType: models.ConnectionTypeSSH,
-		SSHHost:        srv.Host,
-		SSHPort:        srv.Port,
-		SSHUser:        srv.User,
+		Name:             testInstanceName,
+		ConsoleTransport: models.ConsoleTransportSSH,
+		SSHHost:          srv.Host,
+		SSHPort:          srv.Port,
+		SSHUser:          srv.User,
 	})
 	if !strings.Contains(got, "UNAVAILABLE") {
 		t.Fatalf("expected the missing key to be reported:\n%s", got)
@@ -97,11 +97,11 @@ func TestInspectReportsAMissingDeploymentKey(t *testing.T) {
 	t.Setenv(models.SSHKeyPathEnv, filepath.Join(t.TempDir(), "absent"))
 
 	got := reportFor(t, &models.ProxmoxInstance{
-		Name:           testInstanceName,
-		ConnectionType: models.ConnectionTypeSSH,
-		SSHHost:        testLoopback,
-		SSHPort:        22,
-		SSHUser:        testSSHUser,
+		Name:             testInstanceName,
+		ConsoleTransport: models.ConsoleTransportSSH,
+		SSHHost:          testLoopback,
+		SSHPort:          22,
+		SSHUser:          testSSHUser,
 	})
 	if !strings.Contains(got, "none at") {
 		t.Fatalf("expected the absent key to be named as such:\n%s", got)

@@ -347,7 +347,7 @@ components:
         This is the material a session must not be able to read from the
         database, handed over for a single connection it has been authorized
         to make.
-      required: [id, name, apiUrl, connectionType, node]
+      required: [id, name, apiUrl, consoleTransport, node]
       properties:
         id:
           type: integer
@@ -361,14 +361,25 @@ components:
         apiTokenSecret:
           type: string
           description: Present when the instance connects over the API.
-        connectionType:
+        consoleTransport:
           type: string
           enum: [termproxy, ssh]
+          description: |
+            How a guest CONSOLE is attached: through the Proxmox websocket, or
+            by running pct enter over SSH on the node.
+
+            It says nothing about whether the node is reachable, and nothing
+            about file transfer. The SSH fields below are populated either
+            way.
         node:
           type: string
           description: The resolved Proxmox short node name.
         sshHost:
           type: string
+          description: |
+            How to reach the Proxmox node over SSH, whatever the console
+            transport. File transfer runs commands on the node, so it needs
+            these even when consoles go through the websocket.
         sshPort:
           type: integer
         sshUser:

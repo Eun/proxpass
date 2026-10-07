@@ -19,11 +19,11 @@ func newAccessRepo(t *testing.T) (repo db.Repository, romeID, parisID int64) {
 
 	rome := &models.ProxmoxInstance{
 		Name: "rome", APIURL: "https://rome:8006", Node: "rome",
-		ConnectionType: models.ConnectionTypeTermProxy,
+		ConsoleTransport: models.ConsoleTransportTermProxy,
 	}
 	paris := &models.ProxmoxInstance{
 		Name: "paris", APIURL: "https://paris:8006", Node: "paris",
-		ConnectionType: models.ConnectionTypeTermProxy,
+		ConsoleTransport: models.ConsoleTransportTermProxy,
 	}
 	for _, i := range []*models.ProxmoxInstance{rome, paris} {
 		if err := repo.AddProxmoxInstance(t.Context(), i); err != nil {
