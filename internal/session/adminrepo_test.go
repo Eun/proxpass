@@ -76,6 +76,63 @@ func TestAdminRepositoryWritesReachTheDatabase(t *testing.T) {
 	}
 }
 
+// Updating an instance has to reach the database through the RPC, like every
+// other admin write.
+//
+// It used to panic: the method existed only to satisfy the interface, and the
+// operation was absent from the allowlist, so an administrator could create
+// an instance and never correct it. The panic was the safe failure -- a
+// silent no-op would have been worse -- but it meant a host that moved could
+// only be fixed by removing the instance, which discards its access rules.
+func TestAdminRepositoryUpdatesAnInstance(t *testing.T) {
+	const (
+		instName  = "pve1"
+		tokSecret = "SECRET"
+	)
+	remote, direct := newAdminRepo(t, adminIdentity())
+
+	inst := &models.ProxmoxInstance{
+		Name:             instName,
+		APIURL:           "https://pve1:8006",
+		APITokenID:       "root@pam!tok",
+		APITokenSecret:   tokSecret,
+		ConsoleTransport: models.ConsoleTransportTermProxy,
+		Node:             instName,
+		SSHHost:          instName,
+		SSHPort:          22,
+		SSHUser:          "root",
+	}
+	if err := remote.AddProxmoxInstance(t.Context(), inst); err != nil {
+		t.Fatalf("AddProxmoxInstance: %v", err)
+	}
+
+	inst.SSHHost = "pve1.internal"
+	inst.SSHPort = 2222
+	if err := remote.UpdateProxmoxInstance(t.Context(), inst); err != nil {
+		t.Fatalf("UpdateProxmoxInstance: %v", err)
+	}
+
+	// Through the REAL repository, so the write really landed rather than
+	// merely being accepted.
+	stored, err := direct.ListProxmoxInstances(t.Context())
+	if err != nil {
+		t.Fatalf("listing: %v", err)
+	}
+	if len(stored) != 1 {
+		t.Fatalf("expected one instance, got %d", len(stored))
+	}
+	if stored[0].SSHHost != "pve1.internal" || stored[0].SSHPort != 2222 {
+		t.Fatalf("the update did not reach the database: %+v", stored[0])
+	}
+	// The untouched fields must survive the round trip through JSON.
+	if stored[0].APITokenSecret != tokSecret {
+		t.Errorf("the api token was lost: %q", stored[0].APITokenSecret)
+	}
+	if stored[0].ID != inst.ID {
+		t.Errorf("the instance id changed from %d to %d", inst.ID, stored[0].ID)
+	}
+}
+
 // Every method the admin CLI uses must agree with the real repository.
 func TestAdminRepositoryAgreesWithTheDatabase(t *testing.T) {
 	remote, direct := newAdminRepo(t, adminIdentity())

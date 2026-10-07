@@ -289,8 +289,17 @@ func (r *AdminRepository) GetGuestByID(context.Context, int64) (*models.Guest, e
 	panic(unsupported("GetGuestByID"))
 }
 
-func (r *AdminRepository) UpdateProxmoxInstance(context.Context, *models.ProxmoxInstance) error {
-	panic(unsupported("UpdateProxmoxInstance"))
+func (r *AdminRepository) UpdateProxmoxInstance(ctx context.Context, inst *models.ProxmoxInstance) error {
+	// The stored row comes back and is copied over the caller's struct, so
+	// that a field the server normalized -- the API URL loses a trailing
+	// slash -- is what the caller then prints.
+	var out models.ProxmoxInstance
+	if err := r.call(ctx, "UpdateProxmoxInstance",
+		map[string]any{"instance": inst}, &out); err != nil {
+		return err
+	}
+	*inst = out
+	return nil
 }
 
 func (r *AdminRepository) UpdateClient(context.Context, *models.Client) error {

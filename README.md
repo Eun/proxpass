@@ -235,6 +235,13 @@ ssh -p 2222 admin@proxpass instance add \
   --token-secret "uuid" \
   --console-transport ssh
 
+# Change an existing instance. Only the flags you pass are changed, and the
+# instance keeps its id -- so its access rules survive, which re-adding it
+# would not.
+ssh -p 2222 admin@proxpass instance update --name pve1 --ssh-host pve1.internal:2222
+ssh -p 2222 admin@proxpass instance update --name pve1 --token-id "user@pam!new" --token-secret "uuid"
+ssh -p 2222 admin@proxpass instance update --name pve1 --rename pve-old
+
 ssh -p 2222 admin@proxpass instance rm --name pve1
 
 # List and connect to guests

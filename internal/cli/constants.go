@@ -13,6 +13,7 @@ const (
 	cmdLs           = "ls"
 	cmdConnect      = "connect"
 	cmdRm           = "rm"
+	cmdUpdate       = "update"
 	cmdInspect      = "inspect"
 	argsNames       = "<name> [<name> ...]"
 	usageFormat     = "Output format: plain or json (default: plain)"

@@ -46,6 +46,18 @@ var adminOps = map[string]adminOp{
 		}
 		return encodeResult(out)
 	},
+	"UpdateProxmoxInstance": func(ctx context.Context, repo db.Repository, p json.RawMessage) (json.RawMessage, error) {
+		var args struct {
+			Instance *models.ProxmoxInstance `json:"instance"`
+		}
+		if err := decodeParams(p, &args); err != nil {
+			return nil, err
+		}
+		if err := repo.UpdateProxmoxInstance(ctx, args.Instance); err != nil {
+			return nil, err
+		}
+		return encodeResult(args.Instance)
+	},
 	"RemoveProxmoxInstance": func(ctx context.Context, repo db.Repository, p json.RawMessage) (json.RawMessage, error) {
 		var args struct {
 			ID int64 `json:"id"`
