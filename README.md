@@ -441,6 +441,7 @@ login name:
 ```bash
 scp ./app.tar.gz ct100@proxpass:/opt/
 scp ct100@proxpass:/var/log/syslog ./
+scp -r ./site ct100@proxpass:/var/www/
 sftp ct100@proxpass
 ```
 

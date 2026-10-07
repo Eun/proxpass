@@ -64,7 +64,7 @@ func (r *localRunner) Run(cmd string, stdin io.Reader, stdout io.Writer) (exitCo
 // newFS returns an FS backed by a temporary directory.
 func newFS(t *testing.T) (gfs *guestfs.FS, root string) {
 	t.Helper()
-	requireLinuxShellTools(t)
+	requireShellTools(t)
 	root = t.TempDir()
 	return &guestfs.FS{
 		Container: guestfs.Container{VMID: 101},

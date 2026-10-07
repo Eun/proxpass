@@ -36,11 +36,15 @@ jobs:
         run: mise exec -- go list -json -m all | docker run -i sonatypecommunity/nancy:latest
 
   # run golang test suite and collect coverage.
+  #
+  # Linux only. proxpass runs in a Linux container and talks to Proxmox nodes,
+  # which are Linux; the transfer tests execute real GNU coreutils commands
+  # (BSD stat spells the format flag -f, BSD dd has no iflag=skip_bytes, and
+  # Windows has no POSIX shell). Building for another platform was never a
+  # supported configuration, so testing on one bought nothing and the tests
+  # that mattered most had to be skipped there anyway.
   test:
-    strategy:
-      matrix:
-        platform: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.platform }}
+    runs-on: ubuntu-latest
     steps:
       -
         name: Checkout code
@@ -56,10 +60,7 @@ jobs:
         # the same assertions against the other backend. Without this, a query
         # that only works on SQLite would pass CI and fail in a Postgres
         # deployment.
-        #
-        # Linux only: the matrix's other platforms have no Docker daemon.
         name: Test against Postgres
-        if: matrix.platform == 'ubuntu-latest'
         env:
           PROXPASS_TEST_POSTGRES_DSN: postgres://proxpass:proxpass@127.0.0.1:5432/proxpass?sslmode=disable
         run: |
@@ -75,7 +76,6 @@ jobs:
           go test ./internal/db/... -count=1
       -
         name: Upload coverage
-        if: matrix.platform == 'ubuntu-latest'
         uses: actions/upload-artifact@v7
         with:
           name: code-coverage
