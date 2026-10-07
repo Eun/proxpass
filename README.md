@@ -12,6 +12,7 @@ protocol, and proxpass supplies the users, the keys and the session.
 - **Public Key Authentication** — The only supported method; password authentication is disabled
 - **Auto-Discovery** — Periodically reconciles the guest list against the configured Proxmox hosts via the REST API: guests that start are added, and guests that stop or are destroyed are removed
 - **Admin CLI over SSH** — Full command-line interface for managing instances, clients, groups, access rules, and admin keys
+- **Run Commands In Guests** — `ssh ct100@host whoami` runs it inside the container, with the exit status, streams and PTY behaving as any other ssh
 - **Flexible Guest Resolution** — Connect by VMID (`100`), type+VMID (`ct100`), name (`webserver`), or instance-qualified (`ct101@rome`) — as the login name (`ssh ct100@host`) or via `guest connect`
 - **Access Control** — Per-client and per-group access rules with a global default policy fallback
 - **SQLite Storage** — Single-file embedded database, no external dependencies
@@ -589,6 +590,13 @@ never falls back to trusting the name.
 There are two ways to name a guest: as the **login name**, or through
 **`guest connect`**. With neither you get the interactive picker.
 
+> **The login name decides where a command runs.** `ssh ct100@host whoami`
+> runs `whoami` *inside* ct100, because the login name addresses that
+> container. proxpass's own CLI stays reachable under any name that is not a
+> guest — your client name, or the administrator's — so `ssh alice@host guest
+> ls` is unchanged. A client name and the administrator's name are reserved
+> even when a guest shares them.
+
 ```bash
 # Interactive picker
 ssh -p 2222 alice@proxpass-host
@@ -602,6 +610,11 @@ ssh -p 2222 ct101@rome@proxpass-host     # instance-qualified
 # Through the CLI (a PTY is required)
 ssh -t -p 2222 alice@proxpass-host guest connect ct100
 ssh -t -p 2222 alice@proxpass-host guest connect ct101@rome
+
+# Run a command IN the guest, like any other ssh
+ssh -p 2222 ct100@proxpass-host whoami
+ssh -p 2222 ct100@proxpass-host cat /etc/os-release
+ssh -t -p 2222 ct100@proxpass-host top     # -t for anything interactive
 
 # And to see what you may reach
 ssh -p 2222 alice@proxpass-host guest ls

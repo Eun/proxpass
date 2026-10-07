@@ -88,13 +88,30 @@ func Run(ctx context.Context, d *Deps) int {
 		// No command. The login name may itself name a guest -- "ssh
 		// ct100@host" -- so try that before falling back to the picker.
 		return d.connectByLoginName(ctx)
-
-	case d.IsAdmin:
-		return d.runAdmin(ctx, cmd)
-
-	default:
-		return d.runClient(ctx, cmd)
 	}
+
+	// A command, and the login name names a guest: run it THERE.
+	//
+	// "ssh ct100@host whoami" is addressed to ct100, so it should behave
+	// like any other ssh -- the command runs in the container, its streams
+	// come back unchanged and its exit status becomes ours. Before this, the
+	// command was parsed as a proxpass CLI command and failed with a usage
+	// error, which is a confusing answer to a reasonable request.
+	//
+	// The login name is what decides, and it has to be: a command carries no
+	// other way to say which guest it is for. proxpass's own CLI stays
+	// reachable under any name that is not a guest -- which includes the
+	// administrator's name and every configured client name, because
+	// isReservedLoginName treats those as "browse" regardless of whether a
+	// guest shares the name.
+	if guest, ok := d.namesAGuest(ctx); ok {
+		return d.runGuestCommand(ctx, guest, cmd)
+	}
+
+	if d.IsAdmin {
+		return d.runAdmin(ctx, cmd)
+	}
+	return d.runClient(ctx, cmd)
 }
 
 // runClient handles a command from a non-admin client.

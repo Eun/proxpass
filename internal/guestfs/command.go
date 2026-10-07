@@ -120,7 +120,7 @@ func enterArgs(pidVar string, unprivileged bool) string {
 // (PVE::LXC::find_lxc_pid), and is used here rather than reading a pidfile
 // because no pidfile exists: pve-container runs lxc-start without --pidfile.
 func (c Container) Command(argv ...string) string {
-	vmid := strconv.Itoa(c.VMID)
+	vmid := itoa(c.VMID)
 	pidOf := "lxc-info -n " + shellQuote(vmid) + " -p 2>/dev/null | " +
 		`sed -n 's/^PID:[[:space:]]*\([0-9]\{1,\}\)$/\1/p'`
 
@@ -140,6 +140,26 @@ func (c Container) Command(argv ...string) string {
 		` restarted during the operation" >&2; exit 125; }; `)
 	b.WriteString("exit $rc")
 	return b.String()
+}
+
+// itoa is strconv.Itoa under a shorter name, because the vmid is rendered in
+// most commands here.
+func itoa(i int) string { return strconv.Itoa(i) }
+
+// nodeCommand wraps a command that addresses the container BY NAME, refusing
+// early when it is not running.
+//
+// Command's pid-reuse guard is deliberately absent: it exists because nsenter
+// is handed a pid that could be reused between the lookup and the use.
+// lxc-attach resolves the container itself, from its name, so there is no pid
+// for this process to race on. The running check remains, so that a stopped
+// container is reported as such rather than as whatever lxc-attach says.
+func (c Container) nodeCommand(cmd string) string {
+	vmid := itoa(c.VMID)
+	return "set -e; " +
+		"lxc-info -n " + shellQuote(vmid) + " -s 2>/dev/null | " +
+		`grep -q RUNNING || { echo "container ` + vmid +
+		` is not running" >&2; exit 125; }; ` + cmd
 }
 
 // ErrNotRunning is the exit status Command uses for "this container is not
