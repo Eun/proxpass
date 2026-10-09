@@ -3,6 +3,18 @@
 
 version: 2
 project_name: "proxpass"
+# The guest helper is EMBEDDED into the proxpass binary, built once per node
+# architecture, because it executes on a Proxmox node's cpu rather than on
+# the one running proxpass. internal/guesthelper/bin holds committed
+# placeholders so a checkout compiles; these hooks replace them with real
+# binaries before the main build embeds them.
+#
+# This must be a before-hook rather than a second `builds:' entry: goreleaser
+# runs builds in parallel, so a second entry would race with the embed.
+before:
+  hooks:
+    - "sh -c 'GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags=\"-s -w\" -o dist/helper-amd64 ./cmd/proxpass-helper && mv -f dist/helper-amd64 internal/guesthelper/bin/proxpass-helper-amd64'"
+    - "sh -c 'GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags=\"-s -w\" -o dist/helper-arm64 ./cmd/proxpass-helper && mv -f dist/helper-arm64 internal/guesthelper/bin/proxpass-helper-arm64'"
 # proxpass only ships as a container image: the binary is useless on its own
 # now that OpenSSH sshd terminates the SSH connection and resolves users
 # through libnss_http.so.2. So: linux/amd64 + linux/arm64 only, no archives,

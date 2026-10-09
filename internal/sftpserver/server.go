@@ -35,15 +35,47 @@ import (
 	"github.com/pkg/sftp"
 
 	"proxpass/internal/guestfs"
+	"proxpass/internal/guesthelper"
 )
+
+// FS is the filesystem of the container being served.
+//
+// Two implementations exist and are chosen per session: guestfs.FS, which
+// runs one shell command per operation, and guesthelper.Session, which talks
+// to a long-lived process inside the container. The second is faster and
+// works in a container with no shell, but needs a node that can run it; the
+// first works anywhere and is the fallback.
+//
+// The interface is declared HERE, where it is consumed, rather than beside
+// either implementation -- neither should have to know the other exists.
+type FS interface {
+	Stat(path string) (os.FileInfo, error)
+	List(dir string) ([]os.FileInfo, error)
+	ReadRangeTo(path string, offset, length int64, w io.Writer) error
+	// WriteFrom replaces a file's contents, creating it if needed. It is
+	// distinct from WriteAtFrom because it also TRUNCATES, which is what
+	// establishes a file on a client's first write.
+	WriteFrom(path string, r io.Reader) error
+	WriteAtFrom(path string, offset int64, r io.Reader) error
+	Mkdir(path string) error
+	Remove(path string) error
+	Rmdir(path string) error
+	Rename(from, to string) error
+	Symlink(target, linkPath string) error
+	Readlink(path string) (string, error)
+	Chmod(path string, mode os.FileMode) error
+	Chown(path string, uid, gid int) error
+	Chtimes(path string, atime, mtime time.Time) error
+	Truncate(path string, size int64) error
+}
 
 // Handler serves SFTP requests against one container.
 type Handler struct {
-	FS *guestfs.FS
+	FS FS
 }
 
 // Serve runs the SFTP protocol over rwc until the client disconnects.
-func Serve(rwc io.ReadWriteCloser, gfs *guestfs.FS) error {
+func Serve(rwc io.ReadWriteCloser, gfs FS) error {
 	h := &Handler{FS: gfs}
 	srv := sftp.NewRequestServer(rwc, sftp.Handlers{
 		FileGet:  h,
@@ -210,7 +242,7 @@ func (l *linkTarget) Sys() any           { return nil }
 // is no descriptor to leak if the client vanishes mid-transfer, and a
 // container restart cannot leave this pointing at a stale file.
 type remoteFile struct {
-	fs   *guestfs.FS
+	fs   FS
 	path string
 
 	forWriting bool
@@ -316,8 +348,8 @@ func (r *sliceReader) Read(out []byte) (int, error) {
 // translate maps an error onto the SFTP status code a client understands.
 //
 // Without this every failure becomes "failure", and an sftp client prints
-// that instead of "No such file". The mapping is on the sentinels guestfs
-// already produces.
+// that instead of "No such file". The mapping is on the sentinels the two
+// backends produce; both are listed because either may be serving.
 func translate(err error) error {
 	switch {
 	case err == nil:
@@ -326,7 +358,8 @@ func translate(err error) error {
 		return sftp.ErrSSHFxNoSuchFile
 	case errors.Is(err, fs.ErrPermission):
 		return sftp.ErrSSHFxPermissionDenied
-	case errors.Is(err, guestfs.ErrNotRunningErr):
+	case errors.Is(err, guestfs.ErrNotRunningErr),
+		errors.Is(err, guesthelper.ErrNotRunning):
 		// There is no SFTP status for "the machine is off", and failure
 		// with a message is what a client will show the user.
 		return fmt.Errorf("container is not running")

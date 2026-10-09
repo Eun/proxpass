@@ -7,6 +7,7 @@ import (
 
 	"proxpass/internal/console"
 	"proxpass/internal/guestfs"
+	"proxpass/internal/guesthelper"
 	"proxpass/internal/models"
 	"proxpass/internal/sftpserver"
 )
@@ -133,23 +134,20 @@ func (d *Deps) serveSFTP(info *ConnectInfo) int {
 	d.Logger.Printf("%s: sftp to %s (%s%d) on %s",
 		d.IdentityName, guest.Name, guest.Type, guest.ProxmoxID, inst.Name)
 
-	gfs := &guestfs.FS{
-		Container: guestfs.Container{
-			VMID: guest.ProxmoxID,
-			// Assume unprivileged, which is the Proxmox default and the
-			// safe assumption: entering the user namespace when the
-			// container is privileged would fail, so this is checked at
-			// run time by the command itself rather than guessed here.
-			Unprivileged: true,
-		},
-		Runner: runner,
-	}
+	// Assume unprivileged, which is the Proxmox default and the safe
+	// assumption: entering the user namespace when the container is
+	// privileged would fail, so this is checked at run time by the command
+	// itself rather than guessed here.
+	const unprivileged = true
+
+	backend, closeBackend := d.openBackend(runner, guest.ProxmoxID, unprivileged)
+	defer closeBackend()
 
 	// The SFTP protocol runs over this session's stdin/stdout, which is
 	// what sshd connected to the client's channel. Terminal carries them;
 	// no PTY was allocated for a subsystem request, which is exactly what
 	// a binary transfer needs.
-	if err := sftpserver.Serve(sessionStream(d.Terminal), gfs); err != nil {
+	if err := sftpserver.Serve(sessionStream(d.Terminal), backend); err != nil {
 		d.Logger.Printf("%s: sftp: %v", d.IdentityName, err)
 		return 1
 	}
@@ -170,4 +168,53 @@ func (stream) Close() error { return nil }
 
 func sessionStream(t *console.Terminal) io.ReadWriteCloser {
 	return stream{Reader: t.In, Writer: t.Out}
+}
+
+// openBackend picks how this session reaches the container's filesystem.
+//
+// The helper is tried first: it costs one SSH session for the whole
+// transfer rather than one per operation, and it works in a container that
+// ships no shell. When it cannot be used -- an architecture proxpass is not
+// built for, a node that will not run it -- the shell path still can, so the
+// failure is logged and the transfer proceeds rather than being refused.
+//
+// Anything that is NOT a support problem is also handled by falling back,
+// because at this point no bytes have moved: Start fails before the first
+// request, so there is nothing a second attempt could duplicate.
+func (d *Deps) openBackend(runner *console.NodeRunner, vmid int, unprivileged bool) (backend sftpserver.FS, cleanup func()) {
+	sess, err := guesthelper.Start(nodeAdapter{runner}, vmid, unprivileged, d.Logger)
+	if err == nil {
+		d.Logger.Printf("%s: sftp: using the guest helper", d.IdentityName)
+		return sess, func() { _ = sess.Close() }
+	}
+
+	// Worth a line in the log either way: a deployment that silently never
+	// uses the helper would otherwise look like one that does.
+	if guesthelper.IsUnsupported(err) {
+		d.Logger.Printf("%s: sftp: helper unavailable, using shell commands: %v",
+			d.IdentityName, err)
+	} else {
+		d.Logger.Printf("%s: sftp: helper failed to start, using shell commands: %v",
+			d.IdentityName, err)
+	}
+	return &guestfs.FS{
+		Container: guestfs.Container{VMID: vmid, Unprivileged: unprivileged},
+		Runner:    runner,
+	}, func() {}
+}
+
+// nodeAdapter lets a console.NodeRunner satisfy guesthelper.Node.
+//
+// The adapter exists because Stream returns a concrete *console.Stream while
+// the interface wants its own Stream type; Go does not convert a return type
+// for us. It is three lines, and it keeps guesthelper free of a dependency
+// on console.
+type nodeAdapter struct{ *console.NodeRunner }
+
+func (a nodeAdapter) Stream(cmd string, stderr io.Writer) (guesthelper.Stream, error) {
+	s, err := a.NodeRunner.Stream(cmd, stderr)
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
 }

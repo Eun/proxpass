@@ -1,0 +1,5 @@
+# The helper binaries are build output that must nonetheless be committed as
+# placeholders: //go:embed fails to compile when a named file is missing, so
+# a fresh checkout needs something here. Marking them as text keeps a staged
+# 2MB binary from being diffed if one is ever committed by accident.
+proxpass-helper-* -diff
