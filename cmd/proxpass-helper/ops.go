@@ -161,12 +161,19 @@ func (s *session) read(h *guesthelper.Request) (resp guesthelper.Response, paylo
 
 // write puts bytes at an offset, creating the file if it is not there.
 //
-// O_TRUNC is deliberately absent: SFTP writes arrive as (offset, data) pairs
-// that need not be in order, so truncating on each one would discard
-// everything an earlier chunk wrote. The client asks for truncation
-// explicitly, through Setstat.
+// O_TRUNC is applied only when the caller asks for it, which is the write
+// that OPENS the file. SFTP writes arrive as (offset, data) pairs that need
+// not be in order, so truncating on every one would discard everything an
+// earlier chunk wrote.
+//
+// A zero-length payload is still a write: it is what creates an empty file,
+// and returning early would reintroduce issue #104.
 func (s *session) write(h *guesthelper.Request, payload []byte) guesthelper.Response {
-	f, err := os.OpenFile(h.Path, os.O_WRONLY|os.O_CREATE, 0o644)
+	flags := os.O_WRONLY | os.O_CREATE
+	if h.Trunc {
+		flags |= os.O_TRUNC
+	}
+	f, err := os.OpenFile(h.Path, flags, 0o644)
 	if err != nil {
 		return fail(err)
 	}

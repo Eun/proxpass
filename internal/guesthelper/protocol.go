@@ -40,7 +40,14 @@ import (
 // than a confusing failure once a transfer is under way.
 //
 // It is bumped whenever the wire format or the op set changes.
-const Version = 1
+//
+//	1  initial
+//	2  Request.Trunc: the write that opens a file truncates it, so an
+//	   empty file can be created (issue #104). A version-1 helper ignores
+//	   the field and would leave a stale tail behind, which is a silent
+//	   wrong answer rather than an error -- exactly what the handshake
+//	   exists to prevent.
+const Version = 2
 
 // MaxFrame bounds a JSON header, so a corrupt length cannot make either side
 // allocate without limit. Headers are small; payloads are NOT part of this.
@@ -88,6 +95,10 @@ type Request struct {
 	Length int64 `json:"length,omitempty"`
 	// Len is how many raw bytes follow this header.
 	Len int64 `json:"len,omitempty"`
+	// Trunc asks a write to create the file and discard anything already
+	// in it. Only the write that OPENS a file sets it; the chunks that
+	// follow must not, or each would discard its predecessor.
+	Trunc bool `json:"trunc,omitempty"`
 	// Mode is the permission bits for chmod.
 	Mode uint32 `json:"mode,omitempty"`
 	// UID and GID are for chown. A negative value leaves that half alone,

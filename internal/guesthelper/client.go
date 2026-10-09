@@ -201,12 +201,33 @@ func (c *Client) ReadRangeTo(path string, offset, length int64, w io.Writer) err
 // a transfer costs one message per client request rather than several.
 const chunkSize = 256 * 1024
 
-// WriteFrom replaces a file's contents with what r yields.
+// WriteFrom replaces a file's contents with what r yields, creating the file
+// if it is not there.
+//
+// An EMPTY reader must still produce an empty file. The obvious shape --
+// truncate, then stream the chunks -- does not: streaming nothing sends no
+// write at all, so a path that does not yet exist stays missing. That is
+// what made `touch' over sftp and scp of a zero-byte file silently do
+// nothing (issue #104). The first write is therefore unconditional.
 func (c *Client) WriteFrom(path string, r io.Reader) error {
-	if err := c.Truncate(path, 0); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	buf := make([]byte, chunkSize)
+	n, err := r.Read(buf)
+	if err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
-	return c.WriteAtFrom(path, 0, r)
+	// Unconditional, even for n == 0: this is what creates and truncates.
+	if _, _, cerr := c.call(&Request{
+		Op:     OpWrite,
+		Path:   path,
+		Offset: 0,
+		Trunc:  true,
+	}, buf[:n]); cerr != nil {
+		return cerr
+	}
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	return c.WriteAtFrom(path, int64(n), r)
 }
 
 // WriteAtFrom writes what r yields starting at offset.
