@@ -55,10 +55,10 @@ func Binary(arch Arch) ([]byte, error) {
 
 // BinaryReader returns the helper as a stream, for piping into a staging
 // command without a second copy.
-func BinaryReader(arch Arch) (io.Reader, int, error) {
+func BinaryReader(arch Arch) (io.Reader, error) {
 	b, err := Binary(arch)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
-	return bytes.NewReader(b), len(b), nil
+	return bytes.NewReader(b), nil
 }

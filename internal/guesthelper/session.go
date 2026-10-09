@@ -114,7 +114,7 @@ func detectArch(node Node) (Arch, error) {
 // nothing has to be encoded for a shell and a two-megabyte argument list is
 // never constructed.
 func stage(node Node, arch Arch) error {
-	bin, _, err := BinaryReader(arch)
+	bin, err := BinaryReader(arch)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrUnsupported, err)
 	}

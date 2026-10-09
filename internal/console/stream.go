@@ -73,10 +73,6 @@ func (s *Stream) Read(p []byte) (int, error) { return s.stdout.Read(p) }
 // Write writes to the command's stdin.
 func (s *Stream) Write(p []byte) (int, error) { return s.stdin.Write(p) }
 
-// CloseWrite closes the command's stdin without tearing the session down,
-// which is how a helper is told to finish: it sees EOF and exits.
-func (s *Stream) CloseWrite() error { return s.stdin.Close() }
-
 // Close ends the session.
 //
 // stdin is closed first so a helper that is waiting for a request sees EOF
@@ -93,6 +89,3 @@ func (s *Stream) Close() error {
 	}
 	return nil
 }
-
-// Wait blocks until the command exits and reports its status.
-func (s *Stream) Wait() error { return s.session.Wait() }

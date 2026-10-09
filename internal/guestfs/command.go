@@ -206,11 +206,6 @@ func (c Container) AppendFileCmd(path string, offset int64) string {
 		shellQuote(path), ddBlock, offset))
 }
 
-// ReadFileCmd returns a command that writes path's contents to stdout.
-func (c Container) ReadFileCmd(path string) string {
-	return c.Command("cat", path)
-}
-
 // ReadRangeCmd returns a command that writes length bytes of path starting at
 // offset to stdout, which is how SFTP reads a large file.
 //

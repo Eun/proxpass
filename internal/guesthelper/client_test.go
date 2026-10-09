@@ -121,7 +121,7 @@ func TestLargeRoundTrip(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	var got bytes.Buffer
-	if err := c.ReadTo(path, &got); err != nil {
+	if err := c.ReadRangeTo(path, 0, -1, &got); err != nil {
 		t.Fatalf("read: %v", err)
 	}
 	if sha256.Sum256(got.Bytes()) != sha256.Sum256(payload) {
@@ -143,7 +143,7 @@ func TestWriteAtOffsets(t *testing.T) {
 		t.Fatalf("write at 0: %v", err)
 	}
 	var got bytes.Buffer
-	if err := c.ReadTo(path, &got); err != nil {
+	if err := c.ReadRangeTo(path, 0, -1, &got); err != nil {
 		t.Fatalf("read: %v", err)
 	}
 	if !strings.HasPrefix(got.String(), "FIRST") || !strings.Contains(got.String(), "SECOND") {
@@ -285,7 +285,7 @@ func TestWriteFromTruncates(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	var got bytes.Buffer
-	if err := c.ReadTo(path, &got); err != nil {
+	if err := c.ReadRangeTo(path, 0, -1, &got); err != nil {
 		t.Fatal(err)
 	}
 	if got.String() != "bb" {

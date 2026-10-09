@@ -132,11 +132,6 @@ func (f *FS) List(dir string) ([]os.FileInfo, error) {
 	return parseStat(out.String())
 }
 
-// ReadTo streams the whole of path to w.
-func (f *FS) ReadTo(path string, w io.Writer) error {
-	return f.run(f.Container.ReadFileCmd(path), nil, w)
-}
-
 // ReadRangeTo streams length bytes of path from offset to w.
 func (f *FS) ReadRangeTo(path string, offset, length int64, w io.Writer) error {
 	return f.run(f.Container.ReadRangeCmd(path, offset, length), nil, w)

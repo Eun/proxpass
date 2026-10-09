@@ -121,7 +121,6 @@ func TestCommandIsValidShell(t *testing.T) {
 	cmds := map[string]string{
 		"write":     c.WriteFileCmd(hostile),
 		"append":    c.AppendFileCmd(hostile, 4096),
-		"read":      c.ReadFileCmd(hostile),
 		"readRange": c.ReadRangeCmd(hostile, 10, 20),
 		"stat":      c.StatCmd(hostile),
 		"list":      c.ListCmd("/tmp/" + hostile),
@@ -138,7 +137,7 @@ func TestCommandIsValidShell(t *testing.T) {
 // TestCommandQuotesAHostilePathIntoOneWord is the injection test: a path
 // containing a command substitution must be carried as data.
 func TestCommandQuotesAHostilePathIntoOneWord(t *testing.T) {
-	got := Container{VMID: 101}.ReadFileCmd("$(touch /tmp/pwned)")
+	got := Container{VMID: 101}.ReadRangeCmd("$(touch /tmp/pwned)", 0, 10)
 	if strings.Contains(got, "$(touch") && !strings.Contains(got, `'$(touch /tmp/pwned)'`) {
 		t.Fatalf("a command substitution reached the command unquoted:\n%s", got)
 	}

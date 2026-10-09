@@ -154,11 +154,6 @@ func (c *Client) List(dir string) ([]os.FileInfo, error) {
 	return out, nil
 }
 
-// ReadTo streams a whole file to w.
-func (c *Client) ReadTo(path string, w io.Writer) error {
-	return c.ReadRangeTo(path, 0, -1, w)
-}
-
 // ReadRangeTo streams length bytes from offset to w. A negative length means
 // to the end of the file.
 //
