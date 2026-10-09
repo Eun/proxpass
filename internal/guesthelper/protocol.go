@@ -3,11 +3,11 @@
 //
 // # Why a helper at all
 //
-// The shell-command path in internal/guestfs spends one SSH session, one
-// nsenter and one shell PER FILESYSTEM OPERATION. An `scp -r' of five hundred
-// small files therefore pays five hundred session handshakes, and every
-// operation depends on the container shipping sh, cat, dd and stat. A
-// container built FROM scratch has none of them and cannot be served at all.
+// The path this replaced spent one SSH session, one nsenter and one shell PER
+// FILESYSTEM OPERATION. An `scp -r' of five hundred small files therefore
+// paid five hundred session handshakes, and every operation depended on the
+// container shipping sh, cat, dd and stat. A container built FROM scratch has
+// none of them and could not be served at all.
 //
 // The helper replaces that with one process per session: proxpass pushes a
 // static binary to the node, starts it inside the container once, and then
@@ -51,8 +51,8 @@ const MaxFrame = 1 << 20
 // refusing an absurd allocation.
 const MaxPayload = 8 << 20
 
-// Op names an operation. These mirror the methods of guestfs.FS, because the
-// helper exists to replace exactly that surface.
+// Op names an operation. These mirror the methods of the sftpserver.FS
+// interface, which is the surface the helper exists to serve.
 type Op string
 
 // The operations the helper understands.

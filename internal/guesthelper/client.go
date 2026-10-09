@@ -312,10 +312,10 @@ func (i *entryInfo) IsDir() bool        { return os.FileMode(i.e.Mode).IsDir() }
 //
 // It must be exactly that type, not a convenient struct of our own:
 // pkg/sftp's fileStatFromInfoOs does a type assertion to *syscall.Stat_t and
-// silently drops the uid and gid when it fails, so an SFTP client is told
-// the file belongs to 0:0. The shell backend returns its own FileOwner type
-// and therefore has that bug; this one does not. Fixing guestfs is a
-// separate change, deliberately not folded in here.
+// silently drops the uid and gid when it fails, so an SFTP client would be
+// told the file belongs to 0:0. The backend this replaced returned its own
+// struct type and had exactly that bug -- see issue #103, which it was found
+// by -- so the concrete type here is deliberate and must not be "tidied".
 func (i *entryInfo) Sys() any {
 	return &syscall.Stat_t{Uid: i.e.UID, Gid: i.e.GID}
 }

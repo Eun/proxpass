@@ -10,7 +10,7 @@
 //
 // Nothing is written on the Proxmox node. Each request becomes a command run
 // inside the container's namespaces, and file content streams through that
-// command's stdin or stdout. See internal/guestfs for why entering the
+// command's stdin or stdout. See internal/guesthelper for why entering the
 // namespace -- rather than prefixing /proc/<pid>/root onto the path -- is the
 // only safe way to do this.
 //
@@ -34,20 +34,15 @@ import (
 
 	"github.com/pkg/sftp"
 
-	"proxpass/internal/guestfs"
 	"proxpass/internal/guesthelper"
 )
 
 // FS is the filesystem of the container being served.
 //
-// Two implementations exist and are chosen per session: guestfs.FS, which
-// runs one shell command per operation, and guesthelper.Session, which talks
-// to a long-lived process inside the container. The second is faster and
-// works in a container with no shell, but needs a node that can run it; the
-// first works anywhere and is the fallback.
-//
-// The interface is declared HERE, where it is consumed, rather than beside
-// either implementation -- neither should have to know the other exists.
+// It is satisfied by guesthelper.Session, which talks to a long-lived helper
+// process inside the container. The interface is declared HERE, where it is
+// consumed, so the tests can substitute a directory-rooted implementation
+// without the production one knowing.
 type FS interface {
 	Stat(path string) (os.FileInfo, error)
 	List(dir string) ([]os.FileInfo, error)
@@ -358,8 +353,7 @@ func translate(err error) error {
 		return sftp.ErrSSHFxNoSuchFile
 	case errors.Is(err, fs.ErrPermission):
 		return sftp.ErrSSHFxPermissionDenied
-	case errors.Is(err, guestfs.ErrNotRunningErr),
-		errors.Is(err, guesthelper.ErrNotRunning):
+	case errors.Is(err, guesthelper.ErrNotRunning):
 		// There is no SFTP status for "the machine is off", and failure
 		// with a message is what a client will show the user.
 		return fmt.Errorf("container is not running")

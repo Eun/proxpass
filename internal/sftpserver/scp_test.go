@@ -60,10 +60,20 @@ func buildHelper(t *testing.T, root string) string {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Skipf("could not build the sftp helper (no toolchain?): %v\n%s", err, out)
 	}
-	// The helper takes the directory it should serve from the environment,
-	// because scp -D accepts a program path with no way to pass arguments.
+	// The guest helper is a separate binary that the test server starts
+	// and speaks the protocol to, exactly as a session does on a node.
+	guestBin := filepath.Join(t.TempDir(), "proxpass-helper")
+	guestCmd := exec.CommandContext(t.Context(),
+		"go", "build", "-o", guestBin, "./cmd/proxpass-helper")
+	guestCmd.Dir = repoRoot(t)
+	if out, err := guestCmd.CombinedOutput(); err != nil {
+		t.Skipf("could not build the guest helper: %v\n%s", err, out)
+	}
+
+	// scp -D accepts a program path with no way to pass arguments, so the
+	// paths are baked into a wrapper script.
 	wrapper := filepath.Join(t.TempDir(), "run-helper")
-	script := "#!/bin/sh\nexec " + bin + " " + root + "\n"
+	script := "#!/bin/sh\nexec " + bin + " " + guestBin + " " + root + "\n"
 	// 0700: scp execs this, so it has to carry the execute bit.
 	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil { //nolint:gosec // must be executable.
 		t.Fatalf("writing the wrapper: %v", err)

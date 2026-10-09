@@ -2,74 +2,29 @@ package sftpserver_test
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/pkg/sftp"
 
-	"proxpass/internal/guestfs"
 	"proxpass/internal/sftpserver"
 )
 
-// localRunner runs the generated commands with /bin/sh against a temporary
-// directory standing in for the container.
+// newFS returns an FS backed by a temporary directory, served by the REAL
+// guest helper running as a local process.
 //
-// The commands are the REAL ones, so this exercises the quoting, the stat
-// format and the dd offsets. What it cannot exercise is nsenter itself, which
-// needs a live container; that is covered by the namespace tests in
-// internal/guestfs and verified by hand against a real Proxmox node.
-type localRunner struct {
-	t    *testing.T
-	root string
-}
-
-// Run strips the nsenter wrapper and runs what would have run inside.
-func (r *localRunner) Run(cmd string, stdin io.Reader, stdout io.Writer) (exitCode int, stderrOut string, err error) {
-	r.t.Helper()
-	inner, ok := innerCommand(cmd)
-	if !ok {
-		return 0, "", errors.New("could not find the command inside the nsenter wrapper")
-	}
-	// Entering the mount namespace is what normally makes "/x" the
-	// container's "/x". Without a namespace the harness makes the fake root
-	// the working directory and turns each quoted absolute path into a
-	// RELATIVE one, so "/upload.bin" resolves inside the temp dir.
-	script := "cd " + shQuote(r.root) + " && " + relativizePaths(inner)
-
-	var stderr bytes.Buffer
-	c := shCommand(r.t.Context(), script)
-	c.Stdin = stdin
-	if stdout != nil {
-		c.Stdout = stdout
-	}
-	c.Stderr = &stderr
-	runErr := c.Run()
-	if runErr != nil {
-		var ee interface{ ExitCode() int }
-		if errors.As(runErr, &ee) {
-			return ee.ExitCode(), stderr.String(), nil
-		}
-		return 0, stderr.String(), runErr
-	}
-	return 0, stderr.String(), nil
-}
-
-// newFS returns an FS backed by a temporary directory.
-func newFS(t *testing.T) (gfs *guestfs.FS, root string) {
+// Only the namespace entry is missing -- that is nsenter's job and is covered
+// against a real node. Everything a client touches here is the production
+// path: the protocol framing, the attribute translation and the helper's own
+// file operations.
+func newFS(t *testing.T) (gfs sftpserver.FS, root string) {
 	t.Helper()
-	requireShellTools(t)
 	root = t.TempDir()
-	return &guestfs.FS{
-		Container: guestfs.Container{VMID: 101},
-		Runner:    &localRunner{t: t, root: root},
-	}, root
+	return newHelperFS(t, root), root
 }
 
 // newClient starts the server on an in-memory pipe and returns a real SFTP
@@ -77,7 +32,7 @@ func newFS(t *testing.T) (gfs *guestfs.FS, root string) {
 //
 // A real client is used rather than hand-written packets so that the test
 // fails if the protocol is wrong, not merely if our own idea of it changes.
-func newClient(t *testing.T, gfs *guestfs.FS) *sftp.Client {
+func newClient(t *testing.T, gfs sftpserver.FS) *sftp.Client {
 	t.Helper()
 	srvIn, cliOut := io.Pipe()
 	cliIn, srvOut := io.Pipe()
@@ -407,60 +362,4 @@ func names(infos []os.FileInfo) []string {
 		out = append(out, fi.Name())
 	}
 	return out
-}
-
-// shQuote mirrors the package's own quoting for use in the harness.
-func shQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
-// innerCommand extracts what the nsenter wrapper would have run.
-//
-// The generated command is "...; nsenter ... -- <argv>; rc=$?; ...". The argv
-// is already shell-quoted, so it is handed to sh unchanged.
-func innerCommand(cmd string) (string, bool) {
-	const marker = " -- "
-	i := strings.Index(cmd, marker)
-	if i < 0 {
-		return "", false
-	}
-	rest := cmd[i+len(marker):]
-	// The wrapper appends "; rc=$?" after the command.
-	if j := strings.Index(rest, "; rc=$?"); j >= 0 {
-		rest = rest[:j]
-	}
-	return rest, true
-}
-
-// relativizePaths turns quoted absolute paths into relative ones.
-//
-// Only the character immediately after an opening quote is considered, so a
-// slash inside a file name is untouched. "'/'" -- the root itself, which
-// ListCmd uses as its cd target -- becomes "'.'".
-func relativizePaths(cmd string) string {
-	var b strings.Builder
-	for i := 0; i < len(cmd); i++ {
-		b.WriteByte(cmd[i])
-		if cmd[i] != '\'' {
-			continue
-		}
-		// Opening quote: copy the quoted word, dropping a leading slash.
-		j := i + 1
-		if j < len(cmd) && cmd[j] == '/' {
-			if j+1 < len(cmd) && cmd[j+1] == '\'' {
-				b.WriteByte('.') // the root itself
-			}
-			j++
-		}
-		for ; j < len(cmd) && cmd[j] != '\''; j++ {
-			b.WriteByte(cmd[j])
-		}
-		i = j - 1
-	}
-	return b.String()
-}
-
-// shCommand builds the exec for the harness.
-func shCommand(ctx context.Context, script string) *exec.Cmd {
-	return exec.CommandContext(ctx, "sh", "-c", script)
 }
