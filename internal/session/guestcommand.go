@@ -8,7 +8,7 @@ import (
 
 	"proxpass/internal/cli"
 	"proxpass/internal/console"
-	"proxpass/internal/guestfs"
+	"proxpass/internal/guesthelper"
 	"proxpass/internal/models"
 )
 
@@ -91,7 +91,10 @@ func (d *Deps) runGuestCommand(ctx context.Context, guest *models.Guest, command
 	}
 	defer func() { _ = runner.Close() }()
 
-	container := guestfs.Container{VMID: guest.ProxmoxID, Unprivileged: true}
+	// Assume unprivileged, the Proxmox default: entering the user
+	// namespace of a privileged container fails, and that is reported by
+	// the command itself at run time rather than guessed here.
+	const unprivileged = true
 
 	d.Logger.Printf("%s: command on %s (%s%d) on %s",
 		d.IdentityName, guest.Name, guest.Type, guest.ProxmoxID, inst.Name)
@@ -103,7 +106,7 @@ func (d *Deps) runGuestCommand(ctx context.Context, guest *models.Guest, command
 	// would over a direct ssh -- and a piped command keeps its streams
 	// separate and its bytes unmodified.
 	code, err := runner.Exec(&console.ExecOptions{
-		Command: container.ShellCmd(command),
+		Command: guesthelper.ShellCommand(guest.ProxmoxID, unprivileged, command),
 		PTY:     term.Raw,
 		Term:    term.Term,
 		Width:   term.Width,

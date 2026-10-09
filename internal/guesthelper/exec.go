@@ -1,0 +1,149 @@
+package guesthelper
+
+import (
+	"fmt"
+	"strings"
+)
+
+// ExecCommand returns the command that runs argv inside a container.
+//
+// # Why this is not a protocol op
+//
+// Every other operation is a framed request on a shared channel. A command
+// cannot be: it owns stdin, stdout and stderr for its whole lifetime, needs a
+// PTY on the session carrying it, and its exit status has to come back as the
+// session's. Multiplexing that through the same channel as a file transfer
+// would mean reimplementing what SSH already does -- so a command gets its
+// own session, and this builds the command line for it.
+//
+// # Why nsenter rather than lxc-attach
+//
+// lxc-attach applies the container's cgroup, LSM profile and capability set,
+// which nsenter does not. That sounds like the safer choice and was the
+// original one, but it carries a defect that is fatal here: lxc-attach has NO
+// flag to request or refuse a terminal. It decides by inspecting its own
+// descriptors (lxc_attach.c, stdfd_is_pty) and allocates one inside if ANY of
+// the three is a tty.
+//
+// Measured over a real ssh, the same output is 12 bytes without a PTY -- LF
+// line endings, stderr separate -- and 27 bytes with one, because the line
+// discipline rewrites "\n" as "\r\n" and folds stderr into stdout. Since
+// proxpass must mirror whatever terminal the CLIENT asked for, and sshd gives
+// this process a PTY exactly when the client wanted one, lxc-attach's
+// inspection of our descriptors is not a decision we can make independently.
+// `ssh ct100@host cat f.bin > out' therefore corrupts every 0x0a byte.
+//
+// nsenter takes no view of the terminal, so the PTY is requested on the SSH
+// session and nowhere else, which is the only place that knows what the
+// client asked for.
+//
+// The cost is real and accepted: a command runs in the HOST cgroup and
+// outside the container's AppArmor profile, so it is not bound by the
+// container's memory or CPU limits. Verified on a live node:
+// /proc/self/cgroup reads "0::/user.slice/..." and /proc/self/attr/current
+// reads "unconfined", where lxc-attach gives "0::/.lxc". A correct transfer
+// was judged to matter more than a limit that only binds a command the
+// administrator already chose to allow.
+func ExecCommand(vmid int, unprivileged bool, argv ...string) string {
+	args := append([]string{}, enterArgs(unprivileged)...)
+	args = append(args, "--")
+	return containerCommand(vmid, strings.Join(args, " ")+" "+shellQuoteAll(argv...))
+}
+
+// ShellCommand returns the command that opens a shell inside a container, or
+// runs one command line in it.
+//
+// `sh -lc' rather than a bare `sh -c' so the profile is read and PATH, HOME
+// and the rest are what a login would give; without -l a command runs with
+// whatever environment the namespace entry left, and anything outside the
+// default PATH is "command not found".
+//
+// NOTE the consequence, which is a real defect and not a preference: a login
+// shell sources /etc/profile.d, and a container whose template writes a
+// banner there -- the community-scripts Proxmox templates do -- puts that
+// banner on STDOUT, where it corrupts the output of any non-interactive
+// command. `ssh ct100@host cat /etc/hostname > out' returns the banner plus
+// the hostname. Fixing it means setting PATH and HOME explicitly instead of
+// relying on the profile; it is tracked separately rather than changed here.
+func ShellCommand(vmid int, unprivileged bool, command string) string {
+	if strings.TrimSpace(command) == "" {
+		return ExecCommand(vmid, unprivileged, "/bin/sh", "-l")
+	}
+	return ExecCommand(vmid, unprivileged, "/bin/sh", "-lc", command)
+}
+
+// shellQuoteAll quotes each argument and joins them with spaces.
+func shellQuoteAll(args ...string) string {
+	quoted := make([]string, 0, len(args))
+	for _, a := range args {
+		quoted = append(quoted, shellQuote(a))
+	}
+	return strings.Join(quoted, " ")
+}
+
+// enterArgs returns the nsenter prefix shared by the helper launch and a
+// command.
+//
+// Each flag is load-bearing and was settled against a real PVE 9.2 node:
+//
+//	-m  the container's mount namespace, so paths resolve inside it
+//	-r  its ROOT, so an absolute symlink cannot name anything outside.
+//	    Without this a container holding "/data/x -> /etc" makes a write
+//	    land on the NODE's /etc, which is a container escape.
+//	-p  its PID namespace. Needed so /proc/self resolves against the
+//	    container's own /proc -- which is how the streamed helper binary is
+//	    executed -- and so a command sees the container's processes rather
+//	    than the node's.
+//	-u  its UTS namespace, so `hostname' reports the container's.
+//	-i  its IPC namespace, for the same reason.
+//	-U -S 0 -G 0  its user namespace as uid 0, so writes into an
+//	    unprivileged container land as its root rather than nobody:nogroup.
+//
+// -r and -w are passed in their BARE form. Their arguments are OPTIONAL
+// (-r[=<dir>]), so a separated value is taken as the program to run:
+// "nsenter -r / -- cmd" once failed every transfer with
+//
+//	nsenter: failed to execute /: Permission denied
+func enterArgs(unprivileged bool) []string {
+	args := []string{"nsenter", "-t", `"$pid"`, "-m", "-r", "-p", "-u", "-i"}
+	if unprivileged {
+		args = append(args, "-U", "-S", "0", "-G", "0")
+	}
+	return args
+}
+
+// shellQuote wraps a string so a shell takes it as one literal argument.
+//
+// This is the injection boundary: a command line arrives from the client and
+// becomes argv on the node. Single-quoting with '\” for an embedded quote is
+// the only form that needs no knowledge of what else is in the string.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// containerCommand wraps cmd with the pid lookup and the restart guard.
+//
+// The pid is resolved on the node, because nsenter needs one and lxc-info is
+// the only thing that knows it. A container that is not running is reported
+// as such with ErrNotRunningStatus rather than as whatever nsenter says
+// about a pid that does not exist.
+func containerCommand(vmid int, cmd string) string {
+	id := shellQuote(fmt.Sprint(vmid))
+	pidOf := "lxc-info -n " + id + " -p 2>/dev/null | " +
+		`sed -n 's/^PID:[[:space:]]*\([0-9]\{1,\}\)$/\1/p'`
+	return strings.Join([]string{
+		"set -e",
+		"pid=$(" + pidOf + ")",
+		`[ -n "$pid" ] || { echo "container ` + fmt.Sprint(vmid) +
+			` is not running" >&2; exit ` + fmt.Sprint(ErrNotRunningStatus) + "; }",
+		"exec " + cmd,
+	}, "; ")
+}
+
+// ErrNotRunningStatus is the exit status used for "this container is not
+// running".
+//
+// 125 is outside the range a transferred command is likely to return on its
+// own: 1-124 are ordinary failures and 126/127 are the shell's own
+// "not executable" and "not found".
+const ErrNotRunningStatus = 125

@@ -3,8 +3,31 @@ go = "1.26.8"
 golangci-lint = "2.12.2"
 goreleaser = "2.16.0"
 
+# The guest helper is embedded into the proxpass binary, one build per
+# architecture a Proxmox node can be, because it has to run on the NODE's cpu
+# rather than this one. internal/guesthelper/bin holds committed placeholders
+# so a fresh checkout compiles; this task replaces them with real binaries.
+#
+# Must run BEFORE any build that will be shipped. `go build' alone produces a
+# binary whose embedded helpers are placeholders, which is caught at run time
+# by an ELF magic check rather than silently pushed to a node.
+[tasks.helpers]
+description = "Build the guest helper for every supported node architecture"
+# Built to a temporary path and then MOVED into place. Two reasons, both
+# learned the hard way: `go build -o' refuses to overwrite a file that is
+# not already an object file, and the committed placeholders are text; and
+# deleting them first breaks the //go:embed in the very package being
+# compiled, so the build that is meant to replace them cannot run.
+run = [
+  "GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags='-s -w' -o $MISE_PROJECT_ROOT/dist/proxpass-helper-amd64 ./cmd/proxpass-helper",
+  "GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags='-s -w' -o $MISE_PROJECT_ROOT/dist/proxpass-helper-arm64 ./cmd/proxpass-helper",
+  "mv -f $MISE_PROJECT_ROOT/dist/proxpass-helper-amd64 internal/guesthelper/bin/proxpass-helper-amd64",
+  "mv -f $MISE_PROJECT_ROOT/dist/proxpass-helper-arm64 internal/guesthelper/bin/proxpass-helper-arm64",
+]
+
 [tasks.build]
 description = "Build the proxpass binary"
+depends = ["helpers"]
 run = "go build -o proxpass ./cmd/proxpass"
 
 [tasks.generate]
@@ -29,6 +52,7 @@ run = "goreleaser release --snapshot --clean"
 # dist/ via extra_files so both paths line up).
 [tasks.docker]
 description = "Build the proxpass docker image locally"
+depends = ["helpers"]
 run = [
   "go build -ldflags='-s -w' -o dist/proxpass ./cmd/proxpass",
   "docker build -f .github/Dockerfile --build-arg BINARY=dist/proxpass -t proxpass:local .",

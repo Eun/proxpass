@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"proxpass/internal/console"
-	"proxpass/internal/guestfs"
+	"proxpass/internal/guesthelper"
 	"proxpass/internal/models"
 	"proxpass/internal/sftpserver"
 )
@@ -133,23 +133,23 @@ func (d *Deps) serveSFTP(info *ConnectInfo) int {
 	d.Logger.Printf("%s: sftp to %s (%s%d) on %s",
 		d.IdentityName, guest.Name, guest.Type, guest.ProxmoxID, inst.Name)
 
-	gfs := &guestfs.FS{
-		Container: guestfs.Container{
-			VMID: guest.ProxmoxID,
-			// Assume unprivileged, which is the Proxmox default and the
-			// safe assumption: entering the user namespace when the
-			// container is privileged would fail, so this is checked at
-			// run time by the command itself rather than guessed here.
-			Unprivileged: true,
-		},
-		Runner: runner,
+	// Assume unprivileged, the Proxmox default: entering the user
+	// namespace of a privileged container fails, and that is reported by
+	// the command itself at run time rather than guessed here.
+	const unprivileged = true
+
+	sess, err := guesthelper.Start(nodeAdapter{runner}, guest.ProxmoxID, unprivileged, d.Logger)
+	if err != nil {
+		d.Logger.Printf("%s: sftp: %v", d.IdentityName, err)
+		return 1
 	}
+	defer func() { _ = sess.Close() }()
 
 	// The SFTP protocol runs over this session's stdin/stdout, which is
 	// what sshd connected to the client's channel. Terminal carries them;
 	// no PTY was allocated for a subsystem request, which is exactly what
 	// a binary transfer needs.
-	if err := sftpserver.Serve(sessionStream(d.Terminal), gfs); err != nil {
+	if err := sftpserver.Serve(sessionStream(d.Terminal), sess); err != nil {
 		d.Logger.Printf("%s: sftp: %v", d.IdentityName, err)
 		return 1
 	}
@@ -170,4 +170,20 @@ func (stream) Close() error { return nil }
 
 func sessionStream(t *console.Terminal) io.ReadWriteCloser {
 	return stream{Reader: t.In, Writer: t.Out}
+}
+
+// nodeAdapter lets a console.NodeRunner satisfy guesthelper.Node.
+//
+// The adapter exists because Stream returns a concrete *console.Stream while
+// the interface wants its own Stream type; Go does not convert a return type
+// for us. It is three lines, and it keeps guesthelper free of a dependency
+// on console.
+type nodeAdapter struct{ *console.NodeRunner }
+
+func (a nodeAdapter) Stream(cmd string, stderr io.Writer) (guesthelper.Stream, error) {
+	s, err := a.NodeRunner.Stream(cmd, stderr)
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
 }
