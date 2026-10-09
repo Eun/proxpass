@@ -1,11 +1,13 @@
 package guesthelper
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -74,19 +76,22 @@ func Start(node Node, vmid int, unprivileged bool, logger *log.Logger) (*Session
 	}
 
 	// The helper's own diagnostics, including the idle-timeout notice,
-	// arrive on stderr. They go to the log so an operator can see why a
-	// session ended.
-	stderr := &logWriter{logger: logger, prefix: fmt.Sprintf("helper ct%d", vmid)}
+	// arrive on stderr. They are logged AND retained: if the launch itself
+	// fails -- nsenter refusing the program, a container that stopped --
+	// the reason is on stderr and nowhere else, so an error that does not
+	// carry it leaves an operator with a dead session and no explanation.
+	// v0.0.15 failed exactly that way.
+	stderr := &diagWriter{logger: logger, prefix: fmt.Sprintf("helper ct%d", vmid)}
 
 	stream, err := node.Stream(LaunchCommand(vmid, arch, unprivileged), stderr)
 	if err != nil {
-		return nil, fmt.Errorf("%w: launching: %w", ErrUnsupported, err)
+		return nil, fmt.Errorf("%w: launching: %w%s", ErrUnsupported, err, stderr.suffix())
 	}
 
 	client, err := NewClient(stream, DefaultIdleTimeout)
 	if err != nil {
 		_ = stream.Close()
-		return nil, err
+		return nil, fmt.Errorf("%w%s", err, stderr.suffix())
 	}
 	return &Session{Client: client, stream: stream, logger: logger}, nil
 }
@@ -132,20 +137,39 @@ func stage(node Node, arch Arch) error {
 // path rather than failing the transfer.
 func IsUnsupported(err error) bool { return errors.Is(err, ErrUnsupported) }
 
-// logWriter forwards a helper's stderr to a logger, one line at a time.
-type logWriter struct {
+// diagWriter forwards a helper's stderr to a logger and keeps a copy.
+//
+// The copy is what makes a launch failure diagnosable. nsenter writes its
+// refusal WITHOUT a trailing newline, so a writer that only emits complete
+// lines -- which the first version of this was -- discards the one message
+// that explains the failure. The transfer then dies with "Connection closed"
+// on the client and nothing at all in the log, which is how the v0.0.15
+// regression reached production.
+type diagWriter struct {
 	logger *log.Logger
 	prefix string
+	mu     sync.Mutex
 	buf    []byte
+	all    []byte
 }
 
-func (w *logWriter) Write(p []byte) (int, error) {
+func (w *diagWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	// Bound the retained copy: a helper that writes without end must not
+	// grow this without end either.
+	const maxKeep = 8 << 10
+	if len(w.all) < maxKeep {
+		w.all = append(w.all, p...)
+	}
+
 	if w.logger == nil {
 		return len(p), nil
 	}
 	w.buf = append(w.buf, p...)
 	for {
-		i := strings.IndexByte(string(w.buf), '\n')
+		i := bytes.IndexByte(w.buf, '\n')
 		if i < 0 {
 			break
 		}
@@ -156,4 +180,19 @@ func (w *logWriter) Write(p []byte) (int, error) {
 		}
 	}
 	return len(p), nil
+}
+
+// suffix returns everything written to stderr, formatted for an error
+// message, or "" when the helper said nothing.
+//
+// This deliberately includes the INCOMPLETE final line, which is where
+// nsenter's own refusal lands.
+func (w *diagWriter) suffix() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	msg := strings.TrimSpace(string(w.all))
+	if msg == "" {
+		return ""
+	}
+	return ": " + strings.ReplaceAll(msg, "\n", "; ")
 }
