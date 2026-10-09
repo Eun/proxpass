@@ -100,10 +100,20 @@ func (h *Handler) Fileread(r *sftp.Request) (io.ReaderAt, error) {
 
 // Filewrite returns a writer for an upload.
 //
-// SFTP writes arrive as (offset, data) pairs and need not be in order, so the
-// writer cannot assume a stream. It creates the file on first use and then
-// writes each chunk at its offset.
+// The file is created HERE, when the client opens it, rather than on the
+// first write. pkg/sftp calls this for the open itself, so a client that
+// creates a file and closes it without writing -- `touch' over sftp, or scp
+// of an empty file -- otherwise produced no call at all and no file. See
+// TestEmptyFileIsCreated.
+//
+// Creating at open also truncates, which is what SSH_FXF_CREAT|TRUNC asks
+// for and what every subsequent write then builds on. That is why WriteAt
+// below needs no create-on-first-write special case: by the time it runs,
+// the file exists and is empty.
 func (h *Handler) Filewrite(r *sftp.Request) (io.WriterAt, error) {
+	if err := h.FS.WriteFrom(r.Filepath, emptyReader{}); err != nil {
+		return nil, translate(err)
+	}
 	return &remoteFile{fs: h.FS, path: r.Filepath, forWriting: true}, nil
 }
 
@@ -243,9 +253,6 @@ type remoteFile struct {
 	forWriting bool
 
 	mu sync.Mutex
-	// created records that the file has been created, so the first write
-	// truncates and later ones do not.
-	created bool
 }
 
 // ReadAt reads one chunk of the file.
@@ -265,39 +272,21 @@ func (f *remoteFile) ReadAt(p []byte, off int64) (int, error) {
 
 // WriteAt writes one chunk of the file.
 //
-// The first write creates and truncates; later writes go to their offset and
-// keep what is already there. A client that writes out of order therefore
-// still gets the right file, as long as its first write is the one that
-// establishes the file -- which is what every client does.
+// SFTP writes arrive as (offset, data) pairs and need not be in order, so
+// every chunk goes to its own offset and keeps what is already there.
+// Filewrite created and truncated the file at open, so there is nothing to
+// establish here -- an earlier version created it on the first write at
+// offset 0, which lost any file a client never wrote to.
 func (f *remoteFile) WriteAt(p []byte, off int64) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	r := bytesReader(p)
-	if !f.created && off == 0 {
-		if err := f.fs.WriteFrom(f.path, r); err != nil {
-			return 0, translate(err)
-		}
-		f.created = true
-		return len(p), nil
-	}
-	// Any other offset, or a second write, has to preserve the rest of the
-	// file. Creating it first if necessary, because a client may begin at a
-	// non-zero offset.
-	if !f.created {
-		if err := f.fs.WriteFrom(f.path, emptyReader{}); err != nil {
-			return 0, translate(err)
-		}
-		f.created = true
-	}
-	if err := f.fs.WriteAtFrom(f.path, off, r); err != nil {
+	if err := f.fs.WriteAtFrom(f.path, off, bytesReader(p)); err != nil {
 		return 0, translate(err)
 	}
 	return len(p), nil
 }
 
-// Close satisfies the io.Closer the request server looks for. There is no
-// remote handle to release.
 func (f *remoteFile) Close() error { return nil }
 
 // writeCounter fills a fixed buffer and counts what arrived, so a short read

@@ -133,19 +133,17 @@ func TestHelperBackendDirectoryOps(t *testing.T) {
 	}
 }
 
-// TestEmptyFileIsNotCreated documents a PRE-EXISTING limitation shared by
-// both backends, so that a future change which fixes it is recognized as a
-// fix rather than mistaken for a regression here.
+// TestEmptyFileIsCreated pins the fix for issue #104.
 //
-// pkg/sftp's request server turns an Open-for-write into a Filewrite handler
-// that is only consulted when bytes arrive. A client that creates a file and
-// closes it without writing therefore produces no call at all, and nothing
-// is created. `touch' over sftp does not work; scp of an empty file does not
-// either. Fixing it means handling the open itself, which is a change to the
-// shared handler and not to this backend.
-func TestEmptyFileIsNotCreated(t *testing.T) {
+// pkg/sftp calls Filewrite for the OPEN, not only when bytes arrive, so a
+// client that creates a file and closes it without writing must still get a
+// file. Before the fix the create was deferred to the first WriteAt, which
+// never ran: `touch' over sftp did nothing and scp of an empty file reported
+// success while transferring nothing.
+func TestEmptyFileIsCreated(t *testing.T) {
 	client, root := newHelperClient(t)
 	path := filepath.Join(root, "empty.txt")
+
 	f, err := client.Create(path)
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -153,9 +151,43 @@ func TestEmptyFileIsNotCreated(t *testing.T) {
 	if err := f.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Skipf("empty files are now created (err=%v) -- this limitation "+
-			"has been fixed and this test can go", err)
+
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("an empty file was not created: %v", err)
+	}
+	if fi.Size() != 0 {
+		t.Errorf("size = %d, want 0", fi.Size())
+	}
+}
+
+// TestCreateTruncatesAnExistingFile pins the other half of creating at open:
+// SSH_FXF_CREAT|TRUNC means an existing file is emptied, so a shorter upload
+// must not leave the previous tail behind.
+func TestCreateTruncatesAnExistingFile(t *testing.T) {
+	client, root := newHelperClient(t)
+	path := filepath.Join(root, "replaced.txt")
+	if err := os.WriteFile(path, []byte("aaaaaaaaaaaaaaaaaaaaaaaa"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := client.Create(path)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := f.Write([]byte("bb")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "bb" {
+		t.Fatalf("got %q, want %q -- the old contents were not truncated", got, "bb")
 	}
 }
 

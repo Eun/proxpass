@@ -299,3 +299,49 @@ func write(t *testing.T, path, content string) {
 		t.Fatal(err)
 	}
 }
+
+// TestWriteFromCreatesAnEmptyFile pins the client half of issue #104.
+//
+// Streaming an empty reader sends no write at all, so the obvious
+// "truncate then stream" shape leaves a missing path missing. The write that
+// opens a file must be unconditional.
+func TestWriteFromCreatesAnEmptyFile(t *testing.T) {
+	root := t.TempDir()
+	c := startHelper(t, root)
+	path := filepath.Join(root, "empty.bin")
+
+	if err := c.WriteFrom(path, strings.NewReader("")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("an empty file was not created: %v", err)
+	}
+	if fi.Size() != 0 {
+		t.Errorf("size = %d, want 0", fi.Size())
+	}
+}
+
+// TestWriteFromTruncatesViaTheOpeningWrite pins that the truncation rides on
+// the first write rather than a separate call, and that later chunks do NOT
+// truncate -- otherwise each would discard its predecessor.
+func TestWriteFromTruncatesViaTheOpeningWrite(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "t.bin")
+	// Longer than one chunk, so the multi-chunk path is exercised.
+	write(t, path, strings.Repeat("x", 5))
+	c := startHelper(t, root)
+
+	payload := strings.Repeat("ab", 300000) // ~586 KiB, several chunks
+	if err := c.WriteFrom(path, strings.NewReader(payload)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != payload {
+		t.Fatalf("got %d bytes, want %d -- a later chunk truncated the file",
+			len(got), len(payload))
+	}
+}
