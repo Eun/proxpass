@@ -1,7 +1,9 @@
 package guesthelper_test
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -58,39 +60,145 @@ func TestExecCommandPrivileged(t *testing.T) {
 	}
 }
 
-// TestShellCommandUsesALoginShell pins -l, without which anything outside the
-// default PATH is "command not found".
-func TestShellCommandUsesALoginShell(t *testing.T) {
+// TestShellCommandDoesNotUseALoginShell is the regression test for the banner
+// on stdout.
+//
+// A login shell sources /etc/profile.d, and the community-scripts Proxmox
+// templates write an ANSI banner there -- onto STDOUT, where it corrupts the
+// output of any non-interactive command and breaks legacy scp outright. This
+// is also what sshd does: session.c prepends the login-shell '-' only
+// `if (!command)'.
+//
+// The test the old behavior had asserted "-lc" was present, so it passed
+// while the bug shipped. This asserts the opposite.
+func TestShellCommandDoesNotUseALoginShell(t *testing.T) {
 	withCmd := guesthelper.ShellCommand(127, true, "whoami")
-	if !strings.Contains(withCmd, "-lc") {
-		t.Errorf("a command is not run through a login shell:\n%s", withCmd)
+	if strings.Contains(withCmd, "-lc") {
+		t.Errorf("a command is run through a login shell, which puts the\n"+
+			"container's /etc/profile.d banner on stdout:\n%s", withCmd)
+	}
+	if !strings.Contains(withCmd, "'-c'") {
+		t.Errorf("a command is not run with -c:\n%s", withCmd)
 	}
 	if !strings.Contains(withCmd, "whoami") {
 		t.Errorf("the command is missing:\n%s", withCmd)
 	}
 
-	// No command means an interactive login shell, not `sh -lc ""'.
+	// No command is the other case: ssh gives an interactive LOGIN shell
+	// there, profile and banner included, and so must this.
 	interactive := guesthelper.ShellCommand(127, true, "   ")
 	if strings.Contains(interactive, "-lc") {
 		t.Errorf("an empty command became a -c invocation:\n%s", interactive)
 	}
-	if !strings.Contains(interactive, "-l") {
+	if !strings.Contains(interactive, "'-l'") {
 		t.Errorf("the interactive shell is not a login shell:\n%s", interactive)
+	}
+}
+
+// TestShellCommandSetsTheEnvironmentItselfRatherThanSourcingAProfile pins
+// what replaced -l.
+//
+// Dropping -l removes the banner but also removes the PATH the profile used
+// to set, which would make anything outside the namespace-entry default
+// "command not found". sshd has the same problem and solves it in
+// do_setup_env() rather than with a login shell, so this does too.
+func TestShellCommandSetsTheEnvironmentItselfRatherThanSourcingAProfile(t *testing.T) {
+	cmd := guesthelper.ShellCommand(127, true, "whoami")
+
+	// sshd's SUPERUSER_PATH: namespace entry is as uid 0 (-S 0).
+	for _, want := range []string{
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"HOME=/root",
+		"USER=root",
+		"LOGNAME=root",
+		"SHELL=/bin/sh",
+		"export PATH HOME USER LOGNAME SHELL",
+	} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("missing %q, which the profile used to provide:\n%s", want, cmd)
+		}
+	}
+
+	// sshd chdirs to the home directory. A container need not have /root,
+	// and the command must still run.
+	if !strings.Contains(cmd, `cd "$HOME" 2>/dev/null || cd /`) {
+		t.Errorf("no cd to HOME with a fallback:\n%s", cmd)
+	}
+
+	// The interactive shell gets its environment from the profile it
+	// actually sources, so the prelude would be redundant there.
+	interactive := guesthelper.ShellCommand(127, true, "")
+	if strings.Contains(interactive, "LOGNAME=root") {
+		t.Errorf("the interactive login shell got the prelude as well:\n%s", interactive)
+	}
+}
+
+// TestShellCommandPreludeCannotBeEscapedByTheCommand guards the new adjacency:
+// the prelude is now immediately before attacker-controlled text inside the
+// same -c string, so the quoting that keeps them one argument matters more
+// than it did.
+func TestShellCommandPreludeCannotBeEscapedByTheCommand(t *testing.T) {
+	// A command that tries to close the -c quoting and append its own.
+	got := guesthelper.ShellCommand(127, true, `'; echo pwned; :'`)
+
+	// Every embedded quote must be neutralized; none may survive to end the
+	// literal early.
+	if !strings.Contains(got, `'\''`) {
+		t.Fatalf("an embedded quote was not escaped:\n%s", got)
+	}
+
+	// The prelude and the command must remain in ONE quoted argument: the
+	// -c string opens once and closes once.
+	body := got[strings.Index(got, "'-c'")+len("'-c'"):]
+	if strings.Count(body, "'")%2 != 0 {
+		t.Fatalf("unbalanced quoting after -c:\n%s", got)
 	}
 }
 
 // TestShellCommandQuotesAHostileCommand is the injection test: the command
 // line comes from the client and becomes argv on the node.
+//
+// The property is checked by EXECUTION rather than by substring. The command
+// is no longer the whole -c string -- envPrelude precedes it -- so a test
+// that pinned "the argument is exactly '<command>'" would fail on a correctly
+// quoted command line. What has to hold is that the shell on the node expands
+// nothing it was given, which only running it can show.
 func TestShellCommandQuotesAHostileCommand(t *testing.T) {
-	got := guesthelper.ShellCommand(127, true, "$(touch /tmp/pwned)")
-	if strings.Contains(got, "$(touch") && !strings.Contains(got, `'$(touch /tmp/pwned)'`) {
-		t.Fatalf("a command substitution reached the command unquoted:\n%s", got)
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh available")
 	}
+	marker := filepath.Join(t.TempDir(), "pwned")
 
-	// A single quote in the command must not end the quoting.
-	hostile := guesthelper.ShellCommand(127, true, "it's; rm -rf /")
-	if strings.Contains(hostile, "; rm -rf /'") && !strings.Contains(hostile, `'\''`) {
-		t.Fatalf("an embedded quote broke out:\n%s", hostile)
+	// The node's shell parses the generated line; the stub prints the argv
+	// it was handed instead of entering a namespace, so any expansion
+	// happens exactly where it would in production.
+	stub := stubNode(t, "printf '%s\\n' \"$@\"\n")
+
+	for name, command := range map[string]string{
+		"substitution": "$(touch " + marker + ")",
+		"backtick":     "`touch " + marker + "`",
+		"quote-break":  "it's; touch " + marker,
+		"closing":      "'; touch " + marker + "; :'",
+	} {
+		t.Run(name, func(t *testing.T) {
+			// The command IS the thing under test: it must be run to
+			// show the node's shell does not expand it.
+			//nolint:gosec // G204: running the generated line is the test.
+			c := exec.CommandContext(t.Context(), "sh", "-c",
+				guesthelper.ShellCommand(127, true, command))
+			c.Env = append(os.Environ(), "PATH="+stub+":"+os.Getenv("PATH"))
+			out, err := c.CombinedOutput()
+			if err != nil {
+				t.Fatalf("generated command did not run: %v\n%s", err, out)
+			}
+			if _, err := os.Stat(marker); err == nil {
+				t.Fatalf("the command was EXECUTED by the node's shell:\n%s", out)
+			}
+			// It must still have arrived, as one argument, intact.
+			if !strings.Contains(string(out), command) {
+				t.Fatalf("the command did not reach the container intact:\n%s", out)
+			}
+		})
 	}
 }
 

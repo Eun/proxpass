@@ -50,26 +50,67 @@ func ExecCommand(vmid int, unprivileged bool, argv ...string) string {
 	return containerCommand(vmid, strings.Join(args, " ")+" "+shellQuoteAll(argv...))
 }
 
+// envPrelude sets the environment a command runs with, as sshd does.
+//
+// This is prepended to the command inside the already-quoted -c string, so
+// the client's own command is still one literal argument and the injection
+// boundary does not move -- see shellQuote.
+//
+// The values are sshd's. do_setup_env() sets USER, LOGNAME, HOME and SHELL
+// from the passwd entry and chdirs to the home directory; PATH is
+// SUPERUSER_PATH for uid 0, which is what namespace entry gives us (-S 0), or
+// _PATH_STDPATH otherwise. root's spelling is used throughout because the
+// entered process is always uid 0 inside.
+//
+// cd falls back to / because nsenter -r is passed without -w, and a container
+// need not have /root at all.
+const envPrelude = `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; ` +
+	`HOME=/root; USER=root; LOGNAME=root; SHELL=/bin/sh; ` +
+	`export PATH HOME USER LOGNAME SHELL; cd "$HOME" 2>/dev/null || cd /; `
+
 // ShellCommand returns the command that opens a shell inside a container, or
 // runs one command line in it.
 //
-// `sh -lc' rather than a bare `sh -c' so the profile is read and PATH, HOME
-// and the rest are what a login would give; without -l a command runs with
-// whatever environment the namespace entry left, and anything outside the
-// default PATH is "command not found".
+// # Why a command does NOT get a login shell
 //
-// NOTE the consequence, which is a real defect and not a preference: a login
-// shell sources /etc/profile.d, and a container whose template writes a
-// banner there -- the community-scripts Proxmox templates do -- puts that
-// banner on STDOUT, where it corrupts the output of any non-interactive
-// command. `ssh ct100@host cat /etc/hostname > out' returns the banner plus
-// the hostname. Fixing it means setting PATH and HOME explicitly instead of
-// relying on the profile; it is tracked separately rather than changed here.
+// It used to. `sh -lc' was chosen so the profile would set PATH and HOME,
+// without which anything outside the default PATH is "command not found".
+// That fixed the environment and broke the output: a login shell sources
+// /etc/profile.d, and a container whose template writes a banner there -- the
+// community-scripts Proxmox templates do -- puts that banner on STDOUT.
+// `ssh ct100@host cat /etc/hostname > out' returned 332 bytes where 5 were
+// asked for, and legacy scp, which multiplexes its protocol over the same
+// stdout, failed outright.
+//
+// sshd itself has the same problem to solve and does not solve it with a
+// login shell. session.c, do_child(): the '-' that marks argv[0] as a login
+// shell is prepended only `if (!command)', and the command path is
+//
+//	argv[0] = (char *) shell0;   /* bare basename, no '-' */
+//	argv[1] = "-c";
+//	argv[2] = (char *) command;
+//
+// The environment comes from do_setup_env() instead, which sets PATH, HOME
+// and the rest explicitly and unconditionally -- so a non-login `sh -c' under
+// real sshd still has a usable PATH. OpenSSH made this exact move for this
+// exact reason: configure.ac appends $bindir to USER_PATH with the comment
+// "make sure $bindir is in USER_PATH so scp will work".
+//
+// So -l goes, envPrelude takes over its job, and the banner cannot reach
+// stdout because no profile is read. This also makes proxpass match ssh,
+// which is the contract: `ssh ct100@host cmd' should behave as `ssh host cmd'
+// does anywhere else. Note that the PTY makes no difference to this -- sshd
+// branches on the tty only to choose do_exec_pty, and passes the same command
+// to the same do_child -- so `ssh -t' is a non-login shell too.
+//
+// An empty command is the other case, and there a login shell IS what ssh
+// does: no command means do_exec(ssh, s, NULL), the '-' is prepended, the
+// profile is read and the banner is wanted.
 func ShellCommand(vmid int, unprivileged bool, command string) string {
 	if strings.TrimSpace(command) == "" {
 		return ExecCommand(vmid, unprivileged, "/bin/sh", "-l")
 	}
-	return ExecCommand(vmid, unprivileged, "/bin/sh", "-lc", command)
+	return ExecCommand(vmid, unprivileged, "/bin/sh", "-c", envPrelude+command)
 }
 
 // shellQuoteAll quotes each argument and joins them with spaces.
