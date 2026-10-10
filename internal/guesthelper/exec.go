@@ -50,26 +50,87 @@ func ExecCommand(vmid int, unprivileged bool, argv ...string) string {
 	return containerCommand(vmid, strings.Join(args, " ")+" "+shellQuoteAll(argv...))
 }
 
+// envPrelude replaces what the login shell was there to provide.
+//
+// It is prepended to the command inside the already-quoted -c string, so the
+// client's own command remains one literal argument and the injection
+// boundary does not move -- see shellQuote.
+//
+// # Why PATH only
+//
+// Only PATH, because PATH is all `-l' ever actually set. Measured by running
+// a login shell with an empty environment in stock images:
+//
+//	alpine:3   PATH=/usr/local/sbin:...:/bin  HOME=UNSET  USER=UNSET
+//	debian:13  PATH=/usr/local/sbin:...:/bin  HOME=UNSET  USER=UNSET
+//
+// /etc/profile sets PATH and nothing else of interest; HOME, USER and LOGNAME
+// come from login(1) or sshd, neither of which is in this path. So a command
+// here never had them, and inventing values would not restore behavior --
+// it would change it, and be WRONG for any container whose uid 0 is not
+// named root or whose home is not /root. The namespace is entered as uid 0
+// (-S 0), but that says nothing about what the container's passwd calls it.
+//
+// A command that wants them can read the container's own passwd, which is
+// the only authority on the question. Nothing here has to guess.
+//
+// The value is sshd's SUPERUSER_PATH, which is also exactly what the three
+// profiles above produce, so this is the same PATH by both routes.
+//
+// # Why no cd
+//
+// nsenter -r chroots and then restores the cwd it saved beforehand, so the
+// working directory is a node directory that is no longer reachable under
+// the new root. Verified: pwd returns empty and `cat ./secret' cannot reach
+// the node file that is really in that directory -- the cwd is already
+// severed from the filesystem, which is the containment the chroot exists to
+// provide. A `cd' would only paper over a dangling cwd that is harmless, and
+// `cd "$HOME"' would land somewhere a container need not even have.
+const envPrelude = `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; export PATH; `
+
 // ShellCommand returns the command that opens a shell inside a container, or
 // runs one command line in it.
 //
-// `sh -lc' rather than a bare `sh -c' so the profile is read and PATH, HOME
-// and the rest are what a login would give; without -l a command runs with
-// whatever environment the namespace entry left, and anything outside the
-// default PATH is "command not found".
+// # Why a command does NOT get a login shell
 //
-// NOTE the consequence, which is a real defect and not a preference: a login
-// shell sources /etc/profile.d, and a container whose template writes a
-// banner there -- the community-scripts Proxmox templates do -- puts that
-// banner on STDOUT, where it corrupts the output of any non-interactive
-// command. `ssh ct100@host cat /etc/hostname > out' returns the banner plus
-// the hostname. Fixing it means setting PATH and HOME explicitly instead of
-// relying on the profile; it is tracked separately rather than changed here.
+// It used to. `sh -lc' was chosen so the profile would set PATH and HOME,
+// without which anything outside the default PATH is "command not found".
+// That fixed the environment and broke the output: a login shell sources
+// /etc/profile.d, and a container whose template writes a banner there -- the
+// community-scripts Proxmox templates do -- puts that banner on STDOUT.
+// `ssh ct100@host cat /etc/hostname > out' returned 332 bytes where 5 were
+// asked for, and legacy scp, which multiplexes its protocol over the same
+// stdout, failed outright.
+//
+// sshd itself has the same problem to solve and does not solve it with a
+// login shell. session.c, do_child(): the '-' that marks argv[0] as a login
+// shell is prepended only `if (!command)', and the command path is
+//
+//	argv[0] = (char *) shell0;   /* bare basename, no '-' */
+//	argv[1] = "-c";
+//	argv[2] = (char *) command;
+//
+// The environment comes from do_setup_env() instead, which sets PATH, HOME
+// and the rest explicitly and unconditionally -- so a non-login `sh -c' under
+// real sshd still has a usable PATH. OpenSSH made this exact move for this
+// exact reason: configure.ac appends $bindir to USER_PATH with the comment
+// "make sure $bindir is in USER_PATH so scp will work".
+//
+// So -l goes, envPrelude takes over its job, and the banner cannot reach
+// stdout because no profile is read. This also makes proxpass match ssh,
+// which is the contract: `ssh ct100@host cmd' should behave as `ssh host cmd'
+// does anywhere else. Note that the PTY makes no difference to this -- sshd
+// branches on the tty only to choose do_exec_pty, and passes the same command
+// to the same do_child -- so `ssh -t' is a non-login shell too.
+//
+// An empty command is the other case, and there a login shell IS what ssh
+// does: no command means do_exec(ssh, s, NULL), the '-' is prepended, the
+// profile is read and the banner is wanted.
 func ShellCommand(vmid int, unprivileged bool, command string) string {
 	if strings.TrimSpace(command) == "" {
 		return ExecCommand(vmid, unprivileged, "/bin/sh", "-l")
 	}
-	return ExecCommand(vmid, unprivileged, "/bin/sh", "-lc", command)
+	return ExecCommand(vmid, unprivileged, "/bin/sh", "-c", envPrelude+command)
 }
 
 // shellQuoteAll quotes each argument and joins them with spaces.
