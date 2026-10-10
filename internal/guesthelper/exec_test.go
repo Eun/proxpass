@@ -95,40 +95,47 @@ func TestShellCommandDoesNotUseALoginShell(t *testing.T) {
 	}
 }
 
-// TestShellCommandSetsTheEnvironmentItselfRatherThanSourcingAProfile pins
-// what replaced -l.
+// TestShellCommandSetsPathAndNothingElse pins what replaced -l, and pins the
+// boundary of it.
 //
-// Dropping -l removes the banner but also removes the PATH the profile used
-// to set, which would make anything outside the namespace-entry default
-// "command not found". sshd has the same problem and solves it in
-// do_setup_env() rather than with a login shell, so this does too.
-func TestShellCommandSetsTheEnvironmentItselfRatherThanSourcingAProfile(t *testing.T) {
+// Dropping -l removes the banner but also removes the PATH the profile set,
+// which would make anything outside the namespace-entry default "command not
+// found". So PATH is restored.
+//
+// Nothing else is, and that is the point of the second half of this test. A
+// login shell never set HOME, USER or LOGNAME either -- /etc/profile does not
+// set them, login(1) and sshd do, and neither runs here. Setting them would
+// not restore behavior but invent it, and would be WRONG for a container
+// whose uid 0 is not called root or whose home is not /root. Entering as
+// uid 0 says nothing about what the container's own passwd calls that user.
+func TestShellCommandSetsPathAndNothingElse(t *testing.T) {
 	cmd := guesthelper.ShellCommand(127, true, "whoami")
 
-	// sshd's SUPERUSER_PATH: namespace entry is as uid 0 (-S 0).
-	for _, want := range []string{
-		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		"HOME=/root",
-		"USER=root",
-		"LOGNAME=root",
-		"SHELL=/bin/sh",
-		"export PATH HOME USER LOGNAME SHELL",
-	} {
-		if !strings.Contains(cmd, want) {
-			t.Errorf("missing %q, which the profile used to provide:\n%s", want, cmd)
+	// sshd's SUPERUSER_PATH, which is also what the stock /etc/profile in
+	// alpine and debian produces -- the same value by either route.
+	const wantPath = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	if !strings.Contains(cmd, wantPath) {
+		t.Errorf("missing %q, which the profile used to provide:\n%s", wantPath, cmd)
+	}
+	if !strings.Contains(cmd, "export PATH") {
+		t.Errorf("PATH is not exported, so the command would not see it:\n%s", cmd)
+	}
+
+	// Identity must NOT be guessed. A container is free to call uid 0
+	// something other than root and to put its home somewhere other than
+	// /root; the container's passwd is the only authority and a command
+	// that needs these can read it.
+	for _, guessed := range []string{"HOME=", "USER=", "LOGNAME=", "SHELL=", "cd "} {
+		if strings.Contains(cmd, guessed) {
+			t.Errorf("the prelude guesses %q, which a container need not agree with:\n%s",
+				guessed, cmd)
 		}
 	}
 
-	// sshd chdirs to the home directory. A container need not have /root,
-	// and the command must still run.
-	if !strings.Contains(cmd, `cd "$HOME" 2>/dev/null || cd /`) {
-		t.Errorf("no cd to HOME with a fallback:\n%s", cmd)
-	}
-
-	// The interactive shell gets its environment from the profile it
-	// actually sources, so the prelude would be redundant there.
+	// The interactive shell sources the profile itself, so the prelude
+	// would be redundant there.
 	interactive := guesthelper.ShellCommand(127, true, "")
-	if strings.Contains(interactive, "LOGNAME=root") {
+	if strings.Contains(interactive, wantPath) {
 		t.Errorf("the interactive login shell got the prelude as well:\n%s", interactive)
 	}
 }

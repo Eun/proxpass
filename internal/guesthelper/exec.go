@@ -50,23 +50,43 @@ func ExecCommand(vmid int, unprivileged bool, argv ...string) string {
 	return containerCommand(vmid, strings.Join(args, " ")+" "+shellQuoteAll(argv...))
 }
 
-// envPrelude sets the environment a command runs with, as sshd does.
+// envPrelude replaces what the login shell was there to provide.
 //
-// This is prepended to the command inside the already-quoted -c string, so
-// the client's own command is still one literal argument and the injection
+// It is prepended to the command inside the already-quoted -c string, so the
+// client's own command remains one literal argument and the injection
 // boundary does not move -- see shellQuote.
 //
-// The values are sshd's. do_setup_env() sets USER, LOGNAME, HOME and SHELL
-// from the passwd entry and chdirs to the home directory; PATH is
-// SUPERUSER_PATH for uid 0, which is what namespace entry gives us (-S 0), or
-// _PATH_STDPATH otherwise. root's spelling is used throughout because the
-// entered process is always uid 0 inside.
+// # Why PATH only
 //
-// cd falls back to / because nsenter -r is passed without -w, and a container
-// need not have /root at all.
-const envPrelude = `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; ` +
-	`HOME=/root; USER=root; LOGNAME=root; SHELL=/bin/sh; ` +
-	`export PATH HOME USER LOGNAME SHELL; cd "$HOME" 2>/dev/null || cd /; `
+// Only PATH, because PATH is all `-l' ever actually set. Measured by running
+// a login shell with an empty environment in stock images:
+//
+//	alpine:3   PATH=/usr/local/sbin:...:/bin  HOME=UNSET  USER=UNSET
+//	debian:13  PATH=/usr/local/sbin:...:/bin  HOME=UNSET  USER=UNSET
+//
+// /etc/profile sets PATH and nothing else of interest; HOME, USER and LOGNAME
+// come from login(1) or sshd, neither of which is in this path. So a command
+// here never had them, and inventing values would not restore behavior --
+// it would change it, and be WRONG for any container whose uid 0 is not
+// named root or whose home is not /root. The namespace is entered as uid 0
+// (-S 0), but that says nothing about what the container's passwd calls it.
+//
+// A command that wants them can read the container's own passwd, which is
+// the only authority on the question. Nothing here has to guess.
+//
+// The value is sshd's SUPERUSER_PATH, which is also exactly what the three
+// profiles above produce, so this is the same PATH by both routes.
+//
+// # Why no cd
+//
+// nsenter -r chroots and then restores the cwd it saved beforehand, so the
+// working directory is a node directory that is no longer reachable under
+// the new root. Verified: pwd returns empty and `cat ./secret' cannot reach
+// the node file that is really in that directory -- the cwd is already
+// severed from the filesystem, which is the containment the chroot exists to
+// provide. A `cd' would only paper over a dangling cwd that is harmless, and
+// `cd "$HOME"' would land somewhere a container need not even have.
+const envPrelude = `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; export PATH; `
 
 // ShellCommand returns the command that opens a shell inside a container, or
 // runs one command line in it.
