@@ -134,6 +134,13 @@ the switch to the alternate screen, releases the scroll region and stops
 drawing, so the application gets the whole terminal. It comes back when the
 application exits.
 
+Taking the row back is the delicate half. Leaving the alternate screen
+restores the normal screen's cursor along with its scroll region — that
+restore is what returns you to the prompt you ran `vim` from — so the bar has
+to reinstate its region without disturbing the position the terminal just put
+back. It does that the same way it does on a resize: `DECSC`/`DECRC` around
+the `DECSTBM`, in one write.
+
 It also stands aside for a guest that takes the screen's geometry for itself.
 An application setting its own scroll region replaces the bar's reservation,
 so the bar reinstates it; one setting origin mode (DECOM) makes the bar's row
@@ -151,9 +158,9 @@ costs a late bar rather than a missing one.
 
 ### Resizing
 
-A resize is the one moment the bar has to touch the guest's cursor, because
-`DECSTBM` **moves it**. DEC's own specification requires that — the VT100 User
-Guide says of `DECSTBM` that "the cursor is placed in the home position", and
+A resize is one of the moments the bar has to touch the guest's cursor,
+because `DECSTBM` **moves it**. DEC's own specification requires that — the
+VT100 User Guide says of `DECSTBM` "the cursor is placed in the home position", and
 the VT510 manual is blunter: "DECSTBM moves the cursor to column 1, line 1 of
 the page." Every terminal checked implements it (xterm, VTE, alacritty, kitty,
 foot, wezterm, st, Windows Terminal, tmux, GNU screen, iTerm2); none leaves

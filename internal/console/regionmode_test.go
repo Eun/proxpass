@@ -29,11 +29,12 @@ func TestGuestScrollRegionIsReinstated(t *testing.T) {
 		t.Errorf("bar did not reinstate its scroll region after the guest "+
 			"set one: got %q, want it to contain %q", got, want)
 	}
-	// The guest will have left the cursor inside its own region, which may
-	// be outside the reinstated one, so it has to be put back.
-	if !strings.Contains(got, "\x1b[1;1H") {
-		t.Errorf("bar did not reposition the cursor after reinstating the "+
-			"region: %q", got)
+	// ...and must not move the guest while doing it. The guest's own DECSTBM
+	// has already placed its cursor; the bar's reinstall would move it again,
+	// so the change is bracketed by a save and restore.
+	if !strings.Contains(got, "\x1b7"+want+"\x1b8") {
+		t.Errorf("bar did not preserve the guest's cursor across reinstating "+
+			"the region: %q", got)
 	}
 }
 

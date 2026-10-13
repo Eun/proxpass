@@ -188,9 +188,18 @@ func (b *StatusBar) Start() {
 		return
 	}
 	b.active = true
-	// Install the scroll region, then put the cursor inside it. DECSTBM
-	// homes the cursor as a side effect on some terminals and leaves it
-	// alone on others, so it is positioned explicitly.
+	// Install the scroll region and home the cursor into it.
+	//
+	// This is the one place an explicit home is right, and it is not for the
+	// reason the comment here used to give (that DECSTBM might leave the
+	// cursor alone -- it never does; see reinstallRegion). It is because
+	// there is nothing to preserve yet: Start runs before the guest has
+	// produced any output, so no guest position exists to discard, and the
+	// session should begin at the top of the screen.
+	//
+	// Everywhere else the region changes mid-session, the guest does have a
+	// position and it must survive -- which is what reinstallRegion and
+	// releaseRegion are for.
 	b.write(fmt.Sprintf("\x1b[1;%dr\x1b[1;1H", b.guestRowsLocked()))
 	b.mu.Unlock()
 
@@ -387,12 +396,22 @@ func (b *StatusBar) Observe(p []byte) {
 		// already is would otherwise start in the wrong place.
 		b.write(b.releaseRegion())
 	case b.active && regionGone:
-		// The region is genuinely gone, so reinstall it and put the cursor
-		// back inside: a reset homes it on a now-unrestricted screen, a
-		// guest that set its own region will have moved it there, and
-		// DECSTBM itself may move it. Without the reposition the guest's
-		// next line can land on the bar's row.
-		b.write(fmt.Sprintf("\x1b[1;%dr\x1b[1;1H", b.guestRowsLocked()))
+		// The region is genuinely gone, so reinstall it -- without moving
+		// the guest, which is already wherever it meant to be.
+		//
+		// This used to append "\x1b[1;1H", on the same false premise #109
+		// removed from Resize: that DECSTBM might leave the cursor alone, so
+		// the bar had to home it deliberately to keep the guest off the bar's
+		// row. DECSTBM always moves it, so the explicit home was not a
+		// safeguard -- it was a second displacement on top of DECSTBM's, and
+		// it discarded a position the bar had no way to recover.
+		//
+		// Leaving a full-screen application is where that showed. Exiting the
+		// alternate screen restores the normal screen's cursor along with its
+		// scroll region, and that restore is exactly what returns you to the
+		// prompt you ran vi from. Homing here threw it away, so quitting vi
+		// left the cursor on line 1.
+		b.write(b.reinstallRegion(b.guestRowsLocked()))
 	}
 	b.mu.Unlock()
 

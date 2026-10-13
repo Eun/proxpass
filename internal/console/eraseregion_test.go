@@ -84,7 +84,19 @@ func TestEraseStillRepaintsTheBar(t *testing.T) {
 }
 
 // The three events that genuinely destroy the region must still reinstall it,
-// with the cursor put back inside.
+// and must leave the guest's cursor alone while doing so.
+//
+// This previously asserted an explicit "\x1b[1;1H" after the region. That was
+// wrong on the same false premise #109 removed from Resize -- DECSTBM always
+// moves the cursor, so homing it again was a second displacement rather than
+// a safeguard, and in the alternate-screen case it discarded the position the
+// terminal had just restored. Quitting vi therefore left the cursor on line 1.
+//
+// Each of these three events leaves the cursor somewhere defensible on its
+// own: RIS homes it as part of resetting the screen, a guest installing its
+// own region has already been moved there by its own DECSTBM, and leaving the
+// alternate screen restores the position the guest had before it. The bar's
+// job is only to get its row back without disturbing any of them.
 func TestRegionIsReinstalledWhenItIsActuallyGone(t *testing.T) {
 	for _, tc := range []struct{ name, seq string }{
 		{"terminal reset", "\x1b\x63"}, // RIS
@@ -106,9 +118,9 @@ func TestRegionIsReinstalledWhenItIsActuallyGone(t *testing.T) {
 			if !strings.Contains(got, setRegion) {
 				t.Errorf("region not reinstalled after %s: %q", tc.name, got)
 			}
-			if !strings.Contains(got, "\x1b[1;1H") {
-				t.Errorf("cursor not put back inside the region after %s: %q",
-					tc.name, got)
+			if !strings.Contains(got, "\x1b7"+setRegion+"\x1b8") {
+				t.Errorf("region change after %s was not bracketed by a cursor "+
+					"save and restore: %q", tc.name, got)
 			}
 		})
 	}

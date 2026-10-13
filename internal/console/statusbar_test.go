@@ -475,6 +475,12 @@ func TestStatusBarRepaintsAfterEraseDisplay(t *testing.T) {
 // RIS resets the scroll region as well as the screen, so repainting the row
 // is not enough: the region has to be reinstalled or the guest will scroll
 // over the bar.
+//
+// The reinstall must not move the cursor. RIS has already homed it as part of
+// resetting the screen, so an explicit home from the bar is redundant here --
+// and on the path this shares with the alternate screen it was actively
+// wrong, discarding the position the terminal had just restored and leaving
+// the cursor on line 1 after quitting vi.
 func TestStatusBarReinstallsRegionAfterTerminalReset(t *testing.T) {
 	buf := &lockedBuffer{}
 	b := NewStatusBar(buf, 40, 24)
@@ -492,32 +498,16 @@ func TestStatusBarReinstallsRegionAfterTerminalReset(t *testing.T) {
 	for time.Now().Before(deadline) {
 		after := buf.String()[mark:]
 		if strings.Contains(after, "\x1b[1;23r") && strings.Contains(after, testLabel) {
+			if !strings.Contains(after, "\x1b7\x1b[1;23r\x1b8") {
+				t.Errorf("the reinstall after a reset was not bracketed by a "+
+					"cursor save and restore: %q", after)
+			}
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("region was not reinstalled after a reset; wrote only %q",
 		buf.String()[mark:])
-}
-
-// A reset leaves the cursor at the top-left of an unrestricted screen, so it
-// has to be put back inside the region.
-func TestStatusBarHomesCursorAfterTerminalReset(t *testing.T) {
-	buf := &lockedBuffer{}
-	b := NewStatusBar(buf, 40, 24)
-	b.SetText(testLabel, testHint)
-	b.Start()
-	defer b.Stop()
-
-	waitForBar(t, buf, "\x1b[1;23r")
-	mark := len(buf.String())
-
-	b.Observe([]byte("\x1bc"))
-	waitForBar(t, buf, testLabel)
-
-	if after := buf.String()[mark:]; !strings.Contains(after, "\x1b[1;1H") {
-		t.Errorf("cursor was not homed into the region after a reset: %q", after)
-	}
 }
 
 // An erase while a full-screen application owns the screen must not bring the
