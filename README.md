@@ -43,17 +43,60 @@ which is why the image is Debian based.
 
 ## Quick Start
 
+**1. Run proxpass.** The admin key is your own public key: it is what lets you
+run the CLI in the steps below.
+
 ```bash
 docker run -d --name proxpass \
   -p 2222:22 \
   -v proxpass-data:/var/lib/proxpass \
   -e PROXPASS_ADMIN_KEY="$(cat ~/.ssh/id_ed25519.pub)" \
   ghcr.io/eun/proxpass:latest
+```
 
-# Connect as admin and pick a guest interactively.
-# Any login name works with an admin key; "admin" is just the canonical one.
+**2. Add a Proxmox instance.** Nothing is discovered until proxpass knows where
+to look, so this has to come before you connect.
+
+```bash
+ssh -p 2222 admin@localhost instance add \
+  --url https://pve:8006 \
+  --token-id "user@pam!token" \
+  --token-secret "uuid"
+```
+
+The Proxmox host must be reachable now: `instance add` calls the API to learn
+the node name, and fails if it cannot. Consoles use the termproxy WebSocket by
+default — add `--console-transport ssh` to use `pct enter` / `qm terminal`
+instead. Discovery then fills in the guest list; `ssh -p 2222 admin@localhost
+guest ls` shows it.
+
+Consoles work at this point. [File transfer](#file-transfer-with-scp-and-sftp)
+additionally needs the [proxpass SSH key](#the-proxmox-ssh-key) installed on
+the node. On a default termproxy instance nothing checks that for you, so
+install it now rather than discovering it at your first `scp`.
+
+**3. Connect and pick a guest.** With no command, proxpass opens the
+[picker](#the-guest-picker):
+
+```bash
 ssh -p 2222 admin@localhost
 ```
+
+**4. Connect straight to a guest** by putting its identifier in the login name:
+
+```bash
+ssh -p 2222 ct100@localhost          # type + VMID
+ssh -p 2222 100@localhost            # VMID alone
+ssh -p 2222 webserver@localhost      # guest name
+ssh -p 2222 ct101@pve1@localhost     # instance-qualified, when a name is ambiguous
+```
+
+> **The login name is the guest you want, not who you are.** Your key
+> identifies you; the login name only says where to land. So use **`admin`**
+> for the CLI and the picker — it is reserved, along with every configured
+> client name, and always browses even if a guest happens to share it. Any
+> other name is resolved as a guest first, which means `ssh myguest@localhost
+> guest ls` runs `guest ls` *inside that guest* rather than in proxpass.
 
 ## The guest picker
 
@@ -490,6 +533,19 @@ already exists.
 
 ### File transfer with scp and sftp
 
+> **Prerequisite: install the proxpass SSH key on the Proxmox node first.**
+> SFTP and `scp` reach a container *through* its node, so they do not work
+> until proxpass can log in to that node — regardless of
+> `--console-transport`, and even for an instance whose consoles work fine
+> over termproxy. Append the key's public half to `~/.ssh/authorized_keys` for
+> the user in `--ssh-user` (`root` by default) on each node; see
+> [The Proxmox SSH key](#the-proxmox-ssh-key) for how to read it.
+>
+> Only an `ssh` instance tells you when the key is missing: `instance add`
+> warns, and `instance inspect` re-checks. A **termproxy** instance reports
+> neither, because both are console checks — so there the first sign is a
+> transfer failing. Installing the key is what fixes it either way.
+
 Files can be copied into and out of a **container** by naming the guest as the
 login name:
 
@@ -513,7 +569,7 @@ Two limits worth knowing:
 | Not supported | Why |
 |---|---|
 | Virtual machines | A VM has no namespace to enter. Reaching its disk means the guest agent, whose write endpoint truncates at 60 KiB and cannot append. |
-| A node proxpass cannot log in to | The transfer runs commands on the node. Install the public key there — `instance inspect` reports whether it worked. |
+| A node proxpass cannot log in to | The transfer runs commands on the node, so the key above is what enables it. |
 
 Note that `--console-transport` is **not** one of these: it selects how a
 *console* is attached and has nothing to do with file transfer. A termproxy
