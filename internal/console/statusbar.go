@@ -219,35 +219,120 @@ func (b *StatusBar) Stop() {
 	b.write(fmt.Sprintf("\x1b[r\x1b[%d;1H\x1b[2K", b.rows))
 }
 
+// reinstallRegion returns the sequence that reinstalls the bar's scroll
+// region without moving the guest's cursor. Callers must hold mu.
+//
+// DECSTBM always moves the cursor. DEC's own specification says so -- the
+// VT100 User Guide's DECSTBM entry ends "The cursor is placed in the home
+// position", and the VT510 manual is blunter still: "DECSTBM moves the cursor
+// to column 1, line 1 of the page." Every terminal checked implements it:
+// xterm (charproc.c, CursorSet), VTE (vteseq.cc, home_cursor), alacritty,
+// kitty, foot, wezterm, st, Windows Terminal, tmux and GNU screen. There is
+// no terminal that leaves the cursor alone, so the region cannot be changed
+// and the cursor left to look after itself.
+//
+// The cursor is therefore bracketed with DECSC/DECRC, which is the only way
+// to put it back without knowing where it is -- proxpass does not parse the
+// guest's output into a screen model and deliberately has no idea.
+func (b *StatusBar) reinstallRegion(guest int) string {
+	return b.withCursorKept(fmt.Sprintf("\x1b[1;%dr", guest))
+}
+
+// releaseRegion returns the sequence that gives the whole screen back to the
+// guest, again without moving its cursor.
+//
+// "\x1b[r" is DECSTBM with omitted parameters, so it homes the cursor exactly
+// as setting a region does. Releasing therefore needs the same bracketing as
+// installing -- which is easy to miss, because the sequence looks like a
+// reset rather than a positioning command.
+func (b *StatusBar) releaseRegion() string {
+	return b.withCursorKept("\x1b[r")
+}
+
+// withCursorKept brackets a region change so the cursor survives it.
+func (b *StatusBar) withCursorKept(region string) string {
+	if b.modes.CursorSaved() {
+		// The guest is between its own save and restore, and the terminal
+		// has one slot. Borrowing it here would overwrite the position the
+		// guest is about to return to.
+		//
+		// Nothing is lost by leaving the cursor where DECSTBM puts it: a
+		// guest holding a save is by definition about to restore, and that
+		// restore is what positions the cursor next.
+		return region
+	}
+	// One residual case, and it is the terminal's doing rather than ours.
+	//
+	// DECRC clamps the restored position to the screen, not to the scroll
+	// region, whenever DECOM is reset -- which is always here, since the bar
+	// never sets it. (xterm's CursorSet, cursor.c, is explicit: it bounds
+	// the row by screen->max_row.) So when the terminal shrinks past the
+	// guest's cursor, the terminal clamps that cursor onto the new bottom
+	// row, and that row is the bar's.
+	//
+	// It is left alone deliberately, but it is not harmless and the reason
+	// is worth stating exactly. A cursor on the bar's row is *below* the
+	// region, so a line feed neither scrolls it nor moves it down: the guest
+	// stays there, writing over the bar, until it emits an absolute move.
+	// An interactive shell does that at its next prompt, and a guest that
+	// received SIGWINCH redraws immediately -- so on a container it is
+	// invisible. On a VM serial console, which never learns the size
+	// changed, it lasts until the guest happens to reposition.
+	//
+	// It is still the better trade. Moving the cursor to a fixed row inside
+	// the region instead -- which is what this code used to do on every
+	// shrink -- destroys the guest's position in all the cases where the
+	// terminal preserved it, which is most of them: only a cursor on a row
+	// that stopped existing is clamped at all. Trading a common loss for a
+	// rare one is the right direction, and the rare one is bounded.
+	//
+	// Fixing it outright needs proxpass to know where the cursor is, which
+	// means parsing the guest's output -- the design this bar exists to
+	// avoid. Setting DECOM so DECRC clamps into the region instead would
+	// change what every absolute coordinate in the guest's own output
+	// means, which is far worse than one row.
+	return "\x1b7" + region + "\x1b8"
+}
+
 // Resize updates the terminal size, reinstalls the scroll region and
 // repaints. It returns the new guest height.
+//
+// Reinstalling is mandatory rather than tidy-up: a terminal discards the
+// scroll region when the window changes size. xterm's ScreenResize calls
+// resetMargins (screen.c) and VTE's set_size calls reset_scrolling_region
+// (vte.cc), both also clearing origin mode. So between the user's drag and
+// this call the bar's row is not reserved at all.
 func (b *StatusBar) Resize(cols, rows int) int {
 	b.mu.Lock()
-	prev := b.guestRowsLocked()
 	b.cols, b.rows = cols, rows
 	// Force the next repaint even if the text is unchanged: the bar has to
 	// be rewritten at a new width and position.
 	b.lastBar = ""
 	guest := b.guestRowsLocked()
-	if b.active {
-		// Reinstall the region and put the cursor back inside it, for the
-		// same reason Start does: DECSTBM homes the cursor on some terminals
-		// and leaves it alone on others. Reinstalling without this left the
-		// cursor at (1,1) on the terminals that home it, while the guest
-		// shell still believed it was at its prompt -- so the next keystroke
-		// redrew the line in the wrong place, on every resize.
-		//
-		// The cursor is clamped into the region rather than homed: homing it
-		// would discard the guest's position on terminals that do not move
-		// it, which is the majority. Row b.rows-1 is the last row the guest
-		// still owns, so a cursor that was below the new region lands on the
-		// guest's bottom line instead of on the bar.
-		b.write(fmt.Sprintf("\x1b[1;%dr", guest))
-		if prev > guest {
-			// The terminal shrank, so the cursor may now be outside the
-			// region (or on the bar's row). Only then is a move warranted.
-			b.write(fmt.Sprintf("\x1b[%d;1H", guest))
-		}
+
+	// One write, not several. draw() builds its repaint in full for the
+	// stated reason that guest output can land between smaller writes; the
+	// same applies here and the consequence is worse, because until the
+	// sequence completes the cursor is wherever DECSTBM left it, so it is
+	// the guest's own output that lands in the wrong place.
+	switch {
+	case !b.active:
+		// No region was ever installed, so there is nothing to reinstall.
+	case rows < minBarRows:
+		// Too short for a bar. Start refuses to touch a terminal this small
+		// rather than leave the guest with almost nothing, and a terminal
+		// dragged down to it has to be given up just as completely --
+		// otherwise a size that could never have had a bar acquires one.
+		// guestRowsLocked already hands the guest every row.
+		b.write(b.releaseRegion())
+	case b.hidden:
+		// A full-screen application owns every row and the bar released the
+		// region when it took over. Taking the row back now would be
+		// invisible to an application that has not been told it lost one,
+		// and it would keep drawing its status line on a row the terminal
+		// scrolls.
+	default:
+		b.write(b.reinstallRegion(guest))
 	}
 	b.mu.Unlock()
 
@@ -294,7 +379,13 @@ func (b *StatusBar) Observe(p []byte) {
 	case alt && b.active:
 		// The application is taking the whole screen: drop the scroll
 		// region so it can use every row, and stop drawing.
-		b.write("\x1b[r")
+		//
+		// Through releaseRegion because "\x1b[r" is DECSTBM and homes the
+		// cursor. A full-screen application has usually just switched
+		// buffers and will position itself before drawing, so this is
+		// mostly belt and braces -- but one that draws from where it
+		// already is would otherwise start in the wrong place.
+		b.write(b.releaseRegion())
 	case b.active && regionGone:
 		// The region is genuinely gone, so reinstall it and put the cursor
 		// back inside: a reset homes it on a now-unrestricted screen, a
@@ -363,6 +454,12 @@ func (b *StatusBar) draw() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if !b.active || b.hidden || b.cols < 1 {
+		return
+	}
+	if b.rows < minBarRows {
+		// The terminal was resized down to a height a bar was never allowed
+		// on. Start refuses to install one here; drawing anyway would put
+		// the bar on a row the guest has been given.
 		return
 	}
 	if b.modes.OriginMode() {

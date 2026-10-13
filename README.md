@@ -149,6 +149,46 @@ than overwriting the position the guest is about to return to. An unmatched
 save releases the bar after a second, so a guest that saves and never restores
 costs a late bar rather than a missing one.
 
+### Resizing
+
+A resize is the one moment the bar has to touch the guest's cursor, because
+`DECSTBM` **moves it**. DEC's own specification requires that — the VT100 User
+Guide says of `DECSTBM` that "the cursor is placed in the home position", and
+the VT510 manual is blunter: "DECSTBM moves the cursor to column 1, line 1 of
+the page." Every terminal checked implements it (xterm, VTE, alacritty, kitty,
+foot, wezterm, st, Windows Terminal, tmux, GNU screen, iTerm2); none leaves
+the cursor alone.
+
+Reinstalling the region after a resize is mandatory rather than tidying up:
+terminals discard the scroll region when the window changes size — xterm's
+`ScreenResize` calls `resetMargins`, VTE's `set_size` calls
+`reset_scrolling_region` — so until proxpass reinstalls it, the bar's row is
+not reserved at all. The reinstall is therefore unavoidable, it homes the
+cursor, and the bar has to put the cursor back. It does that by bracketing the
+region change with `DECSC`/`DECRC` in a single write, skipping the save when
+the guest is already holding the slot.
+
+This matters most on a **VM serial console**. A container console is a PTY, so
+a resize reaches the guest as `SIGWINCH` and the shell redraws, which hides a
+misplaced cursor. A VM serial console is an emulated UART with no window-size
+concept: neither transport can deliver the new size, and the guest's geometry
+stays frozen for the session. Nothing redraws, so anything done to the cursor
+there is permanent — which is why resize bugs showed up on VMs first. If a VM
+guest's idea of the screen size matters to you, run `resize` or
+`stty rows … cols …` inside it; that is the only way it can learn.
+
+A terminal dragged below four rows gives the row back rather than keeping a
+reservation it is too small for, and takes it again when the window grows.
+
+One case is left deliberately unfixed. `DECRC` clamps to the screen rather
+than to the scroll region, so a window shrunk past the guest's cursor leaves
+that cursor on the bar's row, where the guest writes over the bar until it
+positions itself again — a shell does that at its next prompt. The bar keeps
+repainting throughout, so it is never lost. Correcting it properly would mean
+parsing the guest's output to track the cursor, which is the design this bar
+exists to avoid; the previous behavior traded this rare case for moving the
+cursor on *every* resize, which was the bug.
+
 Set `PROXPASS_DISABLE_STATUSBAR=1` to turn the bar off; the guest then gets
 the full terminal height. The bar also disables itself without a PTY or on a
 terminal shorter than four rows.

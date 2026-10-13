@@ -126,12 +126,19 @@ func TestUnrelatedModesDoNotSuppressTheBar(t *testing.T) {
 	}
 }
 
-// Shrinking the terminal moves the bar's row up, which can leave the cursor
-// below the new region -- or on the bar's own row. Start positions the cursor
-// explicitly after installing the region, documenting that DECSTBM homes it
-// on some terminals and not others; Resize has to do the same or every
-// SIGWINCH silently teleports the guest's cursor.
-func TestResizePutsTheCursorBackInsideTheRegion(t *testing.T) {
+// Resizing must reinstall the region at the new height and give the guest
+// back the cursor DECSTBM took.
+//
+// These two tests previously asserted the opposite and passed while the bug
+// shipped: they pinned a move to row 38 when shrinking and the *absence* of
+// any move when growing. Both followed from the belief that DECSTBM homes the
+// cursor "on some terminals and leaves it alone on others", so that growing
+// was safe and shrinking needed only a clamp into the region.
+//
+// Neither half holds. DECSTBM homes the cursor on every terminal checked, so
+// growing strands it just as badly as shrinking; and a clamp to row 38
+// column 1 is not where the guest was anyway. See reinstallRegion.
+func TestResizeRestoresTheCursorWhenShrinking(t *testing.T) {
 	var out bytes.Buffer
 	bar := newHeldBar(&out)
 
@@ -142,17 +149,13 @@ func TestResizePutsTheCursorBackInsideTheRegion(t *testing.T) {
 	if !strings.Contains(got, "\x1b[1;38r") {
 		t.Errorf("resize did not reinstall the region at the new height: %q", got)
 	}
-	if !strings.Contains(got, "\x1b[38;1H") {
-		t.Errorf("resize left the cursor outside the new region: %q, want it "+
-			"to contain a move to row 38", got)
+	if !strings.HasPrefix(got, "\x1b7") || !strings.HasSuffix(got, "\x1b8") {
+		t.Errorf("resize did not bracket the region change with a cursor "+
+			"save and restore: %q", got)
 	}
 }
 
-// Growing the terminal cannot strand the cursor: every row it could be on is
-// still inside the larger region. Moving it anyway would discard the guest's
-// position on the terminals that leave the cursor alone, which is most of
-// them, so the move is deliberately conditional.
-func TestResizeDoesNotMoveTheCursorWhenGrowing(t *testing.T) {
+func TestResizeRestoresTheCursorWhenGrowing(t *testing.T) {
 	var out bytes.Buffer
 	bar := newHeldBar(&out)
 
@@ -163,8 +166,8 @@ func TestResizeDoesNotMoveTheCursorWhenGrowing(t *testing.T) {
 	if !strings.Contains(got, "\x1b[1;49r") {
 		t.Errorf("resize did not reinstall the region: %q", got)
 	}
-	if strings.Contains(got, ";1H") {
-		t.Errorf("resize moved the cursor while growing, discarding the "+
-			"guest's position: %q", got)
+	if !strings.HasPrefix(got, "\x1b7") || !strings.HasSuffix(got, "\x1b8") {
+		t.Errorf("growing left the cursor wherever DECSTBM put it: %q, want "+
+			"the region change bracketed by a save and restore", got)
 	}
 }
