@@ -43,17 +43,55 @@ which is why the image is Debian based.
 
 ## Quick Start
 
+**1. Run proxpass.** The admin key is your own public key: it is what lets you
+run the CLI in the steps below.
+
 ```bash
 docker run -d --name proxpass \
   -p 2222:22 \
   -v proxpass-data:/var/lib/proxpass \
   -e PROXPASS_ADMIN_KEY="$(cat ~/.ssh/id_ed25519.pub)" \
   ghcr.io/eun/proxpass:latest
+```
 
-# Connect as admin and pick a guest interactively.
-# Any login name works with an admin key; "admin" is just the canonical one.
+**2. Add a Proxmox instance.** Nothing is discovered until proxpass knows where
+to look, so this has to come before you connect.
+
+```bash
+ssh -p 2222 admin@localhost instance add \
+  --url https://pve:8006 \
+  --token-id "user@pam!token" \
+  --token-secret "uuid"
+```
+
+The Proxmox host must be reachable now: `instance add` calls the API to learn
+the node name, and fails if it cannot. Consoles use the termproxy WebSocket by
+default — add `--console-transport ssh` to use `pct enter` / `qm terminal`
+instead. Discovery then fills in the guest list; `ssh -p 2222 admin@localhost
+guest ls` shows it.
+
+**3. Connect and pick a guest.** With no command, proxpass opens the
+[picker](#the-guest-picker):
+
+```bash
 ssh -p 2222 admin@localhost
 ```
+
+**4. Connect straight to a guest** by putting its identifier in the login name:
+
+```bash
+ssh -p 2222 ct100@localhost          # type + VMID
+ssh -p 2222 100@localhost            # VMID alone
+ssh -p 2222 webserver@localhost      # guest name
+ssh -p 2222 ct101@pve1@localhost     # instance-qualified, when a name is ambiguous
+```
+
+> **The login name is the guest you want, not who you are.** Your key
+> identifies you; the login name only says where to land. So use **`admin`**
+> for the CLI and the picker — it is reserved, along with every configured
+> client name, and always browses even if a guest happens to share it. Any
+> other name is resolved as a guest first, which means `ssh myguest@localhost
+> guest ls` runs `guest ls` *inside that guest* rather than in proxpass.
 
 ## The guest picker
 
