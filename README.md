@@ -70,6 +70,11 @@ default — add `--console-transport ssh` to use `pct enter` / `qm terminal`
 instead. Discovery then fills in the guest list; `ssh -p 2222 admin@localhost
 guest ls` shows it.
 
+Consoles work at this point. [File transfer](#file-transfer-with-scp-and-sftp)
+additionally needs the [proxpass SSH key](#the-proxmox-ssh-key) installed on
+the node. On a default termproxy instance nothing checks that for you, so
+install it now rather than discovering it at your first `scp`.
+
 **3. Connect and pick a guest.** With no command, proxpass opens the
 [picker](#the-guest-picker):
 
@@ -528,6 +533,19 @@ already exists.
 
 ### File transfer with scp and sftp
 
+> **Prerequisite: install the proxpass SSH key on the Proxmox node first.**
+> SFTP and `scp` reach a container *through* its node, so they do not work
+> until proxpass can log in to that node — regardless of
+> `--console-transport`, and even for an instance whose consoles work fine
+> over termproxy. Append the key's public half to `~/.ssh/authorized_keys` for
+> the user in `--ssh-user` (`root` by default) on each node; see
+> [The Proxmox SSH key](#the-proxmox-ssh-key) for how to read it.
+>
+> Only an `ssh` instance tells you when the key is missing: `instance add`
+> warns, and `instance inspect` re-checks. A **termproxy** instance reports
+> neither, because both are console checks — so there the first sign is a
+> transfer failing. Installing the key is what fixes it either way.
+
 Files can be copied into and out of a **container** by naming the guest as the
 login name:
 
@@ -551,7 +569,7 @@ Two limits worth knowing:
 | Not supported | Why |
 |---|---|
 | Virtual machines | A VM has no namespace to enter. Reaching its disk means the guest agent, whose write endpoint truncates at 60 KiB and cannot append. |
-| A node proxpass cannot log in to | The transfer runs commands on the node. Install the public key there — `instance inspect` reports whether it worked. |
+| A node proxpass cannot log in to | The transfer runs commands on the node, so the key above is what enables it. |
 
 Note that `--console-transport` is **not** one of these: it selects how a
 *console* is attached and has nothing to do with file transfer. A termproxy
