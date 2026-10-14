@@ -22,6 +22,11 @@ const (
 	// testGrantee is the client used wherever a test needs a subject to
 	// grant something to, as distinct from testClientName.
 	testGrantee = "bob"
+	// testClientUpper is testClientName in another case, for the tests
+	// about names that differ only that way.
+	testClientUpper = "Alice"
+	testGroupName   = "ops"
+	testNodeName    = "rome"
 )
 
 // newTestRepo returns a repository for the backend under test.
@@ -392,7 +397,7 @@ func TestGroupAccessRules(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a group
-	grp := &models.Group{Name: "ops", ClientIDs: []int64{}}
+	grp := &models.Group{Name: testGroupName, ClientIDs: []int64{}}
 	if err := repo.AddGroup(ctx, grp); err != nil {
 		t.Fatal(err)
 	}
@@ -700,6 +705,9 @@ func TestSessionTokenRoundTrip(t *testing.T) {
 	ctx := t.Context()
 	now := time.Now()
 
+	// Spelled out rather than using testClientName: the API-session round
+	// trip below is otherwise structurally identical, and dupl is right
+	// that two tests proving different things should not be the same text.
 	want := &models.SessionIdentity{
 		LoginName: "tobias", IdentityName: "alice", ClientID: 42,
 	}

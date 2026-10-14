@@ -110,6 +110,13 @@ func open(backend Backend, dsn string) (Repository, error) {
 // that opened both backends would otherwise run one's migrations against the
 // other.
 func migrate(database *sql.DB, d *dialect) error {
+	// Before anything else: names that differ only by case cannot be made
+	// unique, and the constraint error goose would report does not say
+	// which ones. See checkNameCollisions.
+	if err := checkNameCollisions(context.Background(), database); err != nil {
+		return err
+	}
+
 	goose.SetBaseFS(migrationsFS)
 	if err := goose.SetDialect(d.goose); err != nil {
 		return fmt.Errorf("goose set dialect: %w", err)
@@ -431,7 +438,12 @@ func (r *sqlRepo) GetClientByName(ctx context.Context, name string) (*models.Cli
 	c := &models.Client{}
 	var keysStr, groupsStr string
 	err := r.queryRow(ctx,
-		"SELECT id, name, public_keys, group_ids FROM clients WHERE name = ?", name).
+		// lower(name) rather than name, matching the unique index added in
+		// migration 00010 -- so this uses that index rather than scanning,
+		// and so a client is found by whatever case the caller typed. The
+		// index is what makes the answer single: before it, two rows could
+		// match and the row returned would depend on scan order.
+		"SELECT id, name, public_keys, group_ids FROM clients WHERE lower(name) = lower(?)", name).
 		Scan(&c.ID, &c.Name, &keysStr, &groupsStr)
 	if err != nil {
 		return nil, err

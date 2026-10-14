@@ -818,6 +818,36 @@ proxpass/
     └── testenv/           # Test infrastructure & mocks
 ```
 
+## Names
+
+Clients, groups and instances are referred to by name, and **names are
+matched without regard to case**: an instance added as `rome` is reached as
+`ROME@proxpass`, removed with `instance rm Rome`, and granted with
+`access grant --instance RoMe`. The spelling you created it with is what
+gets stored and shown.
+
+Uniqueness ignores case too, so `alice` and `Alice` cannot both be clients.
+That is what makes the matching above answerable: with both present there
+would be no single client the name refers to, and the one you got would
+depend on row order.
+
+> **Upgrading:** a database created before this could contain both
+> spellings, and proxpass will refuse to start rather than guess, naming the
+> pair:
+>
+> ```
+> names must be unique ignoring case, and these are not:
+>   client names "Alice" and "alice" differ only by case
+> ```
+>
+> Rename or remove one of each pair with the previous version, then upgrade.
+> They are not merged automatically: each may have its own keys, memberships
+> and access rules, and there is no way to know which was meant.
+
+The one exception is `admin`, which is reserved in any case — `ADMIN`,
+`Admin` and `admin` all mean the administrator's login, and no client may
+be created with that name.
+
 ## Access Control
 
 Access to a **guest** is checked in order:

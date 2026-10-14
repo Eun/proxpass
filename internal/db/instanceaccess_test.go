@@ -106,7 +106,7 @@ func TestGroupInstanceAccessRules(t *testing.T) {
 	repo := newTestRepo(t)
 	ctx := context.Background()
 
-	g := &models.Group{Name: "ops", ClientIDs: []int64{}}
+	g := &models.Group{Name: testGroupName, ClientIDs: []int64{}}
 	if err := repo.AddGroup(ctx, g); err != nil {
 		t.Fatal(err)
 	}

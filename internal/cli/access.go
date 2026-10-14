@@ -395,8 +395,10 @@ func findGroupByName(
 	if err != nil {
 		return nil, err
 	}
+	// Case-insensitive; see resolveSubject in policy.go for why this is
+	// safe only now that names are unique ignoring case.
 	for _, g := range groups {
-		if g.Name == name {
+		if strings.EqualFold(g.Name, name) {
 			return g, nil
 		}
 	}
