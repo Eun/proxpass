@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strconv"
 
 	"proxpass/internal/api"
@@ -121,18 +120,6 @@ func (d *APIDirectory) Connect(ctx context.Context, guestID int64) (*ConnectInfo
 		Instance: instanceFromAPI(&info.Instance),
 		SSHKey:   instanceSSHKey(&info.Instance),
 	}, nil
-}
-
-// IsLoginNameReserved asks about one name.
-func (d *APIDirectory) IsLoginNameReserved(ctx context.Context, name string) (bool, error) {
-	var out struct {
-		Reserved bool `json:"reserved"`
-	}
-	path := "/session/login-name-reserved?name=" + url.QueryEscape(name)
-	if err := d.Client.get(ctx, path, &out); err != nil {
-		return false, fmt.Errorf("checking login name: %w", err)
-	}
-	return out.Reserved, nil
 }
 
 // PublicEndpoint returns the configured endpoint, or "" when unset.

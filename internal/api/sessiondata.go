@@ -101,34 +101,20 @@ func (h *SessionHandler) ConnectSessionGuest(
 
 // IsLoginNameReserved reports whether a login name means "browse".
 //
-// Answers about one name rather than returning the list: the caller already
-// knows the name it is asking about, so this discloses nothing, while the
-// list would tell every client who else exists.
+// Only the administrator's name is, and the session decides that for itself
+// without asking (session.isReservedLoginName). The endpoint remains so an
+// older session binary keeps working against a newer server; it no longer
+// consults the client list, so a client name is now reported as ordinary
+// and resolves to the guest it names.
 func (h *SessionHandler) IsLoginNameReserved(
 	ctx context.Context, request IsLoginNameReservedRequestObject,
 ) (IsLoginNameReservedResponseObject, error) {
 	if _, err := h.callerIdentity(ctx); err != nil {
 		return reservedAuthFailure(err)
 	}
-
-	name := request.Params.Name
-	if strings.EqualFold(name, AdminUser) {
-		return IsLoginNameReserved200JSONResponse{Reserved: true}, nil
-	}
-
-	// Every configured client name is reserved, not only the caller's own:
-	// what a name means must not depend on who is asking, or the same
-	// command would do different things for different callers.
-	clients, err := h.repo.ListClients(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, c := range clients {
-		if strings.EqualFold(c.Name, name) {
-			return IsLoginNameReserved200JSONResponse{Reserved: true}, nil
-		}
-	}
-	return IsLoginNameReserved200JSONResponse{Reserved: false}, nil
+	return IsLoginNameReserved200JSONResponse{
+		Reserved: strings.EqualFold(request.Params.Name, AdminUser),
+	}, nil
 }
 
 // GetPublicEndpoint returns the hostname clients use to reach this proxpass.

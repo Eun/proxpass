@@ -30,10 +30,6 @@ type Directory interface {
 	// exist, so that ids cannot be used to enumerate the cluster.
 	Connect(ctx context.Context, guestID int64) (*ConnectInfo, error)
 
-	// IsLoginNameReserved reports whether a login name means "browse"
-	// rather than naming a guest.
-	IsLoginNameReserved(ctx context.Context, name string) (bool, error)
-
 	// PublicEndpoint is the hostname clients use to reach this proxpass,
 	// shown in the status bar. Empty when unset, which is not an error.
 	PublicEndpoint(ctx context.Context) (string, error)

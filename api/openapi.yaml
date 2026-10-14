@@ -192,14 +192,15 @@ paths:
       tags: [session]
       summary: Whether a login name means "browse" rather than "connect".
       description: |
-        The administrator's name and every configured client name are
-        reserved, so `ssh alice@host` opens the picker instead of looking for
-        a guest called "alice".
+        Only the administrator's name is reserved, so `ssh admin@host` opens
+        the picker rather than looking for a guest called "admin". Every
+        other name -- including a client's own -- resolves to the guest that
+        bears it.
 
-        Asked one name at a time on purpose. The session has already been
-        told the name by whoever typed it, so answering about that one leaks
-        nothing -- whereas returning the list would tell every client who
-        else exists.
+        Retained for compatibility: the session now answers this for itself
+        and no longer calls the endpoint. A client name used to be reserved
+        too, which made `ssh web@host` open a picker for everyone the moment
+        a client was called "web".
       operationId: isLoginNameReserved
       parameters:
         - name: name

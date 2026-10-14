@@ -100,10 +100,9 @@ func Run(ctx context.Context, d *Deps) int {
 	//
 	// The login name is what decides, and it has to be: a command carries no
 	// other way to say which guest it is for. proxpass's own CLI stays
-	// reachable under any name that is not a guest -- which includes the
-	// administrator's name and every configured client name, because
-	// isReservedLoginName treats those as "browse" regardless of whether a
-	// guest shares the name.
+	// reachable under any name that is not a guest, and under the
+	// administrator's name whatever happens, since isReservedLoginName keeps
+	// that one as "browse" even when a guest shares it.
 	if guest, ok := d.namesAGuest(ctx); ok {
 		return d.runGuestCommand(ctx, guest, cmd)
 	}

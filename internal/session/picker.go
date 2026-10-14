@@ -13,22 +13,35 @@ import (
 // errQuit signals that the user declined to pick a guest.
 var errQuit = errors.New("quit")
 
-// reservedLoginNames are login names that must never be treated as a guest
-// identifier, whatever a guest happens to be called.
+// isReservedLoginName reports whether a login name must never be treated as
+// a guest identifier, whatever a guest happens to be called.
 //
-// A guest name is not under proxpass's control -- it comes from Proxmox
-// discovery -- so a guest called "admin" would otherwise hijack the
-// documented browse login. A client's own name is reserved for the same
-// reason: "ssh alice@host" must keep meaning "log in as alice and browse",
-// not "connect to a machine someone named alice".
-func (d *Deps) isReservedLoginName(ctx context.Context, name string) (bool, error) {
-	if strings.EqualFold(name, AdminUser) {
-		return true, nil
-	}
-	// Any configured client name is reserved, not just this session's own:
-	// the set of names that mean "browse" must not depend on who is asking,
-	// or the same command would do different things for different callers.
-	return d.Dir.IsLoginNameReserved(ctx, name)
+// Exactly one name is: the administrator's. Guest names come from Proxmox
+// discovery and are not under proxpass's control, so without this a guest
+// called "admin" would take the one login that is guaranteed to browse.
+//
+// Client names used to be reserved too, on the reasoning that "ssh
+// alice@host" should keep meaning "log in as alice and browse". That is
+// withdrawn, for two reasons.
+//
+// It did not hold. The login name is a REQUEST, not a credential: identity
+// comes from the key that authenticated (see ResolveIdentityByKey), and
+// authorized-keys offers every key for every servable name. So alice can
+// browse under any name she likes -- "admin" always works -- and a guest
+// taking her name costs her nothing. Reserving it bought no access she did
+// not already have.
+//
+// And it was surprising in the direction that matters. A client called
+// "web" made "ssh web@host" open a picker for EVERYONE, including an
+// administrator who meant the container named "web", with nothing on screen
+// to explain why. Resolving the name to the guest it names is what the user
+// asked for; the picker is still one "ssh admin@host" away.
+//
+// This takes no context and cannot fail, which is the point: what a name
+// means no longer depends on the client list, so there is nothing to look
+// up and nothing to go wrong.
+func isReservedLoginName(name string) bool {
+	return strings.EqualFold(name, AdminUser)
 }
 
 // connectByLoginName connects to the guest named by the login name, or runs
@@ -76,13 +89,7 @@ func (d *Deps) connectByLoginName(ctx context.Context) int {
 	}
 
 	// A reserved name means "browse", even if a guest shares it.
-	reserved, err := d.isReservedLoginName(ctx, name)
-	if err != nil {
-		d.Logger.Printf("%s: %v", d.IdentityName, err)
-		d.errf("internal error")
-		return 1
-	}
-	if reserved {
+	if isReservedLoginName(name) {
 		return d.runPicker(ctx)
 	}
 
