@@ -65,13 +65,25 @@ type Size struct {
 	Height int
 }
 
-// Proxier attaches a terminal to a guest console.
+// Proxier attaches a terminal to a guest console or to a Proxmox node.
 type Proxier interface {
 	// sshKey is the PEM private key for inst's Proxmox host, empty for a
 	// termproxy instance which needs none. It is passed alongside inst
 	// rather than on it because there is ONE key for the whole deployment;
 	// the API reads it per connection and hands it over here.
 	Connect(term *Terminal, guest *models.Guest, inst *models.ProxmoxInstance, sshKey string, logger *log.Logger) error
+
+	// ConnectNode attaches the terminal to a shell on the node itself.
+	//
+	// A separate method rather than Connect with a nil guest: every
+	// implementation would otherwise have to branch on that, and the one
+	// that forgot would dereference it. The two are different operations
+	// -- one enters a guest, the other does not -- and the type says so.
+	//
+	// sshKey is never empty here. A node is reachable only over SSH
+	// whatever the instance's console transport says, so there is no
+	// node equivalent of the termproxy path that needs no key.
+	ConnectNode(term *Terminal, inst *models.ProxmoxInstance, sshKey string, logger *log.Logger) error
 }
 
 // DefaultProxier dispatches to the termproxy WebSocket transport or the SSH
@@ -101,6 +113,21 @@ func (p DefaultProxier) Connect(
 		return connectTermProxy(term, guest, inst, logger, label)
 	}
 	return connectSSH(term, guest, inst, sshKey, logger, label)
+}
+
+// ConnectNode implements Proxier.
+//
+// No transport dispatch, deliberately. ConsoleTransport describes how a
+// GUEST console is attached; the node itself is reached over SSH either
+// way, and termproxy has no node equivalent -- its websocket URL names a
+// guest's vmid.
+func (p DefaultProxier) ConnectNode(
+	term *Terminal,
+	inst *models.ProxmoxInstance,
+	sshKey string,
+	logger *log.Logger,
+) error {
+	return connectNodeSSH(term, inst, sshKey, logger, nodeBarLabel(inst, p.PublicEndpoint))
 }
 
 // defaults applied when sshd did not report a usable terminal.

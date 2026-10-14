@@ -188,9 +188,20 @@ func (m *MockSSHServer) handleSession(ch gossh.Channel, reqs <-chan *gossh.Reque
 				_ = req.Reply(true, nil)
 			}
 			_, _ = fmt.Fprintf(ch, "[mock] interactive shell\r\n")
+			// Echo, and exit on Ctrl+D like a real login shell. Without
+			// that this never returns and a caller waiting for the
+			// session to end hangs -- the guest sessions below handle
+			// 0x04 for the same reason.
 			buf := make([]byte, 1024)
+		shellLoop:
 			for {
 				n, err := ch.Read(buf)
+				for _, b := range buf[:n] {
+					if b == 0x04 {
+						_, _ = fmt.Fprintf(ch, "\r\nlogout\r\n")
+						break shellLoop
+					}
+				}
 				if n > 0 {
 					_, _ = ch.Write(buf[:n])
 				}
@@ -390,10 +401,19 @@ func (p *MockProxier) SessionsSnapshot() []MockProxySession {
 }
 
 // MockProxySession records a proxy session that was requested.
+//
+// A node shell is recorded here too, with the guest fields left zero and
+// IsNode set. One list rather than two, so a test asserting "exactly one
+// session, and it was X" cannot pass by connecting to the other kind.
 type MockProxySession struct {
 	GuestName string
 	GuestType models.GuestType
 	ProxmoxID int
+
+	// IsNode distinguishes a shell on the Proxmox node from a guest
+	// console. Without it a node session and a guest whose name happened
+	// to be empty would be indistinguishable.
+	IsNode bool
 	// InstanceName and InstanceID identify WHICH Proxmox instance the
 	// guest was reached on. A VMID is unique per instance but not across
 	// them, so these are the only way a test can tell "ct100 on rome"
@@ -423,20 +443,7 @@ func (p *MockProxier) Connect(
 
 	_, _ = fmt.Fprintf(term.Out, "[mock proxy] connected to %s (%s %d) on %s\r\n",
 		guest.Name, guest.Type, guest.ProxmoxID, inst.Name)
-
-	// Echo input back until the terminal closes (simulates a short session).
-	buf := make([]byte, 256)
-	for {
-		n, err := term.In.Read(buf)
-		if n > 0 {
-			if _, writeErr := term.Out.Write(buf[:n]); writeErr != nil {
-				break
-			}
-		}
-		if err != nil {
-			break
-		}
-	}
+	echoUntilClosed(term)
 	return nil
 }
 
@@ -530,6 +537,44 @@ func (p *MockProxier) RecordedSessions() []MockProxySession {
 	out := make([]MockProxySession, len(p.Sessions))
 	copy(out, p.Sessions)
 	return out
+}
+
+// echoUntilClosed echoes terminal input back until the stream ends, which
+// simulates a short interactive session.
+func echoUntilClosed(term *console.Terminal) {
+	buf := make([]byte, 256)
+	for {
+		n, err := term.In.Read(buf)
+		if n > 0 {
+			if _, writeErr := term.Out.Write(buf[:n]); writeErr != nil {
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// ConnectNode implements console.Proxier. It records the session, writes a
+// mock banner and echoes terminal input, like Connect.
+func (p *MockProxier) ConnectNode(
+	term *console.Terminal,
+	inst *models.ProxmoxInstance,
+	_ string,
+	_ *log.Logger,
+) error {
+	p.mu.Lock()
+	p.Sessions = append(p.Sessions, MockProxySession{
+		IsNode:       true,
+		InstanceName: inst.Name,
+		InstanceID:   inst.ID,
+	})
+	p.mu.Unlock()
+
+	_, _ = fmt.Fprintf(term.Out, "[mock proxy] connected to node %s\r\n", inst.Name)
+	echoUntilClosed(term)
+	return nil
 }
 
 // Compile-time check.

@@ -96,6 +96,22 @@ func (d *Deps) connectByLoginName(ctx context.Context) int {
 		return d.runPicker(ctx)
 	}
 
+	// A node this session may reach wins over a guest of the same name.
+	//
+	// Checked before guest resolution because the two are not symmetrical:
+	// a shadowed GUEST is still reachable, as "ct100@rome", while a node
+	// has no such qualified form -- resolving the guest first would make
+	// the node unreachable entirely. The instance therefore wins, and
+	// nothing becomes unreachable either way.
+	//
+	// Scoped to accessible instances, like everything else here: a node
+	// the caller has no grant for is not a node at all, so it falls
+	// through to guest resolution and then the picker on exactly the path
+	// a name that matches nothing takes.
+	if inst, ok := d.namesANode(ctx, name); ok {
+		return d.connectNodeChecked(ctx, inst)
+	}
+
 	// Only the guests this session may reach, so that a name it may not
 	// reach is simply "not a guest" -- see the enumeration note above.
 	guests, err := d.accessibleGuests(ctx)

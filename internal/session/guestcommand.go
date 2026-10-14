@@ -123,6 +123,104 @@ func (d *Deps) runGuestCommand(ctx context.Context, guest *models.Guest, command
 	return code
 }
 
+// runNodeCommand runs cmd on the Proxmox node named by the login name.
+//
+// `ssh rome@host uptime' should behave like any other ssh: the command runs
+// on the node, its streams come back unchanged and its exit status becomes
+// ours.
+//
+// Simpler than the guest equivalent, because there is nothing to enter. A
+// guest command is wrapped in nsenter by way of guesthelper to cross into
+// the container's namespaces; here the node IS the destination, so the
+// command goes to its own sshd and the remote shell interprets it.
+func (d *Deps) runNodeCommand(ctx context.Context, inst *models.ProxmoxInstance, command string) int {
+	info, err := d.Dir.ConnectNode(ctx, inst.ID)
+	if err != nil {
+		if errors.Is(err, ErrAccessDenied) {
+			d.errf("access denied")
+			return 1
+		}
+		d.Logger.Printf("%s: connect node %s: %v", d.IdentityName, inst.Name, err)
+		d.errf("internal error")
+		return 1
+	}
+
+	runner, err := console.DialNode(info.Instance, info.SSHKey, d.Logger)
+	if err != nil {
+		d.Logger.Printf("%s: %v", d.IdentityName, err)
+		d.errf("cannot reach %s: %v", info.Instance.SSHHost, err)
+		return 1
+	}
+	defer func() { _ = runner.Close() }()
+
+	code, err := runner.Exec(&console.ExecOptions{
+		Command: command,
+		// Mirror the client: a PTY only when they have one, so piped
+		// output stays byte-exact and an interactive command still gets
+		// its terminal.
+		PTY:     d.Terminal.Raw,
+		Term:    d.Terminal.Term,
+		Width:   d.Terminal.Width,
+		Height:  d.Terminal.Height,
+		Resizes: d.Terminal.Resizes,
+		Stdin:   d.Terminal.In,
+		Stdout:  d.Terminal.Out,
+		Stderr:  d.Terminal.Err,
+	})
+	if err != nil {
+		d.Logger.Printf("%s: node command on %s: %v", d.IdentityName, inst.Name, err)
+		d.errf("%v", err)
+		return 1
+	}
+	return code
+}
+
+// namesANode reports whether the login name addresses a Proxmox node this
+// session may reach.
+//
+// Checked BEFORE namesAGuest, matching the order connectByLoginName uses,
+// so that `ssh rome@host uptime' and `ssh rome@host' reach the same place.
+// Were the two orders to differ, a name that is both a node and a guest
+// would mean one thing with a command and another without, which is the
+// kind of difference nobody discovers until it matters.
+//
+// Scoped to the instances this session may reach, exactly as guest
+// resolution is scoped to its guests: a node the caller has no grant for is
+// simply not a node, the whole string stays one identifier, and the
+// ordinary not-found path follows. Testing the name against every
+// configured instance would be an oracle on instance names.
+//
+// Deliberately a separate resolution from resolveLoginNameGuest rather than
+// a widening of it. That helper also serves SFTP, where a node means
+// something different -- the plain subsystem rather than guesthelper inside
+// a container -- so teaching it about nodes would change file transfer by
+// accident.
+func (d *Deps) namesANode(ctx context.Context, name string) (*models.ProxmoxInstance, bool) {
+	if name == "" || isReservedLoginName(name) {
+		return nil, false
+	}
+	// A node is named plainly. "x@rome" is the guest-on-instance form and
+	// is never a node, so it is not even looked up -- which also keeps a
+	// client legitimately called "tobias@corp" from being read as a node.
+	if strings.ContainsRune(name, '@') {
+		return nil, false
+	}
+	instances, err := d.Dir.AccessibleInstances(ctx)
+	if err != nil {
+		// Reported by the caller as an internal error only when nothing
+		// else matches; a node lookup failing must not stop a login name
+		// from resolving to a guest.
+		d.Logger.Printf("%s: listing instances: %v", d.IdentityName, err)
+		return nil, false
+	}
+	for _, inst := range instances {
+		if models.NamesEqual(inst.Name, name) {
+			return inst, true
+		}
+	}
+	return nil, false
+}
+
 // resolveLoginNameGuest resolves a login name to one reachable guest.
 //
 // The same resolution the console uses for "ssh ct100@host", via the same

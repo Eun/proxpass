@@ -873,11 +873,27 @@ to be reached as `<instance-name>@proxpass`. It is checked the same way,
 **minus the third step**: a node is reachable only when a client or group
 rule says so by name.
 
-> **Not yet connectable.** The rules are stored and enforced, and a session
-> can already ask which nodes it may reach, but `<instance-name>@proxpass`
-> does not open a shell yet — that is the next piece of work. Granting a
-> node today is recorded and will take effect when it lands; it does not
-> silently give anyone access in the meantime.
+```bash
+ssh pve1@proxpass            # a shell on the node
+ssh pve1@proxpass uptime     # one command on it
+```
+
+The shell is whatever login shell the configured `--ssh-user` has. A node is
+reached **only over SSH**, whatever `--console-transport` says: that setting
+decides how a *guest* console attaches and has no bearing on the node, so an
+instance with no `--ssh-host` cannot be opened as one.
+
+> **Name collisions: the node wins.** If an instance and a guest share a
+> name, `ssh rome@proxpass` reaches the **node**. The guest is still
+> reachable as `ssh rome@rome@proxpass` — `<guest>@<instance>` — whereas a
+> node has no such qualified form, so resolving the guest first would make
+> the node unreachable altogether. Nothing becomes unreachable this way.
+>
+> `admin` remains reserved: an instance called `admin` does not take the
+> administrator's login or CLI.
+
+File transfer to a node is not supported yet; `scp` and `sftp` still address
+guests only.
 
 The default policy is left out deliberately. It has no notion of a target —
 a client listed there reaches *anything* — and it is standing configuration,
