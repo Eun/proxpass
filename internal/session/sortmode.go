@@ -15,13 +15,58 @@ import (
 type sortMode int
 
 const (
-	sortByName sortMode = iota
+	// sortUnset is the state a freshly opened picker is in. It is the zero
+	// value, so a pickerState needs no explicit initialization.
+	//
+	// It exists because "opened sorted by name" and "cycled round to name"
+	// have to behave differently on the next Tab: the first press starts the
+	// walk at the head of the cycle, while a later one continues from where
+	// it is. Without a distinct state the two are the same value and the
+	// first Tab cannot be told from the third.
+	//
+	// It sorts and labels exactly as sortByName, so it is invisible to the
+	// user -- the only thing it changes is where Tab goes next.
+	sortUnset sortMode = iota
+	sortByName
 	sortByID
 	sortByStatus
 	sortByHost
-	// sortModeCount bounds the cycle. Keep it last.
+	// sortModeCount bounds the mode range. Keep it last.
 	sortModeCount
 )
+
+// sortCycle is the order Tab walks the columns in.
+//
+// Tab starts at id, then follows the header left to right: a user who has
+// pressed the key once is being shown where it goes, and the columns they
+// can see are easier to predict than an order that exists only in source.
+// The picker still OPENS on name, which is what a human scanning a list of
+// guests wants first; id is where the cycle begins, not where it rests.
+//
+// From a freshly opened picker the full sequence is therefore
+//
+//	name (open) → id → name → status → host → id → ...
+//
+// and every column is reachable.
+var sortCycle = [...]sortMode{
+	sortByID,
+	sortByName,
+	sortByStatus,
+	sortByHost,
+}
+
+// cycleIndex is the position of m in sortCycle.
+//
+// sortUnset is deliberately absent from the cycle, and lands on the -1 that
+// makes next() return the head: that is what sends the first Tab to id.
+func (m sortMode) cycleIndex() int {
+	for i, mode := range sortCycle {
+		if mode == m {
+			return i
+		}
+	}
+	return -1
+}
 
 // label names the mode in the status line.
 //
@@ -35,7 +80,7 @@ func (m sortMode) label() string {
 		return "status"
 	case sortByHost:
 		return "host"
-	case sortByName, sortModeCount:
+	case sortUnset, sortByName, sortModeCount:
 		return defaultSortLabel
 	default:
 		return defaultSortLabel
@@ -46,14 +91,23 @@ func (m sortMode) label() string {
 // in.
 const defaultSortLabel = "name"
 
-// next returns the following mode, wrapping around.
+// next returns the following mode in sortCycle, wrapping around.
 func (m sortMode) next() sortMode {
-	return (m + 1) % sortModeCount
+	return sortCycle[(m.cycleIndex()+1)%len(sortCycle)]
 }
 
-// prev returns the preceding mode, wrapping around.
+// prev returns the preceding mode in sortCycle, wrapping around. It is the
+// exact inverse of next for every mode in the cycle, so Shift+Tab undoes a
+// Tab.
+//
+// From the opening state it goes to the cycle's LAST column rather than
+// stepping back from name's position, mirroring next: both start the walk at
+// an end of the cycle, forward from the head and backward from the tail.
 func (m sortMode) prev() sortMode {
-	return (m - 1 + sortModeCount) % sortModeCount
+	if m == sortUnset {
+		return sortCycle[len(sortCycle)-1]
+	}
+	return sortCycle[(m.cycleIndex()-1+len(sortCycle))%len(sortCycle)]
 }
 
 // sortRows orders rows in place according to mode.
@@ -86,8 +140,9 @@ func sortRows(rows []guestRow, mode sortMode) {
 			if a.instName != b.instName {
 				return a.instName < b.instName
 			}
-		case sortByName, sortModeCount:
-			// Name is the primary key below.
+		case sortUnset, sortByName, sortModeCount:
+			// Name is the primary key below. sortUnset is the freshly
+			// opened picker, which is sorted by name.
 		}
 		return lessByNameThenID(a, b)
 	})

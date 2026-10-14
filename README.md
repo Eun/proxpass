@@ -125,10 +125,22 @@ the header marks the active column and the status line names it:
 
 | Column | Order |
 | --- | --- |
-| `NAME` | alphabetical (the default) |
 | `ID` | numeric by VMID, so `ct99` comes before `ct118` |
+| `NAME` | alphabetical |
 | `STATUS` | running first, since those are the ones you can enter |
 | `HOST` | alphabetical by Proxmox host |
+
+`Tab` walks those in the order the header prints them, left to right. The
+picker **opens** sorted by `NAME`, which is what you want when scanning a
+list of guests, and the first `Tab` starts the walk at `ID` rather than
+continuing from where the list happens to rest:
+
+```
+name (open) → id → name → status → host → id → ...
+```
+
+`Shift+Tab` is the exact inverse, and from a freshly opened picker it starts
+at the other end of the cycle, `HOST`.
 
 Tab is used rather than a letter because every printable key goes into the
 filter — binding `s` would make it impossible to type a guest called
