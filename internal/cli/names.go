@@ -2,9 +2,9 @@ package cli
 
 import (
 	"fmt"
-	"strings"
 
 	"proxpass/internal/api"
+	"proxpass/internal/models"
 )
 
 // ReservedAdminName is the login name that identifies an administrator. It
@@ -27,7 +27,12 @@ func ValidateClientName(name string) error {
 	if name == "" {
 		return fmt.Errorf("client name must not be empty")
 	}
-	if strings.EqualFold(name, ReservedAdminName) {
+	// models.NamesEqual, not strings.EqualFold: the name is folded with
+	// models.FoldName when stored, and the two do not agree on every rune.
+	// "admİn" is EqualFold-different from "admin" but folds to exactly it,
+	// so an EqualFold check here would accept a name that lands on the
+	// administrator's.
+	if models.NamesEqual(name, ReservedAdminName) {
 		return fmt.Errorf("client name %q is reserved for administrators", name)
 	}
 	if len(name) > api.MaxLoginNameLen {

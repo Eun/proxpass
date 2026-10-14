@@ -301,7 +301,7 @@ func (s *Server) handleUserByName(w http.ResponseWriter, r *http.Request) {
 	// aliases deliberately SHARE a uid and so must not be mistaken for the
 	// administrator by anything keying off process ownership. Serving the
 	// reserved name from the alias pool was exactly that mistake.
-	if strings.EqualFold(name, AdminUser) {
+	if models.NamesEqual(name, AdminUser) {
 		s.writeJSON(w, s.ids.adminUserAs(name))
 		return
 	}
@@ -423,7 +423,7 @@ func (s *Server) handleGroupByName(w http.ResponseWriter, r *http.Request) {
 	// from the caller's identity, never from a gid -- and the shared and
 	// admin groups are not enumerable at all (see SharedGroup).
 	for i := range groups {
-		if strings.EqualFold(groups[i].Name, name) {
+		if models.NamesEqual(groups[i].Name, name) {
 			s.writeJSON(w, groups[i])
 			return
 		}

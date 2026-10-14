@@ -6,8 +6,6 @@ import (
 
 	ucli "github.com/urfave/cli/v3"
 
-	"strings"
-
 	"proxpass/internal/models"
 )
 
@@ -186,7 +184,7 @@ func findInstanceByName(ctx context.Context, deps *Deps, name string) (*models.P
 		return nil, err
 	}
 	for _, inst := range instances {
-		if strings.EqualFold(inst.Name, name) {
+		if models.NamesEqual(inst.Name, name) {
 			return inst, nil
 		}
 	}

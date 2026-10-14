@@ -101,13 +101,15 @@ func clientCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI comma
 						// Case-insensitive, like every other name the CLI
 						// accepts: an administrator who typed the name once
 						// should not have to remember how they capitalized
-						// it. Only the lookup is relaxed -- the stored name
-						// keeps whatever case it was created with.
-						if strings.EqualFold(c.Name, name) {
+						// it. Names are stored folded (models.FoldName), so
+						// the confirmation below reports the stored name
+						// rather than the typed one -- they can differ, and
+						// the stored one is what was actually removed.
+						if models.NamesEqual(c.Name, name) {
 							if err := deps.Repo.RemoveClient(ctx, c.ID); err != nil {
 								return err
 							}
-							fmt.Fprintf(deps.Out, "Client %q removed.\n", name)
+							fmt.Fprintf(deps.Out, "Client %q removed.\n", c.Name)
 							return nil
 						}
 					}
@@ -136,11 +138,11 @@ func clientCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI comma
 					}
 					byName := make(map[string]*models.Client, len(clients))
 					for _, c := range clients {
-						byName[c.Name] = c
+						byName[models.FoldName(c.Name)] = c
 					}
 					var found []*models.Client
 					for _, name := range cmd.Args().Slice() {
-						c, ok := byName[name]
+						c, ok := byName[models.FoldName(name)]
 						if !ok {
 							return fmt.Errorf("client %q not found", name)
 						}

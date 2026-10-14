@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"proxpass/internal/models"
 
@@ -214,7 +213,7 @@ func resolveInstanceNames(
 	for _, name := range names {
 		var match *models.ProxmoxInstance
 		for _, inst := range instances {
-			if strings.EqualFold(inst.Name, name) {
+			if models.NamesEqual(inst.Name, name) {
 				match = inst
 				break
 			}
@@ -398,7 +397,7 @@ func findGroupByName(
 	// Case-insensitive; see resolveSubject in policy.go for why this is
 	// safe only now that names are unique ignoring case.
 	for _, g := range groups {
-		if strings.EqualFold(g.Name, name) {
+		if models.NamesEqual(g.Name, name) {
 			return g, nil
 		}
 	}

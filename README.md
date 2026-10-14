@@ -823,26 +823,36 @@ proxpass/
 Clients, groups and instances are referred to by name, and **names are
 matched without regard to case**: an instance added as `rome` is reached as
 `ROME@proxpass`, removed with `instance rm Rome`, and granted with
-`access grant --instance RoMe`. The spelling you created it with is what
-gets stored and shown.
+`access grant --instance RoMe`.
 
-Uniqueness ignores case too, so `alice` and `Alice` cannot both be clients.
-That is what makes the matching above answerable: with both present there
-would be no single client the name refers to, and the one you got would
-depend on row order.
+**Names are stored in lower case.** Whatever you type is folded when it is
+written, so `instance add --name ROME` creates `rome`, and that is the
+spelling `instance ls` shows, the session log records, and the picker
+displays. Case is a convenience when typing a name, not something proxpass
+remembers about it.
 
-> **Upgrading:** a database created before this could contain both
-> spellings, and proxpass will refuse to start rather than guess, naming the
-> pair:
+Uniqueness follows from the same rule, so `alice` and `Alice` cannot both be
+clients. That is what makes the matching above answerable: with both present
+there would be no single client the name refers to, and the one you got
+would depend on row order.
+
+> **Upgrading:** names written by an older version are folded automatically
+> when the database is opened, so `Alice` becomes `alice` with its keys,
+> memberships and access rules intact — those are held by row id, which does
+> not change.
+>
+> The one case that cannot be handled automatically is a database that
+> already contains *both* spellings. They cannot both become `alice`, so
+> proxpass refuses to start rather than guess, naming the pair:
 >
 > ```
 > names must be unique ignoring case, and these are not:
->   client names "Alice" and "alice" differ only by case
+>   client names "Alice" and "alice" differ only by case (all are "alice")
 > ```
 >
 > Rename or remove one of each pair with the previous version, then upgrade.
-> They are not merged automatically: each may have its own keys, memberships
-> and access rules, and there is no way to know which was meant.
+> They are not merged: each may have its own keys, memberships and access
+> rules, and there is no way to know which was meant.
 
 The one exception is `admin`, which is reserved in any case — `ADMIN`,
 `Admin` and `admin` all mean the administrator's login, and no client may

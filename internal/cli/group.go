@@ -7,8 +7,6 @@ import (
 
 	"proxpass/internal/models"
 
-	"strings"
-
 	ucli "github.com/urfave/cli/v3"
 )
 
@@ -77,10 +75,14 @@ func groupCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI comman
 						}
 						clientMap := make(map[string]int64)
 						for _, c := range clients {
-							clientMap[c.Name] = c.ID
+							// Keyed by the folded name, and looked up the same way
+							// below, so `--member ALICE' finds the client stored
+							// as `alice'. A case-sensitive key here was a silent
+							// bug: it decides the client_ids written to the group.
+							clientMap[models.FoldName(c.Name)] = c.ID
 						}
 						for _, m := range memberNames {
-							id, ok := clientMap[m]
+							id, ok := clientMap[models.FoldName(m)]
 							if !ok {
 								return fmt.Errorf("client %q not found", m)
 							}
@@ -110,11 +112,11 @@ func groupCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI comman
 					}
 					for _, g := range groups {
 						// Case-insensitive; see the note in `client rm'.
-						if strings.EqualFold(g.Name, name) {
+						if models.NamesEqual(g.Name, name) {
 							if err := deps.Repo.RemoveGroup(ctx, g.ID); err != nil {
 								return err
 							}
-							fmt.Fprintf(deps.Out, "Group %q removed.\n", name)
+							fmt.Fprintf(deps.Out, "Group %q removed.\n", g.Name)
 							return nil
 						}
 					}
@@ -143,11 +145,11 @@ func groupCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI comman
 					}
 					byName := make(map[string]*models.Group, len(groups))
 					for _, g := range groups {
-						byName[g.Name] = g
+						byName[models.FoldName(g.Name)] = g
 					}
 					var found []*models.Group
 					for _, name := range cmd.Args().Slice() {
-						g, ok := byName[name]
+						g, ok := byName[models.FoldName(name)]
 						if !ok {
 							return fmt.Errorf("group %q not found", name)
 						}

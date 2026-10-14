@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"proxpass/internal/cli"
+	"proxpass/internal/models"
 )
 
 // errQuit signals that the user declined to pick a guest.
@@ -41,7 +42,9 @@ var errQuit = errors.New("quit")
 // means no longer depends on the client list, so there is nothing to look
 // up and nothing to go wrong.
 func isReservedLoginName(name string) bool {
-	return strings.EqualFold(name, AdminUser)
+	// models.NamesEqual rather than strings.EqualFold, matching how the name
+	// is folded when stored: see models.FoldName.
+	return models.NamesEqual(name, AdminUser)
 }
 
 // connectByLoginName connects to the guest named by the login name, or runs

@@ -7,8 +7,6 @@ import (
 
 	"proxpass/internal/models"
 
-	"strings"
-
 	ucli "github.com/urfave/cli/v3"
 )
 
@@ -153,11 +151,12 @@ func resolveSubject(ctx context.Context, deps *Deps, clientName, groupName strin
 		return "", 0, err
 	}
 	// Case-insensitive, like every other name the CLI accepts. Safe only
-	// because names are now unique ignoring case (migration 00010): while
-	// "ops" and "Ops" could both exist, this scan would have attached the
-	// policy to whichever the list happened to yield first.
+	// because names are folded on the way in (models.FoldName) and so are
+	// unique ignoring case: while "ops" and "Ops" could both exist, this
+	// scan would have attached the policy to whichever the list happened to
+	// yield first.
 	for _, g := range groups {
-		if strings.EqualFold(g.Name, groupName) {
+		if models.NamesEqual(g.Name, groupName) {
 			return models.RuleGroup, g.ID, nil
 		}
 	}
