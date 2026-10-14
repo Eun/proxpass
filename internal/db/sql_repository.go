@@ -249,6 +249,16 @@ func (r *sqlRepo) RemoveProxmoxInstance(ctx context.Context, id int64) error {
 		return err
 	}
 
+	// And any rule granting access to the instance ITSELF, for the same
+	// reason the guest rules go above: proxmox_instances.id is
+	// AUTOINCREMENT and instance_access_rules has no foreign key, so a rule
+	// left behind would start granting a node shell to whoever later
+	// occupied this row id.
+	if _, err := tx.ExecContext(ctx,
+		r.d.rebind("DELETE FROM instance_access_rules WHERE instance_id = ?"), id); err != nil {
+		return err
+	}
+
 	// Finally remove the instance.
 	if _, err := tx.ExecContext(ctx, r.d.rebind("DELETE FROM proxmox_instances WHERE id = ?"), id); err != nil {
 		return err
@@ -537,6 +547,89 @@ func (r *sqlRepo) RevokeGroupAccess(ctx context.Context, groupID, guestID int64)
 		"DELETE FROM access_rules WHERE type = ? AND subject_id = ? AND guest_id = ?",
 		models.RuleGroup, groupID, guestID)
 	return err
+}
+
+// --- Instance Access Rules ---
+
+// Instance rules are stored and queried exactly like guest rules, against a
+// different table and target column. The statements are built from those two
+// names rather than written out twice, so the two families cannot drift --
+// which matters here, because the thing they have in common is an access
+// decision.
+const (
+	instanceRuleTable = "instance_access_rules"
+	instanceRuleCol   = "instance_id"
+)
+
+func (r *sqlRepo) ListInstanceAccessRules(ctx context.Context) ([]*models.InstanceAccessRuleRow, error) {
+	rows, err := r.query(ctx, "SELECT id, type, subject_id, "+instanceRuleCol+
+		" FROM "+instanceRuleTable+" ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var list []*models.InstanceAccessRuleRow
+	for rows.Next() {
+		ar := &models.InstanceAccessRuleRow{}
+		var ruleType string
+		if err := rows.Scan(&ar.ID, &ruleType, &ar.SubjectID, &ar.InstanceID); err != nil {
+			return nil, err
+		}
+		ar.Type = models.RuleType(ruleType)
+		list = append(list, ar)
+	}
+	return list, rows.Err()
+}
+
+// grantInstanceAccess is the shared helper for the two instance grants.
+func (r *sqlRepo) grantInstanceAccess(
+	ctx context.Context, ruleType models.RuleType, subjectID int64, instanceIDs []int64,
+) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	stmt, err := tx.PrepareContext(ctx, r.d.rebind(
+		"INSERT INTO "+instanceRuleTable+" (type, subject_id, "+instanceRuleCol+
+			") VALUES (?, ?, ?) ON CONFLICT (type, subject_id, "+instanceRuleCol+
+			") DO NOTHING"))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stmt.Close() }()
+	for _, iid := range instanceIDs {
+		if _, err := stmt.ExecContext(ctx, ruleType, subjectID, iid); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (r *sqlRepo) GrantClientInstanceAccess(ctx context.Context, clientID int64, instanceIDs []int64) error {
+	return r.grantInstanceAccess(ctx, models.RuleClient, clientID, instanceIDs)
+}
+
+func (r *sqlRepo) GrantGroupInstanceAccess(ctx context.Context, groupID int64, instanceIDs []int64) error {
+	return r.grantInstanceAccess(ctx, models.RuleGroup, groupID, instanceIDs)
+}
+
+// revokeInstanceAccess deletes one rule, whatever its subject kind.
+func (r *sqlRepo) revokeInstanceAccess(
+	ctx context.Context, ruleType models.RuleType, subjectID, instanceID int64,
+) error {
+	_, err := r.exec(ctx, "DELETE FROM "+instanceRuleTable+
+		" WHERE type = ? AND subject_id = ? AND "+instanceRuleCol+" = ?",
+		ruleType, subjectID, instanceID)
+	return err
+}
+
+func (r *sqlRepo) RevokeClientInstanceAccess(ctx context.Context, clientID, instanceID int64) error {
+	return r.revokeInstanceAccess(ctx, models.RuleClient, clientID, instanceID)
+}
+
+func (r *sqlRepo) RevokeGroupInstanceAccess(ctx context.Context, groupID, instanceID int64) error {
+	return r.revokeInstanceAccess(ctx, models.RuleGroup, groupID, instanceID)
 }
 
 // --- Default Policy ---
@@ -840,6 +933,68 @@ func (r *sqlRepo) HasAccess(ctx context.Context, clientID, guestID int64) (bool,
 			if authGID == memberGID {
 				return true, nil
 			}
+		}
+	}
+
+	return false, nil
+}
+
+// HasInstanceAccess returns true if clientID is allowed to reach the Proxmox
+// node instanceID. Priority: explicit client rule > group rule.
+//
+// # Why the default policy is not consulted
+//
+// HasAccess has a third tier: a client named in default_policy reaches
+// anything. That tier does not look at its target at all -- it returns true
+// for any id, including one that names nothing -- so including it here would
+// mean every policy-covered client silently gained a shell on every node the
+// moment this table existed.
+//
+// That is not the same bargain as the guest tier. A default policy is
+// standing configuration, often set once and left; an administrator who ran
+// `policy add --client alice' months ago was saying something about guests,
+// because guests were the only thing it could be about. Reading it now as
+// consent to node access would put words in their mouth, and the grant it
+// would imply is the broadest one proxpass can give.
+//
+// So an instance is reachable only when somebody said so explicitly, with
+// `access grant --instance'. The cost is that a deployment relying on the
+// default policy has to name its nodes; that is the intended cost.
+func (r *sqlRepo) HasInstanceAccess(ctx context.Context, clientID, instanceID int64) (bool, error) {
+	// 1. Direct client rule
+	var exists int
+	err := r.queryRow(ctx,
+		"SELECT 1 FROM instance_access_rules WHERE type = ? AND subject_id = ? AND instance_id = ? LIMIT 1",
+		models.RuleClient, clientID, instanceID).Scan(&exists)
+	if err == nil {
+		return true, nil
+	}
+	if err != sql.ErrNoRows {
+		return false, err
+	}
+
+	// 2. Group rules — load the client's group memberships
+	var groupsJSON string
+	err = r.queryRow(ctx,
+		"SELECT group_ids FROM clients WHERE id = ?", clientID).Scan(&groupsJSON)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, err
+	}
+	var groupIDs []int64
+	_ = json.Unmarshal([]byte(groupsJSON), &groupIDs)
+
+	for _, gid := range groupIDs {
+		err = r.queryRow(ctx,
+			"SELECT 1 FROM instance_access_rules WHERE type = ? AND subject_id = ? AND instance_id = ? LIMIT 1",
+			models.RuleGroup, gid, instanceID).Scan(&exists)
+		if err == nil {
+			return true, nil
+		}
+		if err != sql.ErrNoRows {
+			return false, err
 		}
 	}
 

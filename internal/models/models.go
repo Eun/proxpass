@@ -101,6 +101,26 @@ type AccessRuleRow struct {
 	GuestID   int64    `json:"guest_id"`
 }
 
+// InstanceAccessRuleRow is an access rule whose target is a Proxmox node
+// rather than a guest, one instance per row.
+//
+// Kept apart from AccessRuleRow rather than given a nullable target, because
+// the two grant different things: a guest rule grants a console on one
+// machine, an instance rule grants a shell on the node that hosts many. They
+// are also stored in different tables, so a single type would have to carry
+// which one a row came from.
+//
+// Granting an instance does NOT grant its guests, and granting every guest
+// does not grant the node. Each rule says exactly what it says -- though an
+// administrator should know that a node shell can reach the guests on it by
+// other means, which is a property of the node, not of this rule.
+type InstanceAccessRuleRow struct {
+	ID         int64    `json:"id"`
+	Type       RuleType `json:"type"`
+	SubjectID  int64    `json:"subject_id"`
+	InstanceID int64    `json:"instance_id"`
+}
+
 type DefaultAccessPolicy struct {
 	AuthorizedClientIDs []int64 `json:"authorized_client_ids"`
 	AuthorizedGroupIDs  []int64 `json:"authorized_group_ids"`

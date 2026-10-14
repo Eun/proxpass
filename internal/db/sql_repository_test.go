@@ -19,6 +19,9 @@ const (
 	testClientName  = "alice"
 	testTokenID     = "user@pam!token"
 	testTokenSecret = "secret"
+	// testGrantee is the client used wherever a test needs a subject to
+	// grant something to, as distinct from testClientName.
+	testGrantee = "bob"
 )
 
 // newTestRepo returns a repository for the backend under test.
@@ -344,7 +347,7 @@ func TestAccessRules(t *testing.T) {
 	ctx := context.Background()
 
 	// Setup: client + guests
-	c := &models.Client{Name: "bob", PublicKeys: []string{"key1"}, GroupIDs: []int64{}}
+	c := &models.Client{Name: testGrantee, PublicKeys: []string{testKey}, GroupIDs: []int64{}}
 	if err := repo.AddClient(ctx, c); err != nil {
 		t.Fatal(err)
 	}
