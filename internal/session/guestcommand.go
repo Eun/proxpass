@@ -30,8 +30,7 @@ func (d *Deps) namesAGuest(ctx context.Context) (*models.Guest, bool) {
 	if name == "" {
 		return nil, false
 	}
-	reserved, err := d.isReservedLoginName(ctx, name)
-	if err != nil || reserved {
+	if isReservedLoginName(name) {
 		return nil, false
 	}
 	guest, err := d.resolveLoginNameGuest(ctx, name)

@@ -93,9 +93,9 @@ ssh -p 2222 ct101@pve1@localhost     # instance-qualified, when a name is ambigu
 
 > **The login name is the guest you want, not who you are.** Your key
 > identifies you; the login name only says where to land. So use **`admin`**
-> for the CLI and the picker — it is reserved, along with every configured
-> client name, and always browses even if a guest happens to share it. Any
-> other name is resolved as a guest first, which means `ssh myguest@localhost
+> for the CLI and the picker — it is the one reserved name, and always
+> browses even if a guest happens to share it. Every other name, including
+> your own, is resolved as a guest first, which means `ssh myguest@localhost
 > guest ls` runs `guest ls` *inside that guest* rather than in proxpass.
 
 ## The guest picker
@@ -708,9 +708,9 @@ There are two ways to name a guest: as the **login name**, or through
 > **The login name decides where a command runs.** `ssh ct100@host whoami`
 > runs `whoami` *inside* ct100, because the login name addresses that
 > container. proxpass's own CLI stays reachable under any name that is not a
-> guest — your client name, or the administrator's — so `ssh alice@host guest
-> ls` is unchanged. A client name and the administrator's name are reserved
-> even when a guest shares them.
+> guest, and under `admin` whatever happens — so `ssh admin@host guest ls` is
+> always the CLI. `admin` is the only name reserved that way: if a guest is
+> called `alice`, then `ssh alice@host guest ls` runs in *that guest*.
 
 ```bash
 # Interactive picker
@@ -765,9 +765,13 @@ Three limitations follow from it being a login name rather than an argument:
   guest that exists but is not yours is treated exactly like one that does
   not exist — you get the picker, not an error — so the login name cannot be
   used to probe for machines.
-- **Reserved names still mean "browse".** `admin` and any client name open
-  the picker even if a guest happens to share that name, since guest names
-  come from Proxmox and proxpass does not control them.
+- **`admin` always means "browse".** It opens the picker even if a guest
+  shares the name, since guest names come from Proxmox and proxpass does not
+  control them — so there is always a way back to the list. It is the only
+  reserved name: a client called `web` does not stop `ssh web@host` from
+  reaching the container called `web`. That costs the client nothing,
+  because the login name is not a credential — identity comes from the key,
+  so she can browse under `admin` and still be herself.
 - **Instance-qualified names work here too.** `ssh ct101@rome@proxpass-host`
   selects ct101 on `rome`. ssh splits `user@host` on the last `@`, so the
   username arrives as `ct101@rome`; proxpass then splits that on its own

@@ -396,10 +396,6 @@ func (l *lazyAPIDirectory) Connect(ctx context.Context, guestID int64) (*session
 	return l.resolve().Connect(ctx, guestID)
 }
 
-func (l *lazyAPIDirectory) IsLoginNameReserved(ctx context.Context, name string) (bool, error) {
-	return l.resolve().IsLoginNameReserved(ctx, name)
-}
-
 func (l *lazyAPIDirectory) PublicEndpoint(ctx context.Context) (string, error) {
 	return l.resolve().PublicEndpoint(ctx)
 }
@@ -862,13 +858,16 @@ func TestQualifiedLoginNameDoesNotDiscloseInstances(t *testing.T) {
 	}
 }
 
-// A guest must never hijack a reserved login name.
+// A guest must never hijack the administrator's login name.
 //
 // Guest names come from Proxmox discovery, so proxpass does not control
-// them. A guest called "admin" -- or named after a client -- would
-// otherwise steal the documented browse login from whoever it belongs to.
+// them. A guest called "admin" would otherwise take the one login that is
+// guaranteed to browse, and there would be no way back to the picker.
+//
+// Only "admin" is reserved. A guest named after a CLIENT is a different
+// case and connects -- see TestAClientNameResolvesToTheGuestThatBearsIt.
 func TestReservedLoginNamesAreNeverTreatedAsGuests(t *testing.T) {
-	for _, reserved := range []string{session.AdminUser, userAlice} {
+	for _, reserved := range []string{session.AdminUser} {
 		t.Run(reserved, func(t *testing.T) {
 			repo := newRepo(t)
 			addClient(t, repo) // a client named "alice"
@@ -927,6 +926,98 @@ func TestReservedLoginNameMatchIsCaseInsensitive(t *testing.T) {
 	_ = session.Run(t.Context(), d)
 	if len(proxier.Sessions) != 0 {
 		t.Error(`a guest named "Admin" hijacked the admin login`)
+	}
+}
+
+// A client's name is NOT reserved: it resolves to the guest that bears it.
+//
+// Client names used to be reserved, so "ssh web@host" opened the picker for
+// everyone the moment a client was called "web" -- including an
+// administrator who meant the container of that name, with nothing on
+// screen to say why. The login name is a request for a destination, so it
+// now resolves like any other.
+func TestAClientNameResolvesToTheGuestThatBearsIt(t *testing.T) {
+	repo := newRepo(t)
+	addClient(t, repo) // a client named "alice"
+	inst := &models.ProxmoxInstance{
+		Name: instPVE, APIURL: pveAPIURL, Node: instPVE,
+		ConsoleTransport: models.ConsoleTransportTermProxy,
+	}
+	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
+		t.Fatalf("add instance: %v", err)
+	}
+	seedGuestOn(t, repo, inst.ID, models.GuestTypeCT, 100, userAlice)
+
+	proxier := &testenv.MockProxier{}
+	tb := newTerminal("\x03")
+	tb.term.Raw = true
+	d := newDeps(repo, tb, proxier)
+	d.LoginName = userAlice
+	d.IdentityName = session.AdminUser
+	d.IsAdmin = true
+
+	if code := session.Run(t.Context(), d); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr %q)", code, tb.errb.String())
+	}
+	sessions := proxier.SessionsSnapshot()
+	if len(sessions) != 1 {
+		t.Fatalf("connected to %d guests, want 1: a client's name must "+
+			"resolve to the guest that bears it", len(sessions))
+	}
+	if sessions[0].GuestName != userAlice {
+		t.Errorf("connected to %q, want %q", sessions[0].GuestName, userAlice)
+	}
+}
+
+// ...and the client whose name it was can still browse, which is what makes
+// the above safe to do.
+//
+// The login name is a request, not a credential: identity comes from the
+// key that authenticated, and authorized-keys offers every key for every
+// servable name. So a guest taking a client's name costs that client
+// nothing -- "admin" still browses, as her own identity.
+func TestAClientWhoseNameIsTakenCanStillBrowse(t *testing.T) {
+	repo := newRepo(t)
+	addClient(t, repo)
+	inst := &models.ProxmoxInstance{
+		Name: instPVE, APIURL: pveAPIURL, Node: instPVE,
+		ConsoleTransport: models.ConsoleTransportTermProxy,
+	}
+	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
+		t.Fatalf("add instance: %v", err)
+	}
+	// A guest has taken her name, and she may reach it.
+	seedGuestOn(t, repo, inst.ID, models.GuestTypeCT, 100, userAlice)
+	guests, err := repo.ListGuests(t.Context())
+	if err != nil {
+		t.Fatalf("list guests: %v", err)
+	}
+	client, err := repo.GetClientByName(t.Context(), userAlice)
+	if err != nil {
+		t.Fatalf("get client: %v", err)
+	}
+	if err := repo.GrantClientAccess(
+		t.Context(), client.ID, []int64{guests[0].ID}); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+
+	proxier := &testenv.MockProxier{}
+	tb := newTerminal("\x03")
+	tb.term.Raw = true
+	d := newDeps(repo, tb, proxier)
+	d.LoginName = session.AdminUser // not her own name
+	d.IdentityName = userAlice      // identity still comes from her key
+	d.ClientID = client.ID
+	d.IsAdmin = false
+
+	if code := session.Run(t.Context(), d); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr %q)", code, tb.errb.String())
+	}
+	if len(proxier.SessionsSnapshot()) != 0 {
+		t.Error("browsing connected to a guest instead of showing the picker")
+	}
+	if !strings.Contains(tb.out.String(), "guests available to") {
+		t.Errorf("the client could not reach the picker: %q", tb.out.String())
 	}
 }
 
@@ -1012,8 +1103,8 @@ func TestACommandFallsBackToProxpassWhenTheNameIsNotAGuest(t *testing.T) {
 
 // A reserved name means proxpass even when a guest shares it.
 //
-// The administrator's name and every configured client name are reserved, so
-// a guest called "admin" cannot take the CLI away from the administrator.
+// "admin" is the only reserved name, so a guest called "admin" cannot take
+// the CLI away from the administrator.
 func TestAReservedNameKeepsTheProxpassCLI(t *testing.T) {
 	repo := newRepo(t)
 	inst := &models.ProxmoxInstance{

@@ -72,12 +72,7 @@ func (d *Deps) runSFTP(ctx context.Context) int {
 
 	// A reserved name means "browse", which a transfer cannot do: there is
 	// no guest to transfer to.
-	reserved, err := d.isReservedLoginName(ctx, name)
-	if err != nil {
-		d.Logger.Printf("%s: sftp: %v", d.IdentityName, err)
-		return 1
-	}
-	if reserved {
+	if isReservedLoginName(name) {
 		d.Logger.Printf("%s: sftp: %q names no guest", d.IdentityName, name)
 		return 1
 	}

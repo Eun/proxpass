@@ -326,8 +326,10 @@ func TestReservedLoginNames(t *testing.T) {
 
 	for name, want := range map[string]bool{
 		api.AdminUser: true,
-		userAliceName: true,
-		"ALICE":       true, // case-insensitive
+		"ADMIN":       true, // case-insensitive, since resolution is too
+		// A client's name is NOT reserved: it resolves to the guest that
+		// bears it, like any other name.
+		userAliceName: false,
 		"ct100":       false,
 		userAliasName: false,
 	} {
