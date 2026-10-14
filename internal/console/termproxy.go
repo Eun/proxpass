@@ -94,6 +94,23 @@ func connectTermProxy(
 	}
 	defer func() { _ = conn.CloseNow() }()
 
+	// Remove the message size limit.
+	//
+	// coder/websocket defaults to 32768 bytes per message and fails the read
+	// when a message exceeds it, discarding what it had already buffered.
+	// termproxy forwards raw PTY output, so a guest writing faster than the
+	// terminal drains -- `docker logs' on a busy container, a kernel build,
+	// anything that dumps -- produces a single frame past that limit. The
+	// session then died mid-escape-sequence partway through the output.
+	//
+	// A limit protects a server from a client that claims an enormous
+	// message. This is a terminal stream from a host the deployment already
+	// trusts for everything else, and there is no size at which the next
+	// chunk of a console becomes illegitimate, so there is nothing for a
+	// bound to express. Raising it to some larger number would only move the
+	// same failure further out.
+	conn.SetReadLimit(-1)
+
 	// --- Step 4: authenticate with "<authid>:<ticket>\n" ---
 	authLine := fmt.Sprintf("%s:%s\n", inst.APITokenID, ticket.Ticket)
 	if err := conn.Write(ctx, websocket.MessageBinary, []byte(authLine)); err != nil {
@@ -199,17 +216,42 @@ func connectTermProxy(
 	}()
 
 	// WebSocket → stdout: raw PTY bytes, no framing.
+	//
+	// Both exits are logged. This loop ending is how the session ends, so a
+	// failure here is the only account of why -- and it used to break
+	// silently, which is what made a dropped read look like a crash: the
+	// output stopped, the bar's teardown ran, and nothing anywhere said
+	// anything had gone wrong.
 	for {
 		_, data, readErr := conn.Read(ctx)
 		if readErr != nil {
+			if !isNormalClose(readErr) {
+				logger.Printf("termproxy: guest %q read error: %v", guest.Name, readErr)
+			}
 			break
 		}
 		if _, writeErr := guestOut.Write(data); writeErr != nil {
+			logger.Printf("termproxy: guest %q terminal write error: %v", guest.Name, writeErr)
 			break
 		}
 	}
 	close(done)
 	return nil
+}
+
+// isNormalClose reports whether err is an ordinary end of session rather than
+// a fault.
+//
+// A console ends when the user leaves, which arrives as a close handshake or
+// a canceled context. Those are not worth logging; anything else is.
+func isNormalClose(err error) bool {
+	// An if rather than a switch: only two of the fifteen close codes are
+	// ordinary here, and every other one is a fault worth reporting.
+	if status := websocket.CloseStatus(err); status == websocket.StatusNormalClosure ||
+		status == websocket.StatusGoingAway {
+		return true
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, io.EOF)
 }
 
 // buildVNCWebSocketURL constructs the URL for the Proxmox vncwebsocket
