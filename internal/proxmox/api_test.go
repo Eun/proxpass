@@ -78,7 +78,7 @@ func TestAPIClientDiscoverGuestsFQDN(t *testing.T) {
 		APITokenID:     testTokenID,
 		APITokenSecret: testTokenSecret,
 		// FQDN: should match node "rome" via prefix "rome."
-		SSHHost: "rome.erika.salzmann.berlin",
+		SSHHost: "rome.example.com",
 	}
 
 	client, err := proxmox.NewAPIClient(inst)
