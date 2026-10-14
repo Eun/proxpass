@@ -375,7 +375,16 @@ ssh -p 2222 admin@proxpass access grant \
 ssh -p 2222 admin@proxpass access revoke \
   --client alice --guest webserver
 
-# Manage default policy
+# Grant a shell on the Proxmox node itself, rather than on a guest.
+# Both kinds may be granted in one command.
+ssh -p 2222 admin@proxpass access grant \
+  --client alice --instance pve1
+ssh -p 2222 admin@proxpass access grant \
+  --client alice --guest webserver --instance pve1
+ssh -p 2222 admin@proxpass access revoke \
+  --client alice --instance pve1
+
+# Manage default policy — guests only; see "Granting a node" below
 ssh -p 2222 admin@proxpass policy ls
 ssh -p 2222 admin@proxpass policy add --client alice
 ssh -p 2222 admin@proxpass policy add --group developers
@@ -811,11 +820,49 @@ proxpass/
 
 ## Access Control
 
-Access is checked in order:
+Access to a **guest** is checked in order:
 
 1. **Explicit client rule** — client is directly granted access to the guest
 2. **Group rule** — client belongs to a group that is granted access to the guest
 3. **Default policy** — client or their group is listed in the global default policy
+
+### Granting a node
+
+`access grant --instance <name>` grants a shell on the Proxmox node itself,
+reached as `<instance-name>@proxpass`. It is checked the same way, **minus
+the third step**: a node is reachable only when a client or group rule says
+so by name.
+
+The default policy is left out deliberately. It has no notion of a target —
+a client listed there reaches *anything* — and it is standing configuration,
+often set once and forgotten. An administrator who ran `policy add --client
+alice` before this existed was saying something about guests, because guests
+were the only thing it could mean; reading it now as consent to a root shell
+on every node would be putting words in their mouth.
+
+Node and guest grants are **independent**. Granting a node does not grant its
+guests, and granting every guest does not grant the node:
+
+```bash
+# alice may enter the node, and two containers on it. Nothing else.
+access grant --client alice --instance pve1 --guest ct100 --guest ct101
+```
+
+What that buys inside the node is not proxpass's business: a shell there can
+reach the containers by other means, and is expected to. The rules say who
+proxpass lets in, not what they can do once inside.
+
+`access ls` shows both, with a `KIND` column saying which is which — worth
+having, since a node and a guest may share a name:
+
+```
+TYPE     SUBJECT              KIND     TARGET
+client   alice                guest    webserver (ct100)
+client   alice                node     pve1
+```
+
+`--json` returns them under separate `guests` and `instances` keys, so a
+consumer that predates node rules keeps reading `guests` unchanged.
 
 ## Development
 
