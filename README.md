@@ -869,9 +869,15 @@ Access to a **guest** is checked in order:
 ### Granting a node
 
 `access grant --instance <name>` grants a shell on the Proxmox node itself,
-reached as `<instance-name>@proxpass`. It is checked the same way, **minus
-the third step**: a node is reachable only when a client or group rule says
-so by name.
+to be reached as `<instance-name>@proxpass`. It is checked the same way,
+**minus the third step**: a node is reachable only when a client or group
+rule says so by name.
+
+> **Not yet connectable.** The rules are stored and enforced, and a session
+> can already ask which nodes it may reach, but `<instance-name>@proxpass`
+> does not open a shell yet — that is the next piece of work. Granting a
+> node today is recorded and will take effect when it lands; it does not
+> silently give anyone access in the meantime.
 
 The default policy is left out deliberately. It has no notion of a target —
 a client listed there reaches *anything* — and it is standing configuration,

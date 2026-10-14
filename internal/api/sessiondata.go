@@ -98,6 +98,91 @@ func (h *SessionHandler) ConnectSessionGuest(
 	}), nil
 }
 
+// ListSessionInstances returns the Proxmox nodes the caller may reach.
+//
+// The node counterpart of ListSessionGuests, filtered the same way and for
+// the same reason: a caller that may not reach a node does not see it.
+//
+// Not derived from the guest list. A grant on an instance and a grant on a
+// guest it hosts are independent -- granting the node says nothing about
+// the guests and vice versa -- so the two answers generally differ, and
+// deriving one from the other would silently turn either grant into both.
+func (h *SessionHandler) ListSessionInstances(
+	ctx context.Context, _ ListSessionInstancesRequestObject,
+) (ListSessionInstancesResponseObject, error) {
+	identity, err := h.callerIdentity(ctx)
+	if err != nil {
+		return listInstancesAuthFailure(err)
+	}
+
+	instances, err := h.accessibleInstances(ctx, identity)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]Instance, 0, len(instances))
+	for _, inst := range instances {
+		out = append(out, instanceResponse(inst))
+	}
+	return ListSessionInstances200JSONResponse(out), nil
+}
+
+// ConnectSessionNode hands over the credentials for reaching one node.
+//
+// As with ConnectSessionGuest, the access check happens HERE, from the
+// stored identity: being able to name an instance is not permission to
+// reach it, and this endpoint may not assume the list endpoint filtered.
+func (h *SessionHandler) ConnectSessionNode(
+	ctx context.Context, request ConnectSessionNodeRequestObject,
+) (ConnectSessionNodeResponseObject, error) {
+	identity, err := h.callerIdentity(ctx)
+	if err != nil {
+		reason := authFailureReason(err)
+		if reason == "" {
+			return nil, err
+		}
+		return ConnectSessionNode401JSONResponse{
+			UnauthorizedJSONResponse: UnauthorizedJSONResponse{Error: reason},
+		}, nil
+	}
+
+	inst, err := h.findInstance(ctx, request.InstanceID)
+	if err != nil {
+		return nil, err
+	}
+	// An instance that does not exist and one the caller may not reach get
+	// the same answer, for the same reason as the guest endpoint: otherwise
+	// trying ids would reveal what the cluster contains.
+	if inst == nil {
+		return forbiddenNode(), nil
+	}
+	allowed, err := h.mayReachInstance(ctx, identity, inst.ID)
+	if err != nil {
+		return nil, err
+	}
+	if !allowed {
+		return forbiddenNode(), nil
+	}
+
+	// A node is reached over SSH whatever the console transport, so an
+	// instance with no ssh_host cannot be opened at all. That is a
+	// configuration problem rather than a permission one, so it is reported
+	// as such instead of being folded into the refusal above -- the caller
+	// was granted this node and is entitled to know why it will not open.
+	if inst.SSHHost == "" {
+		return nil, fmt.Errorf(
+			"instance %q has no ssh-host, so its node cannot be reached: "+
+				"set one with `instance update --name %s --ssh-host <host>'",
+			inst.Name, inst.Name)
+	}
+
+	credentials, err := h.instanceCredentials(inst)
+	if err != nil {
+		return nil, err
+	}
+	return ConnectSessionNode200JSONResponse(credentials), nil
+}
+
 // IsLoginNameReserved reports whether a login name means "browse".
 //
 // Only the administrator's name is, and the session decides that for itself
@@ -160,6 +245,16 @@ func listGuestsAuthFailure(err error) (ListSessionGuestsResponseObject, error) {
 	}, nil
 }
 
+func listInstancesAuthFailure(err error) (ListSessionInstancesResponseObject, error) {
+	reason := authFailureReason(err)
+	if reason == "" {
+		return nil, err
+	}
+	return ListSessionInstances401JSONResponse{
+		UnauthorizedJSONResponse: UnauthorizedJSONResponse{Error: reason},
+	}, nil
+}
+
 func reservedAuthFailure(err error) (IsLoginNameReservedResponseObject, error) {
 	reason := authFailureReason(err)
 	if reason == "" {
@@ -194,28 +289,80 @@ func (h *SessionHandler) mayReach(
 	return h.repo.HasAccess(ctx, identity.ClientID, guestID)
 }
 
-// accessibleGuests returns the guests identity may reach.
-func (h *SessionHandler) accessibleGuests(
-	ctx context.Context, identity *models.SessionIdentity,
-) ([]*models.Guest, error) {
-	guests, err := h.repo.ListGuests(ctx)
+// mayReachInstance reports whether identity is allowed to reach the node
+// instanceID.
+//
+// The node counterpart of mayReach, and the single place that decides, so
+// the list and connect endpoints cannot drift apart.
+//
+// HasInstanceAccess deliberately does not consult the default policy; see
+// the comment on it. The administrator short-circuit is the same, because
+// an administrator already reaches every node by other means.
+func (h *SessionHandler) mayReachInstance(
+	ctx context.Context, identity *models.SessionIdentity, instanceID int64,
+) (bool, error) {
+	if identity.IsAdmin {
+		return true, nil
+	}
+	return h.repo.HasInstanceAccess(ctx, identity.ClientID, instanceID)
+}
+
+// accessible filters a list to the rows identity may reach.
+//
+// Shared by the guest and node lists, which differ only in what they list
+// and which rule they ask about. Written once so the two cannot drift: the
+// administrator short-circuit and the fail-closed loop are the part that
+// must not vary, and a second copy is a second place to get them wrong.
+//
+// Note the filter is applied per row rather than pushed into SQL. That is
+// deliberate -- HasAccess and HasInstanceAccess are where the tiers are
+// decided, and duplicating their logic in a query is how the two would
+// come to disagree.
+func accessible[T any](
+	ctx context.Context,
+	identity *models.SessionIdentity,
+	list func(context.Context) ([]T, error),
+	id func(T) int64,
+	mayReach func(context.Context, int64, int64) (bool, error),
+) ([]T, error) {
+	rows, err := list(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if identity.IsAdmin {
-		return guests, nil
+		return rows, nil
 	}
-	out := make([]*models.Guest, 0, len(guests))
-	for _, g := range guests {
-		ok, err := h.repo.HasAccess(ctx, identity.ClientID, g.ID)
+	out := make([]T, 0, len(rows))
+	for _, row := range rows {
+		ok, err := mayReach(ctx, identity.ClientID, id(row))
 		if err != nil {
 			return nil, err
 		}
 		if ok {
-			out = append(out, g)
+			out = append(out, row)
 		}
 	}
 	return out, nil
+}
+
+// accessibleInstances returns the instances identity may reach.
+func (h *SessionHandler) accessibleInstances(
+	ctx context.Context, identity *models.SessionIdentity,
+) ([]*models.ProxmoxInstance, error) {
+	return accessible(ctx, identity,
+		h.repo.ListProxmoxInstances,
+		func(inst *models.ProxmoxInstance) int64 { return inst.ID },
+		h.repo.HasInstanceAccess)
+}
+
+// accessibleGuests returns the guests identity may reach.
+func (h *SessionHandler) accessibleGuests(
+	ctx context.Context, identity *models.SessionIdentity,
+) ([]*models.Guest, error) {
+	return accessible(ctx, identity,
+		h.repo.ListGuests,
+		func(g *models.Guest) int64 { return g.ID },
+		h.repo.HasAccess)
 }
 
 // instanceNames maps instance id to name.
@@ -322,6 +469,27 @@ func guestResponse(g *models.Guest, instanceName string) Guest {
 	}
 }
 
+// instanceResponse converts an instance into the wire shape for a LIST.
+//
+// Deliberately not instanceCredentials: this is the shape that carries no
+// secrets, for a list a session holds for its whole life. The two exist
+// separately so that adding a field to the credential shape cannot leak it
+// into the list by accident.
+func instanceResponse(inst *models.ProxmoxInstance) Instance {
+	return Instance{
+		ID:   inst.ID,
+		Name: inst.Name,
+		Node: inst.Node,
+	}
+}
+
 func forbidden() ConnectSessionGuest403JSONResponse {
 	return ConnectSessionGuest403JSONResponse{Error: "no such guest"}
+}
+
+// forbiddenNode is the node counterpart of forbidden, and is likewise the
+// answer both for a node the caller may not reach and for one that does not
+// exist.
+func forbiddenNode() ConnectSessionNode403JSONResponse {
+	return ConnectSessionNode403JSONResponse{Error: "no such instance"}
 }

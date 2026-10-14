@@ -30,9 +30,41 @@ type Directory interface {
 	// exist, so that ids cannot be used to enumerate the cluster.
 	Connect(ctx context.Context, guestID int64) (*ConnectInfo, error)
 
+	// AccessibleInstances returns the Proxmox nodes this session may reach
+	// in their own right. No credentials.
+	//
+	// Independent of AccessibleGuests: a grant on a node says nothing
+	// about its guests and a grant on a guest says nothing about its
+	// node, so the two lists generally differ and neither is derived
+	// from the other. In particular this is NOT the same as the
+	// instances named by the visible guests -- see namedInstances.
+	AccessibleInstances(ctx context.Context) ([]*models.ProxmoxInstance, error)
+
+	// ConnectNode returns what is needed to open a shell on one node,
+	// after checking that this session may reach it. ErrAccessDenied
+	// when it may not -- which is also the answer for an instance that
+	// does not exist, so that ids cannot enumerate the cluster.
+	ConnectNode(ctx context.Context, instanceID int64) (*NodeInfo, error)
+
 	// PublicEndpoint is the hostname clients use to reach this proxpass,
 	// shown in the status bar. Empty when unset, which is not an error.
 	PublicEndpoint(ctx context.Context) (string, error)
+}
+
+// NodeInfo is one Proxmox node plus what it takes to reach it.
+//
+// The node counterpart of ConnectInfo, and carries the key for the same
+// reason and on the same terms: it belongs to the deployment rather than to
+// the instance, a session cannot read the file, and it arrives only once
+// the access check has passed.
+type NodeInfo struct {
+	Instance *models.ProxmoxInstance
+
+	// SSHKey is the PEM private key to reach the node with. Never empty
+	// in practice -- a node is reachable only over SSH, so a response
+	// without a key cannot be connected with -- but it is not this
+	// type's job to enforce that.
+	SSHKey string
 }
 
 // GuestInfo is a guest as the picker and the client CLI need it.

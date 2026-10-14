@@ -396,6 +396,14 @@ func (l *lazyAPIDirectory) Connect(ctx context.Context, guestID int64) (*session
 	return l.resolve().Connect(ctx, guestID)
 }
 
+func (l *lazyAPIDirectory) AccessibleInstances(ctx context.Context) ([]*models.ProxmoxInstance, error) {
+	return l.resolve().AccessibleInstances(ctx)
+}
+
+func (l *lazyAPIDirectory) ConnectNode(ctx context.Context, instanceID int64) (*session.NodeInfo, error) {
+	return l.resolve().ConnectNode(ctx, instanceID)
+}
+
 func (l *lazyAPIDirectory) PublicEndpoint(ctx context.Context) (string, error) {
 	return l.resolve().PublicEndpoint(ctx)
 }

@@ -109,8 +109,12 @@ type Guest struct {
 	InstanceID int64 `json:"instanceId"`
 
 	// InstanceName Included so a caller can show and match on it without a second
-	// request. It is the only thing about an instance a picker needs,
-	// which is why there is no endpoint that lists instances.
+	// request. It is the only thing about an instance that BROWSING
+	// GUESTS needs, so a guest list never costs a second call.
+	//
+	// `/session/instances` is a different question -- which nodes may
+	// be reached in their own right -- and its answer is not derived
+	// from this one.
 	InstanceName string `json:"instanceName"`
 	Name         string `json:"name"`
 
@@ -145,6 +149,25 @@ type Identity struct {
 	// session also accepts it as a guest target ("ssh ct100@host").
 	// Never log it as the actor and never authorize from it.
 	LoginName string `json:"loginName"`
+}
+
+// Instance A Proxmox node as a picker needs it. The node counterpart of
+// `Guest`, and like it deliberately carries nothing that could be used
+// to reach the node: a session holds this list for its whole life, and
+// most of it is never connected to.
+type Instance struct {
+	// ID The row id, used to ask for a connection.
+	ID int64 `json:"id"`
+
+	// Name What the administrator called this instance, and the name a
+	// client reaches it by as `<name>@proxpass`. Stored lower case.
+	Name string `json:"name"`
+
+	// Node The resolved Proxmox short node name, which is what the cluster
+	// calls the machine. Usually equal to `name`, but not necessarily:
+	// `name` is proxpass's label and an administrator may choose it
+	// freely.
+	Node string `json:"node"`
 }
 
 // InstanceCredentials The Proxmox credentials for the instance hosting one guest.
@@ -239,9 +262,15 @@ type ServerInterface interface {
 	// GetSessionIdentity Who the calling token belongs to.
 	// (GET /session/identity)
 	GetSessionIdentity(w http.ResponseWriter, r *http.Request)
+	// ListSessionInstances The Proxmox nodes this session may reach.
+	// (GET /session/instances)
+	ListSessionInstances(w http.ResponseWriter, r *http.Request)
 	// IsLoginNameReserved Whether a login name means "browse" rather than "connect".
 	// (GET /session/login-name-reserved)
 	IsLoginNameReserved(w http.ResponseWriter, r *http.Request, params IsLoginNameReservedParams)
+	// ConnectSessionNode What it takes to open a shell on this node.
+	// (POST /session/node/{instanceId})
+	ConnectSessionNode(w http.ResponseWriter, r *http.Request, instanceID int64)
 	// GetPublicEndpoint The hostname clients use to reach this proxpass.
 	// (GET /session/public-endpoint)
 	GetPublicEndpoint(w http.ResponseWriter, r *http.Request)
@@ -341,6 +370,20 @@ func (siw *ServerInterfaceWrapper) GetSessionIdentity(w http.ResponseWriter, r *
 	handler.ServeHTTP(w, r)
 }
 
+// ListSessionInstances operation middleware
+func (siw *ServerInterfaceWrapper) ListSessionInstances(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListSessionInstances(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // IsLoginNameReserved operation middleware
 func (siw *ServerInterfaceWrapper) IsLoginNameReserved(w http.ResponseWriter, r *http.Request) {
 
@@ -365,6 +408,32 @@ func (siw *ServerInterfaceWrapper) IsLoginNameReserved(w http.ResponseWriter, r 
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.IsLoginNameReserved(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ConnectSessionNode operation middleware
+func (siw *ServerInterfaceWrapper) ConnectSessionNode(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "instanceId" -------------
+	var instanceID int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "instanceId", r.PathValue("instanceId"), &instanceID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "instanceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ConnectSessionNode(w, r, instanceID)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -527,6 +596,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/session/revoke", wrapper.RevokeSessionCredential)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/session/guests", wrapper.ListSessionGuests)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/session/connect/{guestId}", wrapper.ConnectSessionGuest)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/session/instances", wrapper.ListSessionInstances)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/session/node/{instanceId}", wrapper.ConnectSessionNode)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/session/login-name-reserved", wrapper.IsLoginNameReserved)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/session/public-endpoint", wrapper.GetPublicEndpoint)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/session/identity", wrapper.GetSessionIdentity)
@@ -709,6 +780,41 @@ func (response GetSessionIdentity401JSONResponse) VisitGetSessionIdentityRespons
 	return err
 }
 
+type ListSessionInstancesRequestObject struct {
+}
+
+type ListSessionInstancesResponseObject interface {
+	VisitListSessionInstancesResponse(w http.ResponseWriter) error
+}
+
+type ListSessionInstances200JSONResponse []Instance
+
+func (response ListSessionInstances200JSONResponse) VisitListSessionInstancesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListSessionInstances401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ListSessionInstances401JSONResponse) VisitListSessionInstancesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type IsLoginNameReservedRequestObject struct {
 	Params IsLoginNameReservedParams
 }
@@ -743,6 +849,56 @@ func (response IsLoginNameReserved401JSONResponse) VisitIsLoginNameReservedRespo
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ConnectSessionNodeRequestObject struct {
+	InstanceID int64 `json:"instanceId"`
+}
+
+type ConnectSessionNodeResponseObject interface {
+	VisitConnectSessionNodeResponse(w http.ResponseWriter) error
+}
+
+type ConnectSessionNode200JSONResponse InstanceCredentials
+
+func (response ConnectSessionNode200JSONResponse) VisitConnectSessionNodeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ConnectSessionNode401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ConnectSessionNode401JSONResponse) VisitConnectSessionNodeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ConnectSessionNode403JSONResponse Error
+
+func (response ConnectSessionNode403JSONResponse) VisitConnectSessionNodeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -830,9 +986,15 @@ type StrictServerInterface interface {
 	// GetSessionIdentity Who the calling token belongs to.
 	// (GET /session/identity)
 	GetSessionIdentity(ctx context.Context, request GetSessionIdentityRequestObject) (GetSessionIdentityResponseObject, error)
+	// ListSessionInstances The Proxmox nodes this session may reach.
+	// (GET /session/instances)
+	ListSessionInstances(ctx context.Context, request ListSessionInstancesRequestObject) (ListSessionInstancesResponseObject, error)
 	// IsLoginNameReserved Whether a login name means "browse" rather than "connect".
 	// (GET /session/login-name-reserved)
 	IsLoginNameReserved(ctx context.Context, request IsLoginNameReservedRequestObject) (IsLoginNameReservedResponseObject, error)
+	// ConnectSessionNode What it takes to open a shell on this node.
+	// (POST /session/node/{instanceId})
+	ConnectSessionNode(ctx context.Context, request ConnectSessionNodeRequestObject) (ConnectSessionNodeResponseObject, error)
 	// GetPublicEndpoint The hostname clients use to reach this proxpass.
 	// (GET /session/public-endpoint)
 	GetPublicEndpoint(ctx context.Context, request GetPublicEndpointRequestObject) (GetPublicEndpointResponseObject, error)
@@ -1002,6 +1164,30 @@ func (sh *strictHandler) GetSessionIdentity(w http.ResponseWriter, r *http.Reque
 	}
 }
 
+// ListSessionInstances operation middleware
+func (sh *strictHandler) ListSessionInstances(w http.ResponseWriter, r *http.Request) {
+	var request ListSessionInstancesRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListSessionInstances(ctx, request.(ListSessionInstancesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListSessionInstances")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListSessionInstancesResponseObject); ok {
+		if err := validResponse.VisitListSessionInstancesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // IsLoginNameReserved operation middleware
 func (sh *strictHandler) IsLoginNameReserved(w http.ResponseWriter, r *http.Request, params IsLoginNameReservedParams) {
 	var request IsLoginNameReservedRequestObject
@@ -1021,6 +1207,32 @@ func (sh *strictHandler) IsLoginNameReserved(w http.ResponseWriter, r *http.Requ
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(IsLoginNameReservedResponseObject); ok {
 		if err := validResponse.VisitIsLoginNameReservedResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ConnectSessionNode operation middleware
+func (sh *strictHandler) ConnectSessionNode(w http.ResponseWriter, r *http.Request, instanceID int64) {
+	var request ConnectSessionNodeRequestObject
+
+	request.InstanceID = instanceID
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ConnectSessionNode(ctx, request.(ConnectSessionNodeRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ConnectSessionNode")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ConnectSessionNodeResponseObject); ok {
+		if err := validResponse.VisitConnectSessionNodeResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -1081,89 +1293,106 @@ func (sh *strictHandler) RevokeSessionCredential(w http.ResponseWriter, r *http.
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
+	"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",
+	"AAD//w==",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,
