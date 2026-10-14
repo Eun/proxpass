@@ -158,32 +158,94 @@ func ids(rs []guestRow) []string {
 	return out
 }
 
-// Tab cycles forward through every mode and returns to the start; Shift+Tab
-// goes the other way. A cycle that skipped or stuck on a mode would leave
-// columns unreachable.
+// Tab walks the columns in the order the header prints them, starting at id,
+// and returns to where it began. A cycle that skipped or stuck on a mode
+// would leave columns unreachable.
 func TestSortModeCyclesThroughEveryColumn(t *testing.T) {
 	seen := map[sortMode]bool{}
-	m := sortByName
-	for range int(sortModeCount) {
+	m := sortCycle[0]
+	for range len(sortCycle) {
 		if seen[m] {
 			t.Fatalf("mode %s repeated before the cycle completed", m.label())
 		}
 		seen[m] = true
 		m = m.next()
 	}
-	if m != sortByName {
-		t.Errorf("cycling %d times ended on %s, want to wrap to name",
-			sortModeCount, m.label())
+	if m != sortCycle[0] {
+		t.Errorf("cycling %d times ended on %s, want to wrap to %s",
+			len(sortCycle), m.label(), sortCycle[0].label())
 	}
-	if len(seen) != int(sortModeCount) {
-		t.Errorf("cycle visited %d modes, want %d", len(seen), sortModeCount)
+	if len(seen) != len(sortCycle) {
+		t.Errorf("cycle visited %d modes, want %d", len(seen), len(sortCycle))
 	}
 
-	// Backward must be the exact inverse.
-	for mode := sortByName; mode < sortModeCount; mode++ {
+	// Backward must be the exact inverse, for every mode in the cycle.
+	for _, mode := range sortCycle {
 		if got := mode.next().prev(); got != mode {
 			t.Errorf("%s.next().prev() = %s, want %s",
 				mode.label(), got.label(), mode.label())
+		}
+	}
+}
+
+// The order Tab visits the columns in, spelled out.
+//
+// The picker opens sorted by name, because that is what a human scanning a
+// list of guests wants first. Tab then starts the walk at id and follows the
+// header left to right. Those two facts pull in different directions -- the
+// resting state is not the head of the cycle -- which is why the opening
+// state is its own value rather than just sortByName.
+func TestTabStartsAtIDAndThenFollowsTheHeader(t *testing.T) {
+	want := []string{
+		"id", defaultSortLabel, "status", "host",
+		"id", defaultSortLabel, // and round again
+	}
+
+	m := sortUnset
+	if m.label() != defaultSortLabel {
+		t.Fatalf("a freshly opened picker reports sort %q, want %q",
+			m.label(), defaultSortLabel)
+	}
+
+	got := make([]string, 0, len(want))
+	for range len(want) {
+		m = m.next()
+		got = append(got, m.label())
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("tab %d of a fresh picker gives %q, want %q (full: %v)",
+				i+1, got[i], want[i], got)
+		}
+	}
+}
+
+// Shift+Tab from a freshly opened picker starts at the other end of the
+// cycle, so the first press in either direction begins the walk rather than
+// landing somewhere arbitrary.
+func TestShiftTabFromAFreshPickerStartsAtTheLastColumn(t *testing.T) {
+	last := sortCycle[len(sortCycle)-1]
+	if got := sortUnset.prev(); got != last {
+		t.Errorf("shift+tab from a fresh picker gives %s, want %s",
+			got.label(), last.label())
+	}
+}
+
+// The opening state must be invisible apart from where Tab goes: it sorts
+// and labels exactly as a name sort, so a user cannot tell the two apart.
+func TestTheOpeningStateSortsAndLabelsAsName(t *testing.T) {
+	if sortUnset.label() != sortByName.label() {
+		t.Errorf("opening state labels as %q, name labels as %q",
+			sortUnset.label(), sortByName.label())
+	}
+
+	unset, named := mixedRows(t), mixedRows(t)
+	sortRows(unset, sortUnset)
+	sortRows(named, sortByName)
+	for i := range unset {
+		if unset[i].id != named[i].id {
+			t.Fatalf("row %d differs: opening state has %s, name sort has %s",
+				i, unset[i].id, named[i].id)
 		}
 	}
 }
@@ -211,8 +273,14 @@ func TestTabCyclesSortAndShiftTabReverses(t *testing.T) {
 	s := &pickerState{all: mixedRows(t), width: 80, height: 24}
 	s.setFilter("")
 
-	if s.sort != sortByName {
-		t.Fatalf("default sort = %s, want name", s.sort.label())
+	// A fresh picker is sorted by name but is not yet in the cycle, which is
+	// what sends the first Tab to its head.
+	if s.sort != sortUnset {
+		t.Fatalf("a fresh picker starts in %v, want the opening state", s.sort)
+	}
+	if s.sort.label() != defaultSortLabel {
+		t.Fatalf("a fresh picker reports sort %q, want %q",
+			s.sort.label(), defaultSortLabel)
 	}
 	if act := s.apply(key{kind: keyTab}); act != actionNone {
 		t.Errorf("tab returned %v, want actionNone", act)
@@ -224,14 +292,15 @@ func TestTabCyclesSortAndShiftTabReverses(t *testing.T) {
 		t.Errorf("tab leaked into the filter: %q", s.filter)
 	}
 
-	s.apply(key{kind: keyShiftTab})
-	if s.sort != sortByName {
-		t.Errorf("after shift+tab, sort = %s, want name", s.sort.label())
-	}
-	// Backwards past the first mode wraps to the last.
+	// Shift+Tab undoes it, landing on the column before id in the cycle.
 	s.apply(key{kind: keyShiftTab})
 	if s.sort != sortByHost {
-		t.Errorf("shift+tab from name = %s, want host", s.sort.label())
+		t.Errorf("after shift+tab, sort = %s, want host", s.sort.label())
+	}
+	// ...and continues backward through the header.
+	s.apply(key{kind: keyShiftTab})
+	if s.sort != sortByStatus {
+		t.Errorf("shift+tab from host = %s, want status", s.sort.label())
 	}
 }
 

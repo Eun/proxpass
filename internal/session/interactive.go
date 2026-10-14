@@ -378,6 +378,12 @@ func (s *pickerState) render(w io.Writer) {
 // instead, so no column is marked -- claiming otherwise would be a lie.
 func (s *pickerState) headerRow(widths colWidths) string {
 	active := s.sort
+	if active == sortUnset {
+		// A freshly opened picker is sorted by name, so that is the column
+		// to mark. sortUnset differs from sortByName only in where Tab goes
+		// next, which the header has no business showing.
+		active = sortByName
+	}
 	if s.filter != "" {
 		// Out of range of every real mode, so nothing is marked.
 		active = sortModeCount
