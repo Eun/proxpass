@@ -118,7 +118,11 @@ func migrate(database *sql.DB, d *dialect) error {
 	if err := goose.Up(database, d.migrations); err != nil {
 		return fmt.Errorf("running migrations: %w", err)
 	}
-	return nil
+	// After goose, which is what creates the tables this reads: names stored
+	// before they were folded have to be brought into the form lookups now
+	// assume, and a database holding two names that differ only by case has
+	// to be refused rather than silently half-folded. See foldStoredNames.
+	return foldStoredNames(context.Background(), database, d)
 }
 
 func (r *sqlRepo) Close() error {
@@ -131,6 +135,16 @@ func (r *sqlRepo) AddProxmoxInstance(ctx context.Context, inst *models.ProxmoxIn
 	// Normalise the URL before storing so the UNIQUE constraint compares
 	// canonical forms (no trailing slashes).
 	inst.APIURL = strings.TrimRight(inst.APIURL, "/")
+	// And the name, for the same reason: folded here, UNIQUE(name) is a
+	// case-insensitive constraint. See models.FoldName.
+	//
+	// Assigned back into the caller's struct rather than only into the bind
+	// argument, so that what the caller goes on to print and compare is what
+	// was actually stored. `instance add' re-finds the row it just created by
+	// matching inst.Name against the listed rows, to get the id discovery
+	// needs; were the struct left holding the typed spelling that match would
+	// fail and discovery would silently never run.
+	inst.Name = models.FoldName(inst.Name)
 	err := r.queryRow(ctx,
 		`INSERT INTO proxmox_instances
 		(name, api_url, api_token_id, api_token_secret, console_transport, node,
@@ -187,6 +201,7 @@ func (r *sqlRepo) ListProxmoxInstances(ctx context.Context) ([]*models.ProxmoxIn
 
 func (r *sqlRepo) UpdateProxmoxInstance(ctx context.Context, inst *models.ProxmoxInstance) error {
 	inst.APIURL = strings.TrimRight(inst.APIURL, "/")
+	inst.Name = models.FoldName(inst.Name)
 	_, err := r.exec(ctx,
 		`UPDATE proxmox_instances SET
 		name = ?, api_url = ?, api_token_id = ?,
@@ -384,6 +399,7 @@ func (r *sqlRepo) RemoveGuestsNotIn(ctx context.Context, instanceID int64, keep 
 // --- Clients ---
 
 func (r *sqlRepo) AddClient(ctx context.Context, client *models.Client) error {
+	client.Name = models.FoldName(client.Name)
 	keysJSON, _ := json.Marshal(client.PublicKeys)
 	groupsJSON, _ := json.Marshal(client.GroupIDs)
 	return r.queryRow(ctx,
@@ -414,6 +430,7 @@ func (r *sqlRepo) ListClients(ctx context.Context) ([]*models.Client, error) {
 }
 
 func (r *sqlRepo) UpdateClient(ctx context.Context, client *models.Client) error {
+	client.Name = models.FoldName(client.Name)
 	keysJSON, _ := json.Marshal(client.PublicKeys)
 	groupsJSON, _ := json.Marshal(client.GroupIDs)
 	_, err := r.exec(ctx,
@@ -431,7 +448,17 @@ func (r *sqlRepo) GetClientByName(ctx context.Context, name string) (*models.Cli
 	c := &models.Client{}
 	var keysStr, groupsStr string
 	err := r.queryRow(ctx,
-		"SELECT id, name, public_keys, group_ids FROM clients WHERE name = ?", name).
+		// Plain equality against a folded argument. Names are folded on the
+		// way in (see models.FoldName), so every stored name is already in
+		// this form and an exact match finds a client by whatever case the
+		// caller typed -- while still using the UNIQUE(name) index rather
+		// than scanning, which `WHERE lower(name) = lower(?)' would not.
+		//
+		// UNIQUE(name) over folded values is also what makes the answer
+		// single: two rows differing only by case cannot both exist, so this
+		// cannot return a row chosen by scan order.
+		"SELECT id, name, public_keys, group_ids FROM clients WHERE name = ?",
+		models.FoldName(name)).
 		Scan(&c.ID, &c.Name, &keysStr, &groupsStr)
 	if err != nil {
 		return nil, err
@@ -444,6 +471,7 @@ func (r *sqlRepo) GetClientByName(ctx context.Context, name string) (*models.Cli
 // --- Groups ---
 
 func (r *sqlRepo) AddGroup(ctx context.Context, group *models.Group) error {
+	group.Name = models.FoldName(group.Name)
 	clientIDsJSON, _ := json.Marshal(group.ClientIDs)
 	return r.queryRow(ctx,
 		`INSERT INTO groups (name, client_ids)
@@ -472,6 +500,7 @@ func (r *sqlRepo) ListGroups(ctx context.Context) ([]*models.Group, error) {
 }
 
 func (r *sqlRepo) UpdateGroup(ctx context.Context, group *models.Group) error {
+	group.Name = models.FoldName(group.Name)
 	clientIDsJSON, _ := json.Marshal(group.ClientIDs)
 	_, err := r.exec(ctx,
 		"UPDATE groups SET name = ?, client_ids = ? WHERE id = ?",

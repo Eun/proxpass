@@ -171,11 +171,15 @@ When multiple --url flags are supplied:
 						return err
 					}
 					for _, inst := range instances {
-						if inst.Name == name {
+						// Case-insensitive, matching InstanceLookup and the
+						// way an instance resolves inside a login name: it
+						// would be odd for `access grant --instance ROME' to
+						// work while `instance rm ROME' did not.
+						if models.NamesEqual(inst.Name, name) {
 							if err := deps.Repo.RemoveProxmoxInstance(ctx, inst.ID); err != nil {
 								return err
 							}
-							fmt.Fprintf(deps.Out, "Instance %q removed.\n", name)
+							fmt.Fprintf(deps.Out, "Instance %q removed.\n", inst.Name)
 							return nil
 						}
 					}
@@ -200,11 +204,11 @@ When multiple --url flags are supplied:
 					}
 					byName := make(map[string]*models.ProxmoxInstance, len(instances))
 					for _, inst := range instances {
-						byName[inst.Name] = inst
+						byName[models.FoldName(inst.Name)] = inst
 					}
 					var found []*models.ProxmoxInstance
 					for _, name := range cmd.Args().Slice() {
-						inst, ok := byName[name]
+						inst, ok := byName[models.FoldName(name)]
 						if !ok {
 							return fmt.Errorf("instance %q not found", name)
 						}

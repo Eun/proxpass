@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 
 	"proxpass/internal/db"
 	"proxpass/internal/models"
@@ -113,7 +112,7 @@ func (h *SessionHandler) IsLoginNameReserved(
 		return reservedAuthFailure(err)
 	}
 	return IsLoginNameReserved200JSONResponse{
-		Reserved: strings.EqualFold(request.Params.Name, AdminUser),
+		Reserved: models.NamesEqual(request.Params.Name, AdminUser),
 	}, nil
 }
 

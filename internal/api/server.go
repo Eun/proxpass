@@ -93,12 +93,17 @@ func (l IDLayout) adminUser() User {
 // caller from the key that authenticated (see session.ResolveIdentityByKey).
 //
 // It is therefore served with the LEAST privilege that still works: the
-// shared client gid, which grants read access to the state directory and
-// nothing more. It must NOT carry the admin gid, which can write the
-// database: an alias is reachable with any valid key, including a client's,
-// so an admin-gid alias would let a client modify another client's access
-// rules from the filesystem even though proxpass itself had correctly
-// resolved them as a non-admin.
+// shared client gid.
+//
+// That gid no longer grants anything on its own. It used to -- the database
+// was group-writable, so an admin-gid alias would have let a client modify
+// another client's access rules from the filesystem. The admin CLI then
+// moved behind the API and the file became 0600 inside a 2700 directory, so
+// group mode is zero and only `proxpass serve' opens it. The entrypoint
+// records the same thing where it sets those modes.
+//
+// The least-privilege choice is kept regardless, because it costs nothing
+// and the next thing to key off a gid should not find the wrong one here.
 //
 // The uid is AliasUID: shared by every alias, since NSS is asked only for a
 // name and cannot tell one alias session from another, but distinct from the
@@ -278,8 +283,26 @@ func (s *Server) handleUserByName(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if name == AdminUser {
-		s.writeJSON(w, s.ids.adminUser())
+	// Case-insensitive, like every other test against the reserved name:
+	// isReservedLoginName, IsLoginNameReserved and ValidateClientName all
+	// use EqualFold. This one did not, so "ADMIN" was reserved everywhere
+	// except where its directory entry was chosen -- it reached the picker
+	// as a reserved name while being served the shared ALIAS uid.
+	//
+	// Nothing is granted by the entry either way. The admin gid has been
+	// powerless since the admin CLI moved behind the API: the state
+	// directory is 2700 and the database 0600, so group mode is zero and
+	// every session, privileged or not, reaches the database through
+	// `proxpass serve'. Authority comes from the KEY -- IsAdmin is set in
+	// authorizedkeys.go and travels in the minted token -- so `ssh
+	// ADMIN@host' with a client's key was and remains a client session.
+	//
+	// What changes is the uid, in the direction IDLayout.AliasUID asks for:
+	// aliases deliberately SHARE a uid and so must not be mistaken for the
+	// administrator by anything keying off process ownership. Serving the
+	// reserved name from the alias pool was exactly that mistake.
+	if models.NamesEqual(name, AdminUser) {
+		s.writeJSON(w, s.ids.adminUserAs(name))
 		return
 	}
 	client, err := s.repo.GetClientByName(r.Context(), name)
@@ -394,8 +417,13 @@ func (s *Server) handleGroupByName(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "list groups", err)
 		return
 	}
+	// Case-insensitive, matching the user lookup above and the CLI. A group
+	// entry carries a gid but confers nothing: group membership is not an
+	// authorization input anywhere -- access rules are resolved by the API
+	// from the caller's identity, never from a gid -- and the shared and
+	// admin groups are not enumerable at all (see SharedGroup).
 	for i := range groups {
-		if groups[i].Name == name {
+		if models.NamesEqual(groups[i].Name, name) {
 			s.writeJSON(w, groups[i])
 			return
 		}

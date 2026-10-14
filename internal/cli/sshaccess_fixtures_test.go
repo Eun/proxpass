@@ -13,6 +13,16 @@ const (
 	testSSHUser      = "root"
 )
 
+// Fixture values shared across the CLI tests more widely.
+const (
+	testRomeURL = "https://rome:8006"
+	// flagArgName is "--name" as it appears on a command line, as distinct
+	// from flagName which is the flag's declared name.
+	flagArgName = "--name"
+	// cmdInstance is the "instance" subcommand word, as typed.
+	cmdInstance = "instance"
+)
+
 // writeKeyFile writes a key into a temp dir and returns its path.
 //
 // Takes the directory from t.TempDir() rather than building a path from a

@@ -150,8 +150,13 @@ func resolveSubject(ctx context.Context, deps *Deps, clientName, groupName strin
 	if err != nil {
 		return "", 0, err
 	}
+	// Case-insensitive, like every other name the CLI accepts. Safe only
+	// because names are folded on the way in (models.FoldName) and so are
+	// unique ignoring case: while "ops" and "Ops" could both exist, this
+	// scan would have attached the policy to whichever the list happened to
+	// yield first.
 	for _, g := range groups {
-		if g.Name == groupName {
+		if models.NamesEqual(g.Name, groupName) {
 			return models.RuleGroup, g.ID, nil
 		}
 	}

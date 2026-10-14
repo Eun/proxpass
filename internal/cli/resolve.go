@@ -58,7 +58,7 @@ func ParseGuestTarget(
 func InstanceLookup(instances []*models.ProxmoxInstance) func(string) bool {
 	return func(name string) bool {
 		for _, inst := range instances {
-			if strings.EqualFold(inst.Name, name) {
+			if models.NamesEqual(inst.Name, name) {
 				return true
 			}
 		}
@@ -86,7 +86,7 @@ func ResolveGuestAndInstance(
 		found := false
 		for _, inst := range instances {
 			instByID[inst.ID] = inst
-			if strings.EqualFold(inst.Name, instName) {
+			if models.NamesEqual(inst.Name, instName) {
 				instFilterID = inst.ID
 				found = true
 			}
@@ -191,7 +191,7 @@ func resolveGuest(
 	// --- 3. Try guest name (case-insensitive) ---
 	var matches []*models.Guest
 	for _, g := range guests {
-		if strings.EqualFold(g.Name, identifier) {
+		if models.NamesEqual(g.Name, identifier) {
 			matches = append(matches, g)
 		}
 	}

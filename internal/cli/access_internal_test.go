@@ -18,7 +18,7 @@ func newAccessRepo(t *testing.T) (repo db.Repository, romeID, parisID int64) {
 	t.Cleanup(func() { _ = repo.Close() })
 
 	rome := &models.ProxmoxInstance{
-		Name: "rome", APIURL: "https://rome:8006", Node: "rome",
+		Name: "rome", APIURL: testRomeURL, Node: "rome",
 		ConsoleTransport: models.ConsoleTransportTermProxy,
 	}
 	paris := &models.ProxmoxInstance{
