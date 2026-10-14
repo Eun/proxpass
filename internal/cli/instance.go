@@ -171,7 +171,11 @@ When multiple --url flags are supplied:
 						return err
 					}
 					for _, inst := range instances {
-						if inst.Name == name {
+						// Case-insensitive, matching InstanceLookup and the
+						// way an instance resolves inside a login name: it
+						// would be odd for `access grant --instance ROME' to
+						// work while `instance rm ROME' did not.
+						if strings.EqualFold(inst.Name, name) {
 							if err := deps.Repo.RemoveProxmoxInstance(ctx, inst.ID); err != nil {
 								return err
 							}

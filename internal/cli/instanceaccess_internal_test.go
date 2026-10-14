@@ -30,9 +30,25 @@ const (
 // runAccess invokes an `access' subcommand and returns what it printed.
 func runAccess(t *testing.T, repo db.Repository, args ...string) (string, error) {
 	t.Helper()
+	return runCLI(t, repo, args...)
+}
+
+// runCLI invokes any subcommand through the real command tree and returns
+// what it printed.
+//
+// The whole tree rather than one command, so a test exercises the same
+// wiring the binary does -- flag definitions included, which is where the
+// behavior under test often lives.
+func runCLI(t *testing.T, repo db.Repository, args ...string) (string, error) {
+	t.Helper()
 	var out bytes.Buffer
 	deps := &Deps{Repo: repo, Out: &out, ErrOut: &out}
-	cmd := &ucli.Command{Commands: []*ucli.Command{accessCmd(deps)}}
+	cmd := &ucli.Command{Commands: []*ucli.Command{
+		accessCmd(deps),
+		clientCmd(deps),
+		groupCmd(deps),
+		instanceCmd(deps),
+	}}
 	err := cmd.Run(context.Background(), append([]string{testBinary}, args...))
 	return out.String(), err
 }
@@ -47,7 +63,7 @@ func newInstanceAccessRepo(t *testing.T) (db.Repository, *models.ProxmoxInstance
 	t.Cleanup(func() { _ = repo.Close() })
 
 	inst := &models.ProxmoxInstance{
-		Name: testNode, APIURL: "https://rome:8006", Node: testNode,
+		Name: testNode, APIURL: testRomeURL, Node: testNode,
 		ConsoleTransport: models.ConsoleTransportTermProxy,
 	}
 	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {

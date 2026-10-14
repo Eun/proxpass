@@ -7,6 +7,8 @@ import (
 
 	"proxpass/internal/models"
 
+	"strings"
+
 	ucli "github.com/urfave/cli/v3"
 )
 
@@ -107,7 +109,8 @@ func groupCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI comman
 						return err
 					}
 					for _, g := range groups {
-						if g.Name == name {
+						// Case-insensitive; see the note in `client rm'.
+						if strings.EqualFold(g.Name, name) {
 							if err := deps.Repo.RemoveGroup(ctx, g.ID); err != nil {
 								return err
 							}

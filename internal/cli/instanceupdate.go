@@ -6,6 +6,8 @@ import (
 
 	ucli "github.com/urfave/cli/v3"
 
+	"strings"
+
 	"proxpass/internal/models"
 )
 
@@ -172,14 +174,19 @@ func applyInstanceFlags(cmd *ucli.Command, inst *models.ProxmoxInstance) error {
 	return nil
 }
 
-// findInstanceByName returns the instance with that name.
+// findInstanceByName returns the instance with that name, matched
+// case-insensitively.
+//
+// Same reasoning as `instance rm': an instance resolves case-insensitively
+// in a login name and in `access grant --instance', so requiring the exact
+// case here would make `instance update' the odd one out.
 func findInstanceByName(ctx context.Context, deps *Deps, name string) (*models.ProxmoxInstance, error) {
 	instances, err := deps.Repo.ListProxmoxInstances(ctx)
 	if err != nil {
 		return nil, err
 	}
 	for _, inst := range instances {
-		if inst.Name == name {
+		if strings.EqualFold(inst.Name, name) {
 			return inst, nil
 		}
 	}

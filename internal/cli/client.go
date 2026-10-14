@@ -98,7 +98,12 @@ func clientCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI comma
 						return err
 					}
 					for _, c := range clients {
-						if c.Name == name {
+						// Case-insensitive, like every other name the CLI
+						// accepts: an administrator who typed the name once
+						// should not have to remember how they capitalized
+						// it. Only the lookup is relaxed -- the stored name
+						// keeps whatever case it was created with.
+						if strings.EqualFold(c.Name, name) {
 							if err := deps.Repo.RemoveClient(ctx, c.ID); err != nil {
 								return err
 							}

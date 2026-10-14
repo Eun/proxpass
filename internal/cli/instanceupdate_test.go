@@ -54,7 +54,7 @@ func updateFlags(t *testing.T, inst *models.ProxmoxInstance, argv ...string) err
 		Flags:  instanceUpdateCmd(&Deps{}).Flags,
 		Action: func(_ context.Context, c *ucli.Command) error { applyErr = applyInstanceFlags(c, inst); return nil },
 	}
-	full := append([]string{"update", "--name", inst.Name}, argv...)
+	full := append([]string{"update", flagArgName, inst.Name}, argv...)
 	if err := cmd.Run(t.Context(), full); err != nil {
 		return err
 	}
