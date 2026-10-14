@@ -71,10 +71,12 @@ func (r *AdminRepository) Close() error { return nil }
 
 // JSON parameter names that appear in several operations.
 const (
-	keyID        = "id"
-	keyPublicKey = "public_key"
-	keyClientID  = "client_id"
-	keyGuestID   = "guest_id"
+	keyID         = "id"
+	keyPublicKey  = "public_key"
+	keyClientID   = "client_id"
+	keyGuestID    = "guest_id"
+	keyInstanceID = "instance_id"
+	keyGroupID    = "group_id"
 )
 
 // --- Proxmox instances ---
@@ -200,7 +202,7 @@ func (r *AdminRepository) GrantClientAccess(ctx context.Context, clientID int64,
 
 func (r *AdminRepository) GrantGroupAccess(ctx context.Context, groupID int64, guestIDs []int64) error {
 	return r.call(ctx, "GrantGroupAccess",
-		map[string]any{"group_id": groupID, "guest_ids": guestIDs}, nil)
+		map[string]any{keyGroupID: groupID, "guest_ids": guestIDs}, nil)
 }
 
 func (r *AdminRepository) RevokeClientAccess(ctx context.Context, clientID, guestID int64) error {
@@ -210,7 +212,47 @@ func (r *AdminRepository) RevokeClientAccess(ctx context.Context, clientID, gues
 
 func (r *AdminRepository) RevokeGroupAccess(ctx context.Context, groupID, guestID int64) error {
 	return r.call(ctx, "RevokeGroupAccess",
-		map[string]any{"group_id": groupID, "guest_id": guestID}, nil)
+		map[string]any{keyGroupID: groupID, "guest_id": guestID}, nil)
+}
+
+// --- Instance access rules ---
+
+func (r *AdminRepository) ListInstanceAccessRules(
+	ctx context.Context,
+) ([]*models.InstanceAccessRuleRow, error) {
+	var out []*models.InstanceAccessRuleRow
+	if err := r.call(ctx, "ListInstanceAccessRules", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (r *AdminRepository) GrantClientInstanceAccess(
+	ctx context.Context, clientID int64, instanceIDs []int64,
+) error {
+	return r.call(ctx, "GrantClientInstanceAccess",
+		map[string]any{keyClientID: clientID, "instance_ids": instanceIDs}, nil)
+}
+
+func (r *AdminRepository) GrantGroupInstanceAccess(
+	ctx context.Context, groupID int64, instanceIDs []int64,
+) error {
+	return r.call(ctx, "GrantGroupInstanceAccess",
+		map[string]any{keyGroupID: groupID, "instance_ids": instanceIDs}, nil)
+}
+
+func (r *AdminRepository) RevokeClientInstanceAccess(
+	ctx context.Context, clientID, instanceID int64,
+) error {
+	return r.call(ctx, "RevokeClientInstanceAccess",
+		map[string]any{keyClientID: clientID, keyInstanceID: instanceID}, nil)
+}
+
+func (r *AdminRepository) RevokeGroupInstanceAccess(
+	ctx context.Context, groupID, instanceID int64,
+) error {
+	return r.call(ctx, "RevokeGroupInstanceAccess",
+		map[string]any{keyGroupID: groupID, keyInstanceID: instanceID}, nil)
 }
 
 // --- Default policy ---
@@ -272,6 +314,17 @@ func (r *AdminRepository) HasAccess(ctx context.Context, clientID, guestID int64
 	var out bool
 	if err := r.call(ctx, "HasAccess",
 		map[string]any{keyClientID: clientID, keyGuestID: guestID}, &out); err != nil {
+		return false, err
+	}
+	return out, nil
+}
+
+func (r *AdminRepository) HasInstanceAccess(
+	ctx context.Context, clientID, instanceID int64,
+) (bool, error) {
+	var out bool
+	if err := r.call(ctx, "HasInstanceAccess",
+		map[string]any{keyClientID: clientID, keyInstanceID: instanceID}, &out); err != nil {
 		return false, err
 	}
 	return out, nil

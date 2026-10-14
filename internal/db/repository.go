@@ -49,6 +49,18 @@ type Repository interface {
 	RevokeClientAccess(ctx context.Context, clientID, guestID int64) error
 	RevokeGroupAccess(ctx context.Context, groupID, guestID int64) error
 
+	// Instance Access Rules
+	//
+	// The same four operations against Proxmox nodes rather than guests.
+	// Separate methods rather than a target-kind argument: the two have
+	// different tables and different consequences, and a caller that has
+	// to pass a discriminator can pass the wrong one.
+	ListInstanceAccessRules(ctx context.Context) ([]*models.InstanceAccessRuleRow, error)
+	GrantClientInstanceAccess(ctx context.Context, clientID int64, instanceIDs []int64) error
+	GrantGroupInstanceAccess(ctx context.Context, groupID int64, instanceIDs []int64) error
+	RevokeClientInstanceAccess(ctx context.Context, clientID, instanceID int64) error
+	RevokeGroupInstanceAccess(ctx context.Context, groupID, instanceID int64) error
+
 	// Default Policy
 	SetDefaultPolicy(ctx context.Context, policy *models.DefaultAccessPolicy) error
 	GetDefaultPolicy(ctx context.Context) (*models.DefaultAccessPolicy, error)
@@ -85,6 +97,11 @@ type Repository interface {
 
 	// Access check (used by the proxy)
 	HasAccess(ctx context.Context, clientID, guestID int64) (bool, error)
+
+	// HasInstanceAccess reports whether a client may reach a Proxmox node
+	// itself. Unlike HasAccess it does NOT consult the default policy: see
+	// the implementation for why.
+	HasInstanceAccess(ctx context.Context, clientID, instanceID int64) (bool, error)
 }
 
 // ErrNoSuchToken reports a bearer token that cannot be redeemed.

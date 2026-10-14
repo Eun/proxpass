@@ -295,6 +295,55 @@ var adminOps = map[string]adminOp{
 		return nil, repo.SetSetting(ctx, args.Key, args.Value)
 	},
 
+	// --- Instance access rules ---
+	"ListInstanceAccessRules": func(ctx context.Context, repo db.Repository, _ json.RawMessage) (json.RawMessage, error) {
+		out, err := repo.ListInstanceAccessRules(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return encodeResult(out)
+	},
+	"GrantClientInstanceAccess": func(ctx context.Context, repo db.Repository, p json.RawMessage) (json.RawMessage, error) {
+		var args struct {
+			ClientID    int64   `json:"client_id"`
+			InstanceIDs []int64 `json:"instance_ids"`
+		}
+		if err := decodeParams(p, &args); err != nil {
+			return nil, err
+		}
+		return nil, repo.GrantClientInstanceAccess(ctx, args.ClientID, args.InstanceIDs)
+	},
+	"GrantGroupInstanceAccess": func(ctx context.Context, repo db.Repository, p json.RawMessage) (json.RawMessage, error) {
+		var args struct {
+			GroupID     int64   `json:"group_id"`
+			InstanceIDs []int64 `json:"instance_ids"`
+		}
+		if err := decodeParams(p, &args); err != nil {
+			return nil, err
+		}
+		return nil, repo.GrantGroupInstanceAccess(ctx, args.GroupID, args.InstanceIDs)
+	},
+	"RevokeClientInstanceAccess": func(ctx context.Context, repo db.Repository, p json.RawMessage) (json.RawMessage, error) {
+		var args struct {
+			ClientID   int64 `json:"client_id"`
+			InstanceID int64 `json:"instance_id"`
+		}
+		if err := decodeParams(p, &args); err != nil {
+			return nil, err
+		}
+		return nil, repo.RevokeClientInstanceAccess(ctx, args.ClientID, args.InstanceID)
+	},
+	"RevokeGroupInstanceAccess": func(ctx context.Context, repo db.Repository, p json.RawMessage) (json.RawMessage, error) {
+		var args struct {
+			GroupID    int64 `json:"group_id"`
+			InstanceID int64 `json:"instance_id"`
+		}
+		if err := decodeParams(p, &args); err != nil {
+			return nil, err
+		}
+		return nil, repo.RevokeGroupInstanceAccess(ctx, args.GroupID, args.InstanceID)
+	},
+
 	// --- Access check ---
 	"HasAccess": func(ctx context.Context, repo db.Repository, p json.RawMessage) (json.RawMessage, error) {
 		var args struct {
@@ -305,6 +354,20 @@ var adminOps = map[string]adminOp{
 			return nil, err
 		}
 		out, err := repo.HasAccess(ctx, args.ClientID, args.GuestID)
+		if err != nil {
+			return nil, err
+		}
+		return encodeResult(out)
+	},
+	"HasInstanceAccess": func(ctx context.Context, repo db.Repository, p json.RawMessage) (json.RawMessage, error) {
+		var args struct {
+			ClientID   int64 `json:"client_id"`
+			InstanceID int64 `json:"instance_id"`
+		}
+		if err := decodeParams(p, &args); err != nil {
+			return nil, err
+		}
+		out, err := repo.HasInstanceAccess(ctx, args.ClientID, args.InstanceID)
 		if err != nil {
 			return nil, err
 		}
