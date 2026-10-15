@@ -821,6 +821,42 @@ Host proxpass-host
     RequestTTY yes
 ```
 
+### Running one command
+
+Passing a command runs it **in the guest**, like any other `ssh`:
+
+```bash
+ssh ct100@proxpass-host ip addr        # the container's interfaces
+ssh ct100@proxpass-host hostname       # the container's hostname
+```
+
+It sees the same machine an interactive session does — same filesystem,
+processes, hostname and **network** — because the command enters every one
+of the container's namespaces. The one deliberate difference is the shell:
+a command gets a **non-login** `sh -c`, exactly as `sshd` does, so a
+profile banner cannot land in the middle of your output. An interactive
+session gets a login shell, where that banner is wanted.
+
+> Before v0.0.19 a command entered every namespace **except the network
+> one**, so `ip addr` and `ss` reported the *Proxmox node's* interfaces
+> while `hostname` in the same command correctly reported the container's.
+> Anything that merely opened a socket was also using the node's stack.
+> The same release put commands and transfers **into the container's
+> cgroup**, so they are bound by its memory and CPU limits; before it,
+> `nproc` on a one-CPU container reported the node's full count and a
+> runaway command billed its memory to the node.
+
+Two differences from an interactive session remain, both deliberate:
+
+| | |
+|---|---|
+| **No AppArmor or seccomp** | A command runs unconfined, where `pct enter` applies the container's profile and filter. `nsenter` has no flag for this, and the alternative (`lxc-attach`) decides on its own whether to allocate a terminal — which corrupts binary output and is why it is not used. |
+| **No supplementary groups** | `id` reports `groups=0` rather than the container root's full list. This errs safe — the node's groups are dropped, not carried in — but a file readable only through a supplementary group is readable in the console and not over `scp`. |
+
+Environment variables such as `HOME`, `SHELL` and `$HOSTNAME` describe the
+*node*, not the container. That matches `pct enter`, which leaks the same
+set, so `hostname` and `$HOSTNAME` can disagree in both.
+
 ## Architecture
 
 ```
