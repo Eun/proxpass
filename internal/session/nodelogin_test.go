@@ -484,3 +484,101 @@ func TestAnInstanceNamedWithAnAtSignDoesNotShadowAGuest(t *testing.T) {
 			got[0].GuestName, got[0].InstanceName, guestWeb, instRome)
 	}
 }
+
+// THE gap Phase 5 closes: a client granted only a node can browse.
+//
+// Before this the picker listed guests only, so such a client ran `ssh
+// alice@host', was told "no guests available" and got exit 1 -- with no way
+// to discover the node it had in fact been granted.
+func TestAClientGrantedOnlyANodeCanBrowse(t *testing.T) {
+	repo := newRepo(t)
+	inst := seedNodeInstance(t, repo, instRome)
+	client := grantNode(t, repo, inst.ID)
+
+	proxier := &testenv.MockProxier{}
+	// "1" selects the only row; the numbered fallback needs no raw mode.
+	tb := newTerminal("1\n")
+	d := newDeps(repo, tb, proxier)
+	d.LoginName = userAlice
+	d.IdentityName = userAlice
+	d.ClientID = client.ID
+
+	if code := session.Run(t.Context(), d); code != 0 {
+		t.Fatalf("exit = %d, want 0 (err: %q)", code, tb.errb.String())
+	}
+	if strings.Contains(tb.errb.String(), "no guests available") {
+		t.Errorf("a client with a node grant was told there is nothing: %q",
+			tb.errb.String())
+	}
+	got := proxier.SessionsSnapshot()
+	if len(got) != 1 {
+		t.Fatalf("got %d sessions, want 1: %+v", len(got), got)
+	}
+	if !got[0].IsNode || got[0].InstanceName != instRome {
+		t.Errorf("picked %+v, want the node %q", got[0], instRome)
+	}
+}
+
+// A client granted nothing at all still gets a refusal, not an empty list.
+func TestAClientGrantedNothingIsStillRefused(t *testing.T) {
+	repo := newRepo(t)
+	seedNodeInstance(t, repo, instRome)
+	client := &models.Client{Name: userAlice, PublicKeys: []string{aliceKey}}
+	if err := repo.AddClient(t.Context(), client); err != nil {
+		t.Fatalf("add client: %v", err)
+	}
+	stored, err := repo.GetClientByName(t.Context(), userAlice)
+	if err != nil {
+		t.Fatalf("get client: %v", err)
+	}
+
+	proxier := &testenv.MockProxier{}
+	tb := newTerminal("")
+	d := newDeps(repo, tb, proxier)
+	d.LoginName = userAlice
+	d.IdentityName = userAlice
+	d.ClientID = stored.ID
+
+	if code := session.Run(t.Context(), d); code == 0 {
+		t.Errorf("exit = 0; a client granted nothing should be refused")
+	}
+	if len(proxier.SessionsSnapshot()) != 0 {
+		t.Error("a client granted nothing connected to something")
+	}
+}
+
+// An instance with no ssh-host is not offered in the picker.
+//
+// It cannot be opened -- a node is reached only over SSH -- so listing it
+// would offer a choice that always fails. The caller is still told why if
+// they name it directly; see the API's ConnectSessionNode.
+func TestAnInstanceWithNoSSHHostIsNotListed(t *testing.T) {
+	repo := newRepo(t)
+	// Deliberately not seedNodeInstance: no ssh_host.
+	inst := &models.ProxmoxInstance{
+		Name: instRome, APIURL: romeAPIURL, Node: instRome,
+		ConsoleTransport: models.ConsoleTransportTermProxy,
+	}
+	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
+		t.Fatalf("add instance: %v", err)
+	}
+	client := grantNode(t, repo, inst.ID)
+
+	proxier := &testenv.MockProxier{}
+	tb := newTerminal("")
+	d := newDeps(repo, tb, proxier)
+	d.LoginName = userAlice
+	d.IdentityName = userAlice
+	d.ClientID = client.ID
+
+	// Nothing reachable, so this refuses rather than offering a row that
+	// cannot be connected to.
+	if code := session.Run(t.Context(), d); code == 0 {
+		t.Errorf("exit = 0; an unreachable node must not be offered: out=%q",
+			tb.out.String())
+	}
+	if strings.Contains(tb.out.String(), instRome) {
+		t.Errorf("the picker listed an instance with no ssh-host: %q",
+			tb.out.String())
+	}
+}

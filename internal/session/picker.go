@@ -178,8 +178,8 @@ func (d *Deps) pickerLoginHint() string {
 	return AdminUser
 }
 
-// runPicker lists the guests the session may reach and connects to the one
-// the user selects.
+// runPicker lists what the session may reach -- guests and Proxmox nodes --
+// and connects to the one the user selects.
 func (d *Deps) runPicker(ctx context.Context) int {
 	guests, err := d.accessibleGuests(ctx)
 	if err != nil {
@@ -187,12 +187,22 @@ func (d *Deps) runPicker(ctx context.Context) int {
 		d.errf("internal error")
 		return 1
 	}
-	if len(guests) == 0 {
-		d.errf("no guests available")
+	// A node-listing failure is not fatal, matching namesANode: a session
+	// that can still offer guests should offer them rather than refuse
+	// everything because one of two lists could not be fetched.
+	nodes, err := d.Dir.AccessibleInstances(ctx)
+	if err != nil {
+		d.Logger.Printf("%s: listing instances: %v", d.IdentityName, err)
+		nodes = nil
+	}
+	if len(guests) == 0 && len(nodes) == 0 {
+		// Both, because a client granted only a node has no guests and
+		// must not be told there is nothing for it.
+		d.errf("nothing available")
 		return 1
 	}
 
-	rows := newGuestRows(guests)
+	rows := newPickerRows(guests, nodes)
 
 	chosen, err := d.pick(rows)
 	if err != nil {
@@ -204,8 +214,11 @@ func (d *Deps) runPicker(ctx context.Context) int {
 		return 1
 	}
 
-	// Credentials are fetched for the chosen guest only, at the moment of
-	// connecting, rather than held for every guest in the list.
+	// Credentials are fetched for the chosen target only, at the moment of
+	// connecting, rather than held for everything in the list.
+	if chosen.isNode() {
+		return d.connectNodeChecked(ctx, chosen.inst)
+	}
 	return d.connectChecked(ctx, chosen.guest)
 }
 
@@ -225,9 +238,9 @@ func (d *Deps) pick(rows []guestRow) (guestRow, error) {
 // a number.
 func (d *Deps) pickNumbered(rows []guestRow) (guestRow, error) {
 	out := d.Terminal.UIOut()
-	fmt.Fprintf(out, "proxpass — guests available to %s\n\n", d.displayName())
+	fmt.Fprintf(out, pickerTitle+"\n\n", d.displayName())
 	writeGuestTable(out, rows)
-	fmt.Fprintf(out, "\nSelect a guest [1-%d], or q to quit: ", len(rows))
+	fmt.Fprintf(out, "\nSelect [1-%d], or q to quit: ", len(rows))
 
 	choice, err := readChoice(d.Terminal.In, len(rows))
 	if err != nil {
@@ -238,7 +251,7 @@ func (d *Deps) pickNumbered(rows []guestRow) (guestRow, error) {
 	row := rows[choice-1]
 	if !row.isRunning() {
 		return guestRow{}, fmt.Errorf("%s is %s and has no console",
-			row.guest.Name, row.guest.Status)
+			row.name, row.status())
 	}
 	return row, nil
 }
@@ -246,7 +259,7 @@ func (d *Deps) pickNumbered(rows []guestRow) (guestRow, error) {
 // writeGuestTable renders rows as an aligned, numbered table.
 func writeGuestTable(w io.Writer, rows []guestRow) {
 	if len(rows) == 0 {
-		fmt.Fprintln(w, "  (no guests available)")
+		fmt.Fprintln(w, "  (nothing available)")
 		return
 	}
 	widths := columnWidths(rows)
@@ -255,8 +268,8 @@ func writeGuestTable(w io.Writer, rows []guestRow) {
 		widths.status, colStatus, colHost)
 	for i, r := range rows {
 		fmt.Fprintf(w, "  %*d  %-*s  %-*s  %-*s  %s\n",
-			widths.num, i+1, widths.id, r.id, widths.name, r.guest.Name,
-			widths.status, r.guest.Status, r.instName)
+			widths.num, i+1, widths.id, r.id, widths.name, r.name,
+			widths.status, r.status(), r.instName)
 	}
 }
 
@@ -285,15 +298,22 @@ func columnWidths(rows []guestRow) colWidths {
 		if n := displayWidth(r.id); n > w.id {
 			w.id = n
 		}
-		if n := displayWidth(r.guest.Name); n > w.name {
+		if n := displayWidth(r.name); n > w.name {
 			w.name = n
 		}
-		if n := displayWidth(string(r.guest.Status)); n > w.status {
+		if n := displayWidth(r.status()); n > w.status {
 			w.status = n
 		}
 	}
 	return w
 }
+
+// pickerTitle heads both renderers.
+//
+// "available to" rather than "guests available to": the list holds nodes
+// as well now, and naming only one of the two kinds would misdescribe it
+// for a client granted only the other.
+const pickerTitle = "proxpass — available to %s"
 
 // Column headings, shared by the interactive picker and the numbered
 // fallback so the two cannot drift apart.

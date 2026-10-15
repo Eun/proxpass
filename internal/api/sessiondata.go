@@ -346,13 +346,32 @@ func accessible[T any](
 }
 
 // accessibleInstances returns the instances identity may reach.
+//
+// Instances with no ssh-host are left out. A node is reached only over SSH,
+// so one without a host cannot be opened at all, and listing it would offer
+// a choice that always fails -- the picker would show it, the user would
+// select it, and the connect endpoint would report a configuration fault.
+// Being unable to reach it is not a permission problem, which is why
+// ConnectSessionNode still reports it rather than refusing: a caller naming
+// such an instance directly is entitled to know why it will not open.
 func (h *SessionHandler) accessibleInstances(
 	ctx context.Context, identity *models.SessionIdentity,
 ) ([]*models.ProxmoxInstance, error) {
-	return accessible(ctx, identity,
+	granted, err := accessible(ctx, identity,
 		h.repo.ListProxmoxInstances,
 		func(inst *models.ProxmoxInstance) int64 { return inst.ID },
 		h.repo.HasInstanceAccess)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*models.ProxmoxInstance, 0, len(granted))
+	for _, inst := range granted {
+		if inst.SSHHost == "" {
+			continue
+		}
+		out = append(out, inst)
+	}
+	return out, nil
 }
 
 // accessibleGuests returns the guests identity may reach.

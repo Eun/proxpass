@@ -98,25 +98,34 @@ ssh -p 2222 ct101@pve1@localhost     # instance-qualified, when a name is ambigu
 > your own, is resolved as a guest first, which means `ssh myguest@localhost
 > guest ls` runs `guest ls` *inside that guest* rather than in proxpass.
 
-## The guest picker
+## The picker
 
-Connecting without a command opens an interactive picker:
+Connecting without a command opens an interactive picker over everything you
+may reach — guests and Proxmox nodes together:
 
 ```
-proxpass — guests available to admin
+proxpass — available to admin
 
   ID     NAME ▲            STATUS   HOST
-▸ ct103  merge-with-label  running  pve1
+▸ node   pve1              -        pve1
+  ct103  merge-with-label  running  pve1
   ct126  mautrix-telegram  running  pve1
   ct118  mautrix-whatsapp  running  pve2
 
-  50 guests · sort: name
+  51 targets · sort: name
   ↑/↓ move · type to filter · ⏎ connect · tab sort · esc clear · ctrl+c quit
 ```
 
+A node is the row with `node` in the `ID` column; selecting it opens a shell
+on the Proxmox host, exactly as `ssh <node>@proxpass` would. Nodes you have
+not been granted are not listed, and neither is one with no `--ssh-host`,
+since it could not be opened.
+
 Typing filters the list as a fuzzy subsequence match, so `mw` finds
 `mautrix-whatsapp` and `118` finds `ct118`. Each of the name, the type+VMID
-and the host is matched on its own, and a hit on the name ranks highest.
+and the host is matched on its own, and a hit on the name ranks highest —
+and because `node` is matched as a node row's id, typing it narrows the list
+to the nodes.
 
 ### Sorting
 
@@ -125,10 +134,10 @@ the header marks the active column and the status line names it:
 
 | Column | Order |
 | --- | --- |
-| `ID` | numeric by VMID, so `ct99` comes before `ct118` |
+| `ID` | numeric by VMID, so `ct99` comes before `ct118`; nodes group at the top, having no VMID |
 | `NAME` | alphabetical |
-| `STATUS` | running first, since those are the ones you can enter |
-| `HOST` | alphabetical by Proxmox host |
+| `STATUS` | running first, since those are the ones you can enter; a node ranks with them, being always connectable |
+| `HOST` | alphabetical by Proxmox host; a node sorts with the guests that live on it |
 
 `Tab` walks those in the order the header prints them, left to right. The
 picker **opens** sorted by `NAME`, which is what you want when scanning a
