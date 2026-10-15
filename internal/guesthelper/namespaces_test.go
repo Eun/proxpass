@@ -31,14 +31,15 @@ import (
 // node's state as though it were the container's, which is the kind of
 // wrong answer that gets believed.
 func TestEveryNamespaceIsEntered(t *testing.T) {
-	// Both builders share enterArgs, so both are checked: a transfer that
-	// entered a different set from a command would be its own bug.
+	// The COMMAND path only. A transfer no longer uses nsenter at all --
+	// it attaches with lxc-attach, which derives the namespace set from
+	// the container's own config. See LaunchCommand.
 	for _, tc := range []struct {
 		name string
 		cmd  string
 	}{
 		{"command", guesthelper.ShellCommand(110, true, "ip addr")},
-		{"helper launch", guesthelper.LaunchCommand(110, guesthelper.ArchAMD64, true)},
+		{"interactive", guesthelper.ShellCommand(110, true, "")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Against the nsenter invocation ONLY. The surrounding shell
@@ -167,7 +168,6 @@ func TestTheContainersCgroupIsJoined(t *testing.T) {
 		cmd  string
 	}{
 		{"command", guesthelper.ShellCommand(110, true, "nproc")},
-		{"helper launch", guesthelper.LaunchCommand(110, guesthelper.ArchAMD64, true)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// The flag reaches nsenter...
@@ -183,6 +183,81 @@ func TestTheContainersCgroupIsJoined(t *testing.T) {
 					"nothing:\n%s", cgroupFlag, tc.cmd)
 			}
 		})
+	}
+}
+
+// A transfer gets the container's limits WITHOUT the cgroup flag.
+//
+// This is the other half of TestTheContainersCgroupIsJoined. The command
+// path has to ask nsenter for the cgroup and settle for whatever the node's
+// util-linux will give it; a transfer sidesteps the question by attaching
+// with lxc-attach, which asks the running LXC monitor for the container's
+// actual cgroup fds and loads its seccomp profile before exec.
+//
+// Measured on a live one-CPU container:
+//
+//	                  lxc-attach    nsenter (no -c)
+//	cgroup            0::/.lxc      the node's sshd session
+//	nproc             1             24
+//	Seccomp           2             0
+//
+// So the transfer path must NOT grow a cgroup probe: having one would mean
+// it had been switched back to nsenter and silently lost seccomp too.
+func TestATransferIsContainedWithoutTheCgroupFlag(t *testing.T) {
+	cmd := guesthelper.LaunchCommand(110, guesthelper.ArchAMD64, true)
+
+	if !strings.Contains(cmd, "lxc-attach") {
+		t.Errorf("a transfer does not use lxc-attach, so it runs in the node's "+
+			"cgroup with no seccomp profile:\n%s", cmd)
+	}
+	// The CVE-2026-78408 probe belongs to the command path alone. Here it
+	// would be dead weight at best, and a sign of a regression at worst.
+	for _, bad := range []string{"ppcg", "--join-cgroup", "nsenter"} {
+		if strings.Contains(cmd, bad) {
+			t.Errorf("found %q on the transfer path, which should not need "+
+				"nsenter at all:\n%s", bad, cmd)
+		}
+	}
+}
+
+// A transfer must not depend on anything inside the container.
+//
+// This is the distroless contract. The helper is a static binary staged on
+// the NODE and executed through an inherited descriptor, so a container
+// holding nothing but its own application -- no shell, no coreutils, no
+// libc, no ld.so -- is still servable. Verified live: a container's /etc
+// was listed this way.
+//
+// Two things keep it true, and both are easy to break by accident:
+//
+//   - the program is /proc/self/fd/N, never a path. lxc-attach execs the
+//     argument as given (execvp skips the PATH search once it contains a
+//     slash), so a container-side path would have to exist inside.
+//   - nothing is wrapped in a shell. `pct enter' is the cautionary case:
+//     it passes no command and so ends in execlp("/bin/sh"), which is
+//     exactly why it cannot serve a distroless container.
+func TestATransferNeedsNothingInsideTheContainer(t *testing.T) {
+	cmd := guesthelper.LaunchCommand(110, guesthelper.ArchAMD64, true)
+
+	at := strings.Index(cmd, " -- ")
+	if at < 0 {
+		t.Fatalf("no -- separator in:\n%s", cmd)
+	}
+	program := cmd[at+len(" -- "):]
+	if j := strings.Index(program, " 3< "); j >= 0 {
+		program = program[:j] // the redirection is node-side and legitimate
+	}
+
+	if !strings.HasPrefix(strings.TrimSpace(program), "/proc/self/fd/") {
+		t.Errorf("the program is not an inherited descriptor, so it must exist "+
+			"inside the container:\n  program: %s", program)
+	}
+	// No shell, and no container-side interpreter of any kind.
+	for _, bad := range []string{"/bin/sh", "sh -c", "/bin/bash", "env "} {
+		if strings.Contains(program, bad) {
+			t.Errorf("the transfer runs %q inside the container, which a "+
+				"distroless image does not have:\n  program: %s", bad, program)
+		}
 	}
 }
 

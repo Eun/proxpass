@@ -310,7 +310,7 @@ func containerCommand(vmid int, cmd string) string {
 	pidOf := "lxc-info -n " + id + " -p 2>/dev/null | " +
 		`sed -n 's/^PID:[[:space:]]*\([0-9]\{1,\}\)$/\1/p'`
 	return strings.Join([]string{
-		"set -e",
+		shellPrelude,
 		"pid=$(" + pidOf + ")",
 		`[ -n "$pid" ] || { echo "container ` + fmt.Sprint(vmid) +
 			` is not running" >&2; exit ` + fmt.Sprint(ErrNotRunningStatus) + "; }",

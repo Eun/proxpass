@@ -65,21 +65,20 @@ func TestStagePathSeparatesArches(t *testing.T) {
 	}
 }
 
-// TestLaunchCommandFlags pins the flags that were settled against a real
-// node. Each one is load-bearing and a silent removal would reintroduce a
-// bug that is expensive to rediscover.
+// TestLaunchCommandFlags pins the transfer path's invocation.
+//
+// It attaches with lxc-attach rather than nsenter, which is what gives the
+// helper the container's cgroup and seccomp profile. See LaunchCommand for
+// why the PTY objection that rules lxc-attach out for a COMMAND does not
+// apply to a transfer.
 func TestLaunchCommandFlags(t *testing.T) {
 	cmd := guesthelper.LaunchCommand(127, guesthelper.ArchAMD64, true)
 
 	for _, want := range []string{
-		"nsenter",
-		" -m ",         // mount namespace: paths resolve inside the container
-		" -r ",         // its root: an absolute symlink cannot escape to the node
-		" -n ",         // its network namespace: the container's stack, not the node's
-		" -p ",         // its PID namespace: without this the exec is ENOENT
-		" -U ",         // its user namespace
-		"-S 0", "-G 0", // as root inside
-		"lxc-info",
+		"lxc-attach",
+		"-n '127'",    // the container by name; no pid lookup needed
+		"--clear-env", // the node's environment must not leak in
+		"lxc-info",    // the not-running guard
 		"exec ",
 	} {
 		if !strings.Contains(cmd, want) {
@@ -87,26 +86,51 @@ func TestLaunchCommandFlags(t *testing.T) {
 		}
 	}
 
-	// -r and -w take OPTIONAL arguments, so a separated value is parsed as
-	// the program to run. "nsenter -r /" once made every transfer fail
-	// with "failed to execute /: Permission denied".
-	for _, bad := range []string{rootArgSep, wdArgSep} {
+	// nsenter's namespace flags are meaningless to lxc-attach, which reads
+	// the container's own config. Finding one means the two invocations
+	// have been confused for each other.
+	for _, bad := range []string{" -m ", " -r ", " -U ", "-S 0", "-G 0", "$ppcg"} {
 		if strings.Contains(cmd, bad) {
-			t.Errorf("found %q, which makes / the program:\n%s", bad, cmd)
+			t.Errorf("found nsenter flag %q on the lxc-attach path:\n%s", bad, cmd)
 		}
 	}
 }
 
-// TestLaunchCommandPrivileged pins that a privileged container does NOT get
-// the user-namespace flags: entering it fails with EINVAL because the caller
-// is already a member.
-func TestLaunchCommandPrivileged(t *testing.T) {
-	cmd := guesthelper.LaunchCommand(100, guesthelper.ArchARM64, false)
-	if strings.Contains(cmd, " -U ") {
-		t.Errorf("privileged container got -U:\n%s", cmd)
+// -e must never be passed.
+//
+// It reads as "elevate privileges", but attach.c gates fetch_seccomp()
+// behind attach_lsm(), so clearing the LSM flag discards the container's
+// seccomp profile as well. Measured on a live node: a bare -e gives
+// Seccomp 0, nproc 24 and the node's cgroup -- it silently drops all three
+// protections this transport was chosen for.
+func TestLaunchCommandNeverElevatesPrivileges(t *testing.T) {
+	for _, cmd := range []string{
+		guesthelper.LaunchCommand(127, guesthelper.ArchAMD64, true),
+		guesthelper.LaunchCommand(100, guesthelper.ArchARM64, false),
+	} {
+		for _, bad := range []string{" -e ", " -e=", "--elevated-privileges"} {
+			if strings.Contains(cmd, bad) {
+				t.Errorf("found %q, which also discards seccomp:\n%s", bad, cmd)
+			}
+		}
 	}
-	if !strings.Contains(cmd, " -m ") || !strings.Contains(cmd, " -p ") {
-		t.Errorf("privileged container lost -m or -p:\n%s", cmd)
+}
+
+// TestLaunchCommandPrivileged pins that the two container kinds produce the
+// SAME attach.
+//
+// nsenter needed -U -S 0 -G 0 for an unprivileged container and had to omit
+// them for a privileged one, because entering a user namespace one is
+// already in fails with EINVAL. lxc-attach reads the container's config for
+// the idmap, so there is nothing to decide and no way to get it wrong.
+func TestLaunchCommandPrivileged(t *testing.T) {
+	unpriv := guesthelper.LaunchCommand(100, guesthelper.ArchARM64, true)
+	priv := guesthelper.LaunchCommand(100, guesthelper.ArchARM64, false)
+
+	if unpriv != priv {
+		t.Errorf("the attach differs by privilege, but lxc-attach derives the\n"+
+			"idmap from the container's own config:\n  unprivileged: %s\n  privileged:   %s",
+			unpriv, priv)
 	}
 }
 

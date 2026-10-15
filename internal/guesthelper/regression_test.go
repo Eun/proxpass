@@ -8,18 +8,21 @@ import (
 	"proxpass/internal/guesthelper"
 )
 
-// TestLaunchNeverHandsNsenterANodePath is the regression test for the bug
+// TestLaunchNeverHandsTheAttachANodePath is the regression test for the bug
 // that shipped in v0.0.15 and broke every transfer.
 //
-// nsenter resolves the program to exec AFTER switching root, so a path on the
-// node does not exist by the time it is used:
+// The program to exec is resolved AFTER the switch into the container's
+// root, so a path on the node does not exist by the time it is used:
 //
-//	nsenter: failed to execute /var/tmp/proxpass-helper-1-amd64:
+//	failed to execute /var/tmp/proxpass-helper-1-amd64:
 //	No such file or directory
 //
 // The staged path may appear only as a REDIRECTION TARGET, which the shell
-// opens before nsenter runs. It must never be the program.
-func TestLaunchNeverHandsNsenterANodePath(t *testing.T) {
+// opens before the attach runs. It must never be the program.
+//
+// This outlived the switch from nsenter to lxc-attach: both resolve the
+// program inside the container, so the failure mode is identical.
+func TestLaunchNeverHandsTheAttachANodePath(t *testing.T) {
 	for _, arch := range []guesthelper.Arch{guesthelper.ArchAMD64, guesthelper.ArchARM64} {
 		cmd := guesthelper.LaunchCommand(110, arch, true)
 		staged := guesthelper.StagePath(arch)
@@ -47,9 +50,15 @@ func TestLaunchNeverHandsNsenterANodePath(t *testing.T) {
 		if !strings.Contains(cmd, "3< "+shQuote(staged)) {
 			t.Errorf("%s: the staged binary is never opened on the node:\n%s", arch, cmd)
 		}
-		// -p is what makes /proc/self exist for us inside the container.
-		if !strings.Contains(cmd, " -p ") {
-			t.Errorf("%s: without -p the /proc/self/fd path is ENOENT:\n%s", arch, cmd)
+		// /proc/self must be the CONTAINER's, or the descriptor path is
+		// ENOENT. nsenter needed -p for that; lxc-attach enters the pid
+		// namespace itself, so there is no flag to lose -- but there is
+		// also no flag to assert, and searching the whole command for
+		// " -p " would match the `lxc-info -n <id> -p' guard and pass no
+		// matter what. Assert the attach instead.
+		if !strings.Contains(cmd, "lxc-attach") {
+			t.Errorf("%s: nothing enters the container's pid namespace, so"+
+				" /proc/self/fd/3 is ENOENT:\n%s", arch, cmd)
 		}
 	}
 }
