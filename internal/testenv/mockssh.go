@@ -17,6 +17,7 @@ import (
 	"proxpass/internal/console"
 	"proxpass/internal/models"
 
+	"github.com/pkg/sftp"
 	gossh "golang.org/x/crypto/ssh"
 )
 
@@ -39,6 +40,15 @@ type MockSSHServer struct {
 	KeyPath string
 	// User is the SSH username the server expects.
 	User string
+
+	// SFTPRoot is the directory the mock sftp subsystem serves. Set it
+	// before a transfer; an empty value serves the process's working
+	// directory, which a test should not rely on.
+	SFTPRoot string
+
+	// mu guards subsystems, which the session goroutines append to.
+	mu         sync.Mutex
+	subsystems []string
 }
 
 // NewMockSSHServer starts a mock SSH server on a random port.
@@ -183,6 +193,38 @@ func (m *MockSSHServer) handleSession(ch gossh.Channel, reqs <-chan *gossh.Reque
 			m.handleExecCommand(ch, cmd)
 			return
 
+		case "subsystem":
+			// Payload is the same shape as exec: uint32 len + string.
+			if len(req.Payload) < 4 {
+				if req.WantReply {
+					_ = req.Reply(false, nil)
+				}
+				return
+			}
+			nameLen := int(req.Payload[0])<<24 | int(req.Payload[1])<<16 |
+				int(req.Payload[2])<<8 | int(req.Payload[3])
+			if len(req.Payload) < 4+nameLen {
+				if req.WantReply {
+					_ = req.Reply(false, nil)
+				}
+				return
+			}
+			name := string(req.Payload[4 : 4+nameLen])
+			m.recordSubsystem(name)
+			// Only "sftp" is offered, like a real sshd, so a test can
+			// tell a wrong subsystem name from a working one.
+			if name != "sftp" {
+				if req.WantReply {
+					_ = req.Reply(false, nil)
+				}
+				return
+			}
+			if req.WantReply {
+				_ = req.Reply(true, nil)
+			}
+			m.serveSFTP(ch)
+			return
+
 		case "shell":
 			if req.WantReply {
 				_ = req.Reply(true, nil)
@@ -224,6 +266,37 @@ func (m *MockSSHServer) handleSession(ch gossh.Channel, reqs <-chan *gossh.Reque
 			}
 		}
 	}
+}
+
+// recordSubsystem notes a subsystem request so a test can assert which one
+// was asked for.
+func (m *MockSSHServer) recordSubsystem(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.subsystems = append(m.subsystems, name)
+}
+
+// Subsystems returns the subsystem names requested so far.
+func (m *MockSSHServer) Subsystems() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.subsystems...)
+}
+
+// serveSFTP runs a real SFTP server over the channel, rooted at SFTPRoot.
+//
+// A real server rather than a stub: the point of the node transfer path is
+// that proxpass pumps bytes between an unmodified client and an unmodified
+// sftp-server, so a test that spoke a simplified dialect would not be
+// testing that.
+func (m *MockSSHServer) serveSFTP(ch gossh.Channel) {
+	defer func() { _ = ch.Close() }()
+	server, err := sftp.NewServer(ch, sftp.WithServerWorkingDirectory(m.SFTPRoot))
+	if err != nil {
+		return
+	}
+	defer func() { _ = server.Close() }()
+	_ = server.Serve()
 }
 
 // handleExecCommand responds to pct enter / qm terminal commands

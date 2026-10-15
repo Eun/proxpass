@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 
@@ -42,19 +43,20 @@ func isSFTPRequest(cmd string) bool {
 	return base == sftpSubsystem || base == "internal-sftp"
 }
 
-// runSFTP serves a file transfer for the guest named by the login name.
+// runSFTP serves a file transfer for the guest or node named by the login
+// name.
 //
 // # Why the login name
 //
 // A subsystem request carries no arguments, so there is nowhere to put a
-// guest identifier: "sftp alice@host ct100" is not a thing a client can send.
+// target identifier: "sftp alice@host ct100" is not a thing a client can send.
 // The login name is the only channel, which makes
 //
 //	scp file.txt ct100@host:/tmp/
 //
 // the natural syntax -- and it is the same resolution the console already
-// uses for "ssh ct100@host", scoped to the guests this session may reach. The
-// identity still comes from the KEY, so naming a guest grants nothing.
+// uses for "ssh ct100@host", scoped to what this session may reach. The
+// identity still comes from the KEY, so naming a target grants nothing.
 //
 // # Errors
 //
@@ -71,10 +73,18 @@ func (d *Deps) runSFTP(ctx context.Context) int {
 	}
 
 	// A reserved name means "browse", which a transfer cannot do: there is
-	// no guest to transfer to.
+	// nothing to transfer to.
 	if isReservedLoginName(name) {
-		d.Logger.Printf("%s: sftp: %q names no guest", d.IdentityName, name)
+		d.Logger.Printf("%s: sftp: %q names no target", d.IdentityName, name)
 		return 1
+	}
+
+	// A node, before a guest, in the same order `ssh' and `ssh ... <cmd>'
+	// use -- so `scp f rome@host:' and `ssh rome@host' reach the same
+	// place. A node that shares its name with a guest wins here too, and
+	// the guest stays reachable as <guest>@<instance>.
+	if inst, ok := d.namesANode(ctx, name); ok {
+		return d.serveNodeSFTP(ctx, inst)
 	}
 
 	guest, err := d.resolveLoginNameGuest(ctx, name)
@@ -94,7 +104,88 @@ func (d *Deps) runSFTP(ctx context.Context) int {
 	return d.serveSFTP(info)
 }
 
-// serveSFTP opens the transport to the Proxmox node and serves the protocol.
+// serveNodeSFTP pumps a file transfer to and from the Proxmox node itself.
+//
+// Quite unlike the guest path below, and much shorter. A node runs its own
+// sftp-server, so there is nothing to stage and nothing to enter: proxpass
+// asks the node's sshd for the subsystem and copies bytes between it and
+// the client. The whole guesthelper and sftpserver stack is bypassed --
+// it exists because a container has no server to ask, which is not a
+// problem a node has.
+//
+// `scp' needs no separate handling. Since OpenSSH 9.0 it speaks SFTP by
+// default, so serving the subsystem serves both commands.
+func (d *Deps) serveNodeSFTP(ctx context.Context, inst *models.ProxmoxInstance) int {
+	// Asking for the credentials IS the access check, exactly as the
+	// console does, so a transfer cannot reach a node a shell could not.
+	info, err := d.Dir.ConnectNode(ctx, inst.ID)
+	if err != nil {
+		d.Logger.Printf("%s: sftp: connect node %s: %v",
+			d.IdentityName, inst.Name, err)
+		return 1
+	}
+
+	runner, err := console.DialNode(info.Instance, info.SSHKey, d.Logger)
+	if err != nil {
+		d.Logger.Printf("%s: sftp: %v", d.IdentityName, err)
+		return 1
+	}
+	defer func() { _ = runner.Close() }()
+
+	d.Logger.Printf("%s: sftp to node %s", d.IdentityName, info.Instance.Name)
+
+	// The node's stderr is discarded rather than forwarded. sshd sets
+	// CHAN_EXTENDED_IGNORE for a subsystem session, so the client would
+	// never see it, and a real sftp-server reports its failures as SFTP
+	// status packets on the channel itself -- which the pump below
+	// carries through unchanged.
+	remote, err := runner.Subsystem(nodeSFTPSubsystem, nil)
+	if err != nil {
+		d.Logger.Printf("%s: sftp: %v", d.IdentityName, err)
+		return 1
+	}
+	defer func() { _ = remote.Close() }()
+
+	return d.pumpSFTP(remote)
+}
+
+// nodeSFTPSubsystem is the subsystem name every sshd registers for SFTP.
+//
+// Not the path in SSH_ORIGINAL_COMMAND: that is what OUR sshd was asked
+// for, and the node's own path may differ. Asking by name lets the node
+// resolve it.
+const nodeSFTPSubsystem = "sftp"
+
+// pumpSFTP copies between the client and the node until either end stops.
+//
+// Both directions run, and the first one to finish ends the transfer. A
+// client that has sent its last request closes the channel, which is the
+// ordinary end of a transfer; a node whose sftp-server exits ends it the
+// other way. Waiting for both would hang on whichever side is still
+// waiting to be read.
+func (d *Deps) pumpSFTP(remote io.ReadWriter) int {
+	done := make(chan error, 2)
+	go func() {
+		_, err := io.Copy(remote, d.Terminal.In)
+		done <- err
+	}()
+	go func() {
+		_, err := io.Copy(d.Terminal.Out, remote)
+		done <- err
+	}()
+
+	if err := <-done; err != nil && !errors.Is(err, io.EOF) {
+		d.Logger.Printf("%s: sftp: %v", d.IdentityName, err)
+		return 1
+	}
+	return 0
+}
+
+// serveSFTP serves a transfer for one GUEST, through the node hosting it.
+//
+// Unlike the node path above, this stages a helper inside the container and
+// serves proxpass's own SFTP implementation against it, because a container
+// has no sftp-server to ask for.
 func (d *Deps) serveSFTP(info *ConnectInfo) int {
 	guest, inst := info.Guest, info.Instance
 
