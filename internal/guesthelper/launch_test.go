@@ -75,6 +75,7 @@ func TestLaunchCommandFlags(t *testing.T) {
 		"nsenter",
 		" -m ",         // mount namespace: paths resolve inside the container
 		" -r ",         // its root: an absolute symlink cannot escape to the node
+		" -n ",         // its network namespace: the container's stack, not the node's
 		" -p ",         // its PID namespace: without this the exec is ENOENT
 		" -U ",         // its user namespace
 		"-S 0", "-G 0", // as root inside
@@ -89,7 +90,7 @@ func TestLaunchCommandFlags(t *testing.T) {
 	// -r and -w take OPTIONAL arguments, so a separated value is parsed as
 	// the program to run. "nsenter -r /" once made every transfer fail
 	// with "failed to execute /: Permission denied".
-	for _, bad := range []string{"-r /", "-w /"} {
+	for _, bad := range []string{rootArgSep, wdArgSep} {
 		if strings.Contains(cmd, bad) {
 			t.Errorf("found %q, which makes / the program:\n%s", bad, cmd)
 		}

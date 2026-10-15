@@ -821,6 +821,27 @@ Host proxpass-host
     RequestTTY yes
 ```
 
+### Running one command
+
+Passing a command runs it **in the guest**, like any other `ssh`:
+
+```bash
+ssh ct100@proxpass-host ip addr        # the container's interfaces
+ssh ct100@proxpass-host hostname       # the container's hostname
+```
+
+It sees the same machine an interactive session does — same filesystem,
+processes, hostname and **network** — because the command enters every one
+of the container's namespaces. The one deliberate difference is the shell:
+a command gets a **non-login** `sh -c`, exactly as `sshd` does, so a
+profile banner cannot land in the middle of your output. An interactive
+session gets a login shell, where that banner is wanted.
+
+> Before v0.0.19 a command entered every namespace **except the network
+> one**, so `ip addr` and `ss` reported the *Proxmox node's* interfaces
+> while `hostname` in the same command correctly reported the container's.
+> Anything that merely opened a socket was also using the node's stack.
+
 ## Architecture
 
 ```

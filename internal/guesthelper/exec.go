@@ -151,6 +151,12 @@ func shellQuoteAll(args ...string) string {
 //	-r  its ROOT, so an absolute symlink cannot name anything outside.
 //	    Without this a container holding "/data/x -> /etc" makes a write
 //	    land on the NODE's /etc, which is a container escape.
+//	-n  its NETWORK namespace, so `ip addr', `ss', /proc/net and anything
+//	    that opens a socket see the container's stack. Omitting this was a
+//	    bug: `ssh ct100@host ip addr' reported the NODE's vmbr0 while
+//	    `hostname' in the same command reported the container's name,
+//	    because -u was passed and -n was not. See the test that pins the
+//	    full set.
 //	-p  its PID namespace. Needed so /proc/self resolves against the
 //	    container's own /proc -- which is how the streamed helper binary is
 //	    executed -- and so a command sees the container's processes rather
@@ -160,13 +166,22 @@ func shellQuoteAll(args ...string) string {
 //	-U -S 0 -G 0  its user namespace as uid 0, so writes into an
 //	    unprivileged container land as its root rather than nobody:nogroup.
 //
+// Deliberately NOT entered:
+//
+//	-C  the cgroup namespace. It changes only what /proc/self/cgroup
+//	    reports; nothing proxpass runs reads it, and `pct enter' leaves it
+//	    alone too.
+//	-T  the time namespace. A container usually does not have one -- lxc
+//	    does not create one by default -- so asking for it would fail on
+//	    every ordinary container.
+//
 // -r and -w are passed in their BARE form. Their arguments are OPTIONAL
 // (-r[=<dir>]), so a separated value is taken as the program to run:
 // "nsenter -r / -- cmd" once failed every transfer with
 //
 //	nsenter: failed to execute /: Permission denied
 func enterArgs(unprivileged bool) []string {
-	args := []string{"nsenter", "-t", `"$pid"`, "-m", "-r", "-p", "-u", "-i"}
+	args := []string{"nsenter", "-t", `"$pid"`, "-m", "-r", "-n", "-p", "-u", "-i"}
 	if unprivileged {
 		args = append(args, "-U", "-S", "0", "-G", "0")
 	}

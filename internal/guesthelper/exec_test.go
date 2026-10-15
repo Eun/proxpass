@@ -13,12 +13,18 @@ import (
 // TestExecCommandEntersTheRightNamespaces pins the flags. Each was settled
 // against a real PVE 9.2 node and a silent removal would reintroduce a bug
 // that is expensive to rediscover.
+//
+// This list once omitted -n, and so did the code: a test asserting the
+// flags that were passed rather than the namespaces a container has cannot
+// notice a missing one. TestEveryNamespaceIsEntered now enumerates the set
+// from the other direction.
 func TestExecCommandEntersTheRightNamespaces(t *testing.T) {
 	cmd := guesthelper.ExecCommand(127, true, "/bin/sh", "-lc", "whoami")
 
 	for flag, why := range map[string]string{
 		" -m ": "mount namespace: paths must resolve inside the container",
 		" -r ": "root: an absolute symlink must not escape to the node",
+		" -n ": "network namespace: `ip addr' must show the container's stack",
 		" -p ": "pid namespace: a command must see the container's processes",
 		" -u ": "uts namespace: hostname must report the container's",
 		" -i ": "ipc namespace",
@@ -40,7 +46,7 @@ func TestExecCommandEntersTheRightNamespaces(t *testing.T) {
 	// -r and -w take OPTIONAL arguments, so a separated value becomes the
 	// program. "nsenter -r /" once failed every operation with
 	// "failed to execute /: Permission denied".
-	for _, bad := range []string{"-r /", "-w /"} {
+	for _, bad := range []string{rootArgSep, wdArgSep} {
 		if strings.Contains(cmd, bad) {
 			t.Errorf("found %q, which makes / the program:\n%s", bad, cmd)
 		}
