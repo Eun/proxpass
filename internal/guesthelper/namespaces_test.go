@@ -31,14 +31,15 @@ import (
 // node's state as though it were the container's, which is the kind of
 // wrong answer that gets believed.
 func TestEveryNamespaceIsEntered(t *testing.T) {
-	// Both builders share enterArgs, so both are checked: a transfer that
-	// entered a different set from a command would be its own bug.
+	// The COMMAND path only. A transfer no longer uses nsenter at all --
+	// it attaches with lxc-attach, which derives the namespace set from
+	// the container's own config. See LaunchCommand.
 	for _, tc := range []struct {
 		name string
 		cmd  string
 	}{
 		{"command", guesthelper.ShellCommand(110, true, "ip addr")},
-		{"helper launch", guesthelper.LaunchCommand(110, guesthelper.ArchAMD64, true)},
+		{"interactive", guesthelper.ShellCommand(110, true, "")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Against the nsenter invocation ONLY. The surrounding shell
@@ -167,7 +168,6 @@ func TestTheContainersCgroupIsJoined(t *testing.T) {
 		cmd  string
 	}{
 		{"command", guesthelper.ShellCommand(110, true, "nproc")},
-		{"helper launch", guesthelper.LaunchCommand(110, guesthelper.ArchAMD64, true)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// The flag reaches nsenter...
@@ -183,6 +183,81 @@ func TestTheContainersCgroupIsJoined(t *testing.T) {
 					"nothing:\n%s", cgroupFlag, tc.cmd)
 			}
 		})
+	}
+}
+
+// A transfer gets the container's limits WITHOUT the cgroup flag.
+//
+// This is the other half of TestTheContainersCgroupIsJoined. The command
+// path has to ask nsenter for the cgroup and settle for whatever the node's
+// util-linux will give it; a transfer sidesteps the question by attaching
+// with lxc-attach, which asks the running LXC monitor for the container's
+// actual cgroup fds and loads its seccomp profile before exec.
+//
+// Measured on a live one-CPU container:
+//
+//	                  lxc-attach    nsenter (no -c)
+//	cgroup            0::/.lxc      the node's sshd session
+//	nproc             1             24
+//	Seccomp           2             0
+//
+// So the transfer path must NOT grow a cgroup probe: having one would mean
+// it had been switched back to nsenter and silently lost seccomp too.
+func TestATransferIsContainedWithoutTheCgroupFlag(t *testing.T) {
+	cmd := guesthelper.LaunchCommand(110, guesthelper.ArchAMD64, true)
+
+	if !strings.Contains(cmd, "lxc-attach") {
+		t.Errorf("a transfer does not use lxc-attach, so it runs in the node's "+
+			"cgroup with no seccomp profile:\n%s", cmd)
+	}
+	// The CVE-2026-78408 probe belongs to the command path alone. Here it
+	// would be dead weight at best, and a sign of a regression at worst.
+	for _, bad := range []string{"ppcg", "--join-cgroup", "nsenter"} {
+		if strings.Contains(cmd, bad) {
+			t.Errorf("found %q on the transfer path, which should not need "+
+				"nsenter at all:\n%s", bad, cmd)
+		}
+	}
+}
+
+// A transfer must not depend on anything inside the container.
+//
+// This is the distroless contract. The helper is a static binary staged on
+// the NODE and executed through an inherited descriptor, so a container
+// holding nothing but its own application -- no shell, no coreutils, no
+// libc, no ld.so -- is still servable. Verified live: a container's /etc
+// was listed this way.
+//
+// Two things keep it true, and both are easy to break by accident:
+//
+//   - the program is /proc/self/fd/N, never a path. lxc-attach execs the
+//     argument as given (execvp skips the PATH search once it contains a
+//     slash), so a container-side path would have to exist inside.
+//   - nothing is wrapped in a shell. `pct enter' is the cautionary case:
+//     it passes no command and so ends in execlp("/bin/sh"), which is
+//     exactly why it cannot serve a distroless container.
+func TestATransferNeedsNothingInsideTheContainer(t *testing.T) {
+	cmd := guesthelper.LaunchCommand(110, guesthelper.ArchAMD64, true)
+
+	at := strings.Index(cmd, " -- ")
+	if at < 0 {
+		t.Fatalf("no -- separator in:\n%s", cmd)
+	}
+	program := cmd[at+len(" -- "):]
+	if j := strings.Index(program, " 3< "); j >= 0 {
+		program = program[:j] // the redirection is node-side and legitimate
+	}
+
+	if !strings.HasPrefix(strings.TrimSpace(program), "/proc/self/fd/") {
+		t.Errorf("the program is not an inherited descriptor, so it must exist "+
+			"inside the container:\n  program: %s", program)
+	}
+	// No shell, and no container-side interpreter of any kind.
+	for _, bad := range []string{"/bin/sh", "sh -c", "/bin/bash", "env "} {
+		if strings.Contains(program, bad) {
+			t.Errorf("the transfer runs %q inside the container, which a "+
+				"distroless image does not have:\n  program: %s", bad, program)
+		}
 	}
 }
 
@@ -214,5 +289,92 @@ func TestTheCgroupFlagIsProbedBeforeUse(t *testing.T) {
 			t.Errorf("%s is quoted, so an empty value becomes an empty "+
 				"argument:\n%s", quoted, cmd)
 		}
+	}
+}
+
+// probePart returns everything the generated script does BEFORE the exec.
+//
+// The split matters: the exec line carries "$ppcg", so a test that searched
+// the whole command for the flag would pass on the strength of the USE and
+// never notice that the probe setting it had been weakened.
+func probePart(t *testing.T, cmd string) string {
+	t.Helper()
+	at := strings.Index(cmd, "exec ")
+	if at < 0 {
+		t.Fatalf("no exec in the generated command:\n%s", cmd)
+	}
+	return cmd[:at]
+}
+
+// The probe must RUN --join-cgroup, not merely ask whether it exists.
+//
+// util-linux ships a bug -- CVE-2026-78408 -- in which --join-cgroup
+// closes the caller's stdin and reopens /proc/<pid>/cgroup onto the freed
+// descriptor, because sys-utils/nsenter.c initializes its cgroup fd to 0
+// instead of -1 and open_target_fd() closes any fd >= 0 before opening.
+// On such a node the flag is present and advertised by --help, and
+// silently destroys standard input.
+//
+// Every release that has the flag is affected -- it arrived in 2.40 and
+// 2.42.4 is the first carrying the complete fix -- so this is not a probe
+// that can be deleted once the fleet is upgraded.
+//
+// That was not hypothetical. It shipped: every file transfer failed (the
+// helper read the cgroup file instead of the protocol stream, so the
+// handshake hit EOF) and every command reading stdin returned nothing,
+// while commands that ignore stdin kept working -- which is exactly why a
+// presence check let it through.
+//
+// So the probe has to execute the flag and confirm a byte survives the
+// round trip. This test pins that it does, by requiring the probe to both
+// pass -c to a real nsenter and compare the result against what was fed
+// in; a presence-only probe fails here.
+func TestTheCgroupProbeChecksThatStdinSurvives(t *testing.T) {
+	cmd := guesthelper.ShellCommand(110, true, "true")
+	probe := probePart(t, cmd)
+
+	// It must actually invoke nsenter WITH the flag, not just grep --help.
+	if !strings.Contains(probe, "nsenter -c ") {
+		t.Errorf("the probe never runs `nsenter -c', so an nsenter that "+
+			"advertises --join-cgroup and then eats stdin is accepted:\n%s",
+			probe)
+	}
+	// ...and it must feed something in and check it comes back out. Without
+	// the comparison, running the flag proves only that it does not crash.
+	if !strings.Contains(probe, "printf pp") || !strings.Contains(probe, "= pp") {
+		t.Errorf("the probe does not round-trip a byte through stdin, so it "+
+			"cannot tell a working --join-cgroup from one that closes fd 0:\n%s",
+			probe)
+	}
+	// The test runs inside the target's namespace, so it needs the pid --
+	// which means it must come after the lookup that sets it.
+	pidAt := strings.Index(cmd, "pid=$(")
+	probeAt := strings.Index(cmd, "ppcg=")
+	if pidAt < 0 || probeAt < pidAt {
+		t.Errorf("the probe does not follow the pid lookup it depends on "+
+			"(pid=%d probe=%d):\n%s", pidAt, probeAt, cmd)
+	}
+}
+
+// A failing probe must be an answer, not an abort.
+//
+// The generated script runs under `set -e', and the probe is expected to
+// fail on any node that is too old or affected by the stdin bug. If that
+// failure propagated, the flag's absence would stop the command rather
+// than merely leaving $ppcg empty -- turning a graceful degradation into
+// a hard failure on exactly the nodes the probe exists to protect.
+func TestAFailingCgroupProbeDoesNotAbortTheScript(t *testing.T) {
+	cmd := guesthelper.ShellCommand(110, true, "true")
+	probe := probePart(t, cmd)
+
+	// `if' makes the whole thing a condition, which `set -e' never acts on.
+	start := strings.Index(probe, "ppcg=")
+	if start < 0 {
+		t.Fatalf("no probe at all in:\n%s", cmd)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(probe[start:]), "ppcg=; if ") {
+		t.Errorf("the probe is not guarded by `if', so a node without a "+
+			"working --join-cgroup aborts under `set -e' instead of running "+
+			"the command without the flag:\n%s", probe)
 	}
 }

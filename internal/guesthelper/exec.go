@@ -237,7 +237,8 @@ func enterArgs(unprivileged bool) []string {
 // program to run.
 const cgroupFlagVar = "$ppcg"
 
-// cgroupProbe sets $ppcg to "-c" when this node's nsenter understands it.
+// cgroupProbe sets $ppcg to "-c" when this node's nsenter both understands
+// the flag AND does not destroy stdin when given it.
 //
 // Probed rather than passed unconditionally because --join-cgroup is not
 // universally available: it needs a util-linux new enough to have it (PVE
@@ -247,10 +248,47 @@ const cgroupFlagVar = "$ppcg"
 // hard failure on an older node -- a much worse outcome than the limit
 // escape the flag exists to close.
 //
-// --help is matched rather than a version number: the flag's presence is
-// the thing that matters, and parsing versions invites an off-by-one on
-// whichever distribution backported it.
-const cgroupProbe = `ppcg=; nsenter --help 2>&1 | grep -q -- --join-cgroup && ppcg=-c`
+// # Why the flag being PRESENT is not enough
+//
+// util-linux has a bug -- CVE-2026-78408 -- that makes --join-cgroup close
+// the caller's stdin and reopen /proc/<pid>/cgroup onto the descriptor it
+// just freed. sys-utils/nsenter.c:
+//
+//	int cgroup_fd = 0;              /* should be -1 */
+//	open_target_fd(&cgroup_fd, "cgroup", optarg);
+//
+// and open_target_fd does `if (*fd >= 0) close(*fd)' before open(), so the
+// zero initializer closes fd 0 and open() -- which returns the lowest free
+// descriptor -- hands back 0. Observed on a real 2.41.5 node:
+//
+//	nsenter -c -t $pid ... -- /bin/cat < file   # prints NOTHING
+//	ls -l /proc/self/fd/0 -> /proc/<pid>/cgroup # stdin, replaced
+//
+// That is fatal here and was not hypothetical: it broke every file transfer
+// (the helper read its own cgroup file instead of the protocol and saw no
+// valid frame, so the handshake failed with EOF) and every command that
+// reads standard input, while leaving commands that ignore stdin working --
+// which is why it survived a release. See the tests in namespaces_test.go.
+//
+// Waiting it out is not an option. The flag has been broken in EVERY
+// release that has it -- it arrived in 2.40 -- and 2.42.4 is the first
+// carrying the complete fix. The 2.41 branch has a backport but no
+// release yet carries it, and Debian trixie, which Proxmox tracks, ships
+// 2.41.5 with no DSA planned. Note 2.41.6 is NOT enough: it picked up
+// only the O_CLOEXEC half and still initializes the fd to 0.
+//
+// So the probe RUNS the flag and checks that a byte survives the round trip,
+// rather than trusting --help. A node whose nsenter is affected simply does
+// not get -c, which is the same safe degradation an older node already got.
+// The cost is one extra nsenter per command, in a path that already pays an
+// SSH session.
+//
+// `-u' alone is entered for the test because it is the cheapest namespace
+// that is always present, and /bin/cat is the node's, not the container's:
+// the probe must not depend on anything inside the container.
+const cgroupProbe = `ppcg=; if nsenter --help 2>&1 | grep -q -- --join-cgroup && ` +
+	`[ "$(printf pp | nsenter -c -t "$pid" -u -- /bin/cat 2>/dev/null)" = pp ]; ` +
+	`then ppcg=-c; fi`
 
 // shellQuote wraps a string so a shell takes it as one literal argument.
 //
@@ -272,14 +310,19 @@ func containerCommand(vmid int, cmd string) string {
 	pidOf := "lxc-info -n " + id + " -p 2>/dev/null | " +
 		`sed -n 's/^PID:[[:space:]]*\([0-9]\{1,\}\)$/\1/p'`
 	return strings.Join([]string{
-		"set -e",
+		shellPrelude,
 		"pid=$(" + pidOf + ")",
 		`[ -n "$pid" ] || { echo "container ` + fmt.Sprint(vmid) +
 			` is not running" >&2; exit ` + fmt.Sprint(ErrNotRunningStatus) + "; }",
-		// Before the exec, because it decides one of its arguments. The
-		// probe must not be allowed to abort under `set -e': grep exits
-		// 1 when the flag is absent, which is an answer rather than a
-		// failure, so the && leaves $ppcg empty and carries on.
+		// After the pid lookup, because the probe enters the target's
+		// namespace to test the flag, and before the exec, because it
+		// decides one of its arguments.
+		//
+		// The probe must not be allowed to abort under `set -e': both a
+		// missing flag (grep exits 1) and a broken one (the comparison
+		// fails) are ANSWERS rather than failures. Wrapping the whole
+		// test in `if' keeps it a condition, which `set -e' never acts
+		// on, so $ppcg is simply left empty.
 		cgroupProbe,
 		"exec " + cmd,
 	}, "; ")
