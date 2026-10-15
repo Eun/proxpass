@@ -27,6 +27,69 @@ func connectSSH(
 	logger *log.Logger,
 	label string,
 ) error {
+	cmd, err := guestConsoleCmd(guest)
+	if err != nil {
+		return err
+	}
+	return runSSHConsole(term, inst, sshKey, logger, label, "guest "+strconv.Quote(guest.Name), cmd)
+}
+
+// connectNodeSSH attaches the terminal to a shell on the Proxmox node.
+//
+// The same transport as a guest console, with no command: the remote end
+// starts the login shell for inst.SSHUser. Everything else -- the PTY, the
+// status bar's reserved row, resize forwarding, the Ctrl+A X escape hatch --
+// is wanted here for exactly the reasons it is wanted for a guest, which is
+// why this shares runSSHConsole rather than reimplementing it.
+//
+// Note there is no termproxy counterpart. ConsoleTransport decides how a
+// GUEST console is attached -- through the Proxmox websocket or by running
+// pct enter over SSH -- and says nothing about the node, which is reachable
+// only over SSH either way. The same reasoning applies to file transfer,
+// which likewise does not consult it.
+func connectNodeSSH(
+	term *Terminal,
+	inst *models.ProxmoxInstance,
+	sshKey string,
+	logger *log.Logger,
+	label string,
+) error {
+	return runSSHConsole(term, inst, sshKey, logger, label, "node "+strconv.Quote(inst.Name), "")
+}
+
+// startRemote begins the remote end of a console session.
+//
+// An empty cmd means a shell: the node path wants whatever login shell the
+// remote user has, which is what Shell() asks for. A guest console names
+// the command that enters it instead.
+func startRemote(session *gossh.Session, cmd string) error {
+	if cmd == "" {
+		if err := session.Shell(); err != nil {
+			return fmt.Errorf("starting remote shell: %w", err)
+		}
+		return nil
+	}
+	if err := session.Start(cmd); err != nil {
+		return fmt.Errorf("starting command %q: %w", cmd, err)
+	}
+	return nil
+}
+
+// runSSHConsole is the shared body of connectSSH and connectNodeSSH.
+//
+// cmd is what to run on the Proxmox host, or "" to start the remote login
+// shell -- which is the difference between entering a guest and getting a
+// shell on the node itself. target names the thing being connected to, and
+// is used only in log lines.
+func runSSHConsole(
+	term *Terminal,
+	inst *models.ProxmoxInstance,
+	sshKey string,
+	logger *log.Logger,
+	label string,
+	target string,
+	cmd string,
+) error {
 	term.normalize()
 
 	keyBytes, err := loadInstanceKey(inst, sshKey)
@@ -56,8 +119,8 @@ func connectSSH(
 	defer func() { _ = session.Close() }()
 
 	// Reserve the bottom row for the status bar and request a PTY one row
-	// shorter, so the guest never writes into it. guestOut is where the
-	// guest's output goes: the bar's observer when there is a bar, the
+	// shorter, so the remote end never writes into it. guestOut is where
+	// its output goes: the bar's observer when there is a bar, the
 	// terminal directly when there is not.
 	bar, guestOut, guestRows := startBar(term, label, EscapeHint)
 	if bar != nil {
@@ -71,14 +134,10 @@ func connectSSH(
 		guestErr = bar.serializedWriter(term.Err)
 	}
 
-	// pct enter and qm terminal both misbehave without a PTY.
+	// pct enter and qm terminal both misbehave without a PTY, and an
+	// interactive shell on the node needs one for the same reasons.
 	if err := session.RequestPty(term.Term, guestRows, term.Width, gossh.TerminalModes{}); err != nil {
 		return fmt.Errorf("requesting remote pty: %w", err)
-	}
-
-	cmd, err := guestConsoleCmd(guest)
-	if err != nil {
-		return err
 	}
 
 	remoteStdin, err := session.StdinPipe()
@@ -93,8 +152,8 @@ func connectSSH(
 	if err != nil {
 		return fmt.Errorf("stderr pipe: %w", err)
 	}
-	if err := session.Start(cmd); err != nil {
-		return fmt.Errorf("starting command %q: %w", cmd, err)
+	if err := startRemote(session, cmd); err != nil {
+		return err
 	}
 
 	done := make(chan struct{})
@@ -144,8 +203,8 @@ func connectSSH(
 	// Terminate the session when the user escapes.
 	//
 	// Closing stdin above is not sufficient by itself. A healthy shell does
-	// exit on stdin EOF, but the escape hatch exists precisely for guests
-	// that are not healthy -- a wedged process, a full-screen application,
+	// exit on stdin EOF, but the escape hatch exists precisely for remote
+	// ends that are not healthy -- a wedged process, a full-screen application,
 	// or a shell with IGNOREEOF set will sit there and session.Wait would
 	// block until it exited on its own.
 	//
@@ -157,7 +216,7 @@ func connectSSH(
 		select {
 		case <-done:
 		case <-escaped:
-			logger.Printf("console: guest %q disconnected by Ctrl+A X", guest.Name)
+			logger.Printf("console: %s disconnected by Ctrl+A X", target)
 			_ = session.Signal(gossh.SIGTERM)
 			_ = session.Close()
 		}
@@ -197,7 +256,7 @@ func connectSSH(
 	var exitErr *gossh.ExitError
 	var missingErr *gossh.ExitMissingError
 	if errors.As(err, &exitErr) || errors.As(err, &missingErr) {
-		logger.Printf("console: guest %q session ended: %v", guest.Name, err)
+		logger.Printf("console: %s session ended: %v", target, err)
 		return nil
 	}
 	return err

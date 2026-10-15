@@ -122,6 +122,47 @@ func (d *APIDirectory) Connect(ctx context.Context, guestID int64) (*ConnectInfo
 	}, nil
 }
 
+// AccessibleInstances returns the nodes this session may reach.
+//
+// Filtered server-side, like AccessibleGuests, so there is nothing to
+// filter here.
+func (d *APIDirectory) AccessibleInstances(ctx context.Context) ([]*models.ProxmoxInstance, error) {
+	var instances []api.Instance
+	if err := d.Client.get(ctx, "/session/instances", &instances); err != nil {
+		return nil, fmt.Errorf("listing instances: %w", err)
+	}
+
+	out := make([]*models.ProxmoxInstance, 0, len(instances))
+	for _, inst := range instances {
+		// Only the three fields the response carries. This is the
+		// credential-free shape, so the rest of ProxmoxInstance stays
+		// zero rather than being invented here.
+		out = append(out, &models.ProxmoxInstance{
+			ID:   inst.ID,
+			Name: inst.Name,
+			Node: inst.Node,
+		})
+	}
+	return out, nil
+}
+
+// ConnectNode asks for the credentials to reach one node.
+func (d *APIDirectory) ConnectNode(ctx context.Context, instanceID int64) (*NodeInfo, error) {
+	var creds api.InstanceCredentials
+	err := d.Client.post(ctx,
+		"/session/node/"+strconv.FormatInt(instanceID, 10), &creds)
+	if errors.Is(err, errForbidden) {
+		return nil, ErrAccessDenied
+	}
+	if err != nil {
+		return nil, fmt.Errorf("connecting to node %d: %w", instanceID, err)
+	}
+	return &NodeInfo{
+		Instance: instanceFromAPI(&creds),
+		SSHKey:   instanceSSHKey(&creds),
+	}, nil
+}
+
 // PublicEndpoint returns the configured endpoint, or "" when unset.
 func (d *APIDirectory) PublicEndpoint(ctx context.Context) (string, error) {
 	var out struct {

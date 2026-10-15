@@ -6,8 +6,6 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
-
-	"proxpass/internal/models"
 )
 
 // Terminal control sequences. Written directly rather than through a terminfo
@@ -156,7 +154,7 @@ func (s *pickerState) apply(k key) pickerAction {
 
 	case keyEnter:
 		if len(s.shown) == 0 {
-			s.notice = "no guest matches the filter"
+			s.notice = "nothing matches the filter"
 			return actionNone
 		}
 		row := s.shown[s.cursor]
@@ -164,7 +162,7 @@ func (s *pickerState) apply(k key) pickerAction {
 			// Refuse rather than connect and fail: pct enter and qm terminal
 			// only work on a running guest.
 			s.notice = fmt.Sprintf("%s is %s and has no console",
-				row.guest.Name, row.guest.Status)
+				row.name, row.status())
 			return actionNone
 		}
 		return actionSelect
@@ -256,23 +254,28 @@ func (s *pickerState) cycleSort(forward bool) {
 		return
 	}
 
-	var selected *models.Guest
+	var selected string
 	if s.cursor < len(s.shown) {
-		selected = s.shown[s.cursor].guest
+		selected = s.shown[s.cursor].key()
 	}
 	sortRows(s.shown, s.sort)
 	s.restoreCursor(selected)
 }
 
-// restoreCursor puts the cursor back on guest after a reorder, and scrolls so
-// it is visible.
-func (s *pickerState) restoreCursor(guest *models.Guest) {
-	if guest == nil {
+// restoreCursor puts the cursor back on the row identified by key after a
+// reorder, and scrolls so it is visible.
+//
+// Keyed rather than compared by pointer. A node row carries no guest, so
+// pointer identity would make every node indistinguishable from every
+// other AND from "nothing selected" -- pressing Tab while a node was
+// highlighted would silently jump the cursor to the top of the list.
+func (s *pickerState) restoreCursor(key string) {
+	if key == "" {
 		s.cursor, s.offset = 0, 0
 		return
 	}
 	for i := range s.shown {
-		if s.shown[i].guest == guest {
+		if s.shown[i].key() == key {
 			s.cursor = i
 			s.scrollToCursor()
 			return
@@ -335,7 +338,7 @@ func (s *pickerState) render(w io.Writer) {
 
 	total := len(s.all)
 	b.WriteString(styleTitle)
-	b.WriteString(truncate(fmt.Sprintf("proxpass — guests available to %s", s.user), s.width))
+	b.WriteString(truncate(fmt.Sprintf(pickerTitle, s.user), s.width))
 	b.WriteString(seqReset + "\r\n\r\n")
 
 	widths := columnWidths(s.shown)
@@ -349,7 +352,7 @@ func (s *pickerState) render(w io.Writer) {
 		end = len(s.shown)
 	}
 	for i := s.offset; i < end; i++ {
-		b.WriteString(s.renderRow(s.shown[i], widths, i == s.cursor))
+		b.WriteString(s.renderRow(&s.shown[i], widths, i == s.cursor))
 		b.WriteString("\r\n")
 	}
 	// Pad so the chrome below never jumps as the result count changes.
@@ -408,15 +411,15 @@ func headerCell(label string, active bool) string {
 const sortMarker = " ▲"
 
 // renderRow renders one guest line.
-func (s *pickerState) renderRow(r guestRow, widths colWidths, selected bool) string {
+func (s *pickerState) renderRow(r *guestRow, widths colWidths, selected bool) string {
 	marker := "  "
 	if selected {
 		marker = "▸ "
 	}
 
 	id := pad(highlight(r.id, s.filter), displayWidth(r.id), widths.id)
-	name := pad(highlight(r.guest.Name, s.filter), displayWidth(r.guest.Name), widths.name)
-	status := pad(string(r.guest.Status), displayWidth(string(r.guest.Status)), widths.status)
+	name := pad(highlight(r.name, s.filter), displayWidth(r.name), widths.name)
+	status := pad(r.status(), displayWidth(r.status()), widths.status)
 	// The host is the last column, so it needs no padding of its own.
 	host := highlight(r.instName, s.filter)
 
@@ -441,7 +444,7 @@ func (s *pickerState) renderStatus(total int) string {
 		// The sort column is named here as well as marked in the header:
 		// the header marker says which column, this says it in words, and
 		// the two together make the Tab key discoverable.
-		return styleHelp + truncate(fmt.Sprintf("  %d guests · sort: %s",
+		return styleHelp + truncate(fmt.Sprintf("  %d targets · sort: %s",
 			total, s.sort.label()), s.width) + seqReset
 	}
 	// The block is a fake cursor: the real one is hidden so it cannot be

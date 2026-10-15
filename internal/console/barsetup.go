@@ -74,6 +74,29 @@ func barLabel(guest *models.Guest, inst *models.ProxmoxInstance, publicEndpoint 
 	return sb.String()
 }
 
+// nodeBarLabel builds the status bar text for a node shell.
+//
+// The same shape as barLabel and for the same reason -- it reads as the
+// login form that got you here -- with the node's own name standing where a
+// guest's would:
+//
+//	rome@proxpass.example.com (node)
+//	^ instance ^ public endpoint    ^ what kind of thing this is
+//
+// The "(node)" qualifier is what distinguishes it from a guest console at a
+// glance, which matters precisely because a node and a guest may share a
+// name: the bar has to say which one you actually reached.
+func nodeBarLabel(inst *models.ProxmoxInstance, publicEndpoint string) string {
+	var sb strings.Builder
+	sb.WriteString(inst.Name)
+	if publicEndpoint != "" {
+		sb.WriteString("@")
+		sb.WriteString(publicEndpoint)
+	}
+	sb.WriteString(" (node)")
+	return sb.String()
+}
+
 // startBar sets up a status bar for a guest console, or returns nil when one
 // should not be drawn.
 //

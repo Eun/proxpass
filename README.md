@@ -98,25 +98,34 @@ ssh -p 2222 ct101@pve1@localhost     # instance-qualified, when a name is ambigu
 > your own, is resolved as a guest first, which means `ssh myguest@localhost
 > guest ls` runs `guest ls` *inside that guest* rather than in proxpass.
 
-## The guest picker
+## The picker
 
-Connecting without a command opens an interactive picker:
+Connecting without a command opens an interactive picker over everything you
+may reach — guests and Proxmox nodes together:
 
 ```
-proxpass — guests available to admin
+proxpass — available to admin
 
   ID     NAME ▲            STATUS   HOST
-▸ ct103  merge-with-label  running  pve1
+▸ node   pve1              -        pve1
+  ct103  merge-with-label  running  pve1
   ct126  mautrix-telegram  running  pve1
   ct118  mautrix-whatsapp  running  pve2
 
-  50 guests · sort: name
+  51 targets · sort: name
   ↑/↓ move · type to filter · ⏎ connect · tab sort · esc clear · ctrl+c quit
 ```
 
+A node is the row with `node` in the `ID` column; selecting it opens a shell
+on the Proxmox host, exactly as `ssh <node>@proxpass` would. Nodes you have
+not been granted are not listed, and neither is one with no `--ssh-host`,
+since it could not be opened.
+
 Typing filters the list as a fuzzy subsequence match, so `mw` finds
 `mautrix-whatsapp` and `118` finds `ct118`. Each of the name, the type+VMID
-and the host is matched on its own, and a hit on the name ranks highest.
+and the host is matched on its own, and a hit on the name ranks highest —
+and because `node` is matched as a node row's id, typing it narrows the list
+to the nodes.
 
 ### Sorting
 
@@ -125,10 +134,10 @@ the header marks the active column and the status line names it:
 
 | Column | Order |
 | --- | --- |
-| `ID` | numeric by VMID, so `ct99` comes before `ct118` |
+| `ID` | numeric by VMID, so `ct99` comes before `ct118`; nodes group at the top, having no VMID |
 | `NAME` | alphabetical |
-| `STATUS` | running first, since those are the ones you can enter |
-| `HOST` | alphabetical by Proxmox host |
+| `STATUS` | running first, since those are the ones you can enter; a node ranks with them, being always connectable |
+| `HOST` | alphabetical by Proxmox host; a node sorts with the guests that live on it |
 
 `Tab` walks those in the order the header prints them, left to right. The
 picker **opens** sorted by `NAME`, which is what you want when scanning a
@@ -869,9 +878,31 @@ Access to a **guest** is checked in order:
 ### Granting a node
 
 `access grant --instance <name>` grants a shell on the Proxmox node itself,
-reached as `<instance-name>@proxpass`. It is checked the same way, **minus
-the third step**: a node is reachable only when a client or group rule says
-so by name.
+to be reached as `<instance-name>@proxpass`. It is checked the same way,
+**minus the third step**: a node is reachable only when a client or group
+rule says so by name.
+
+```bash
+ssh pve1@proxpass            # a shell on the node
+ssh pve1@proxpass uptime     # one command on it
+```
+
+The shell is whatever login shell the configured `--ssh-user` has. A node is
+reached **only over SSH**, whatever `--console-transport` says: that setting
+decides how a *guest* console attaches and has no bearing on the node, so an
+instance with no `--ssh-host` cannot be opened as one.
+
+> **Name collisions: the node wins.** If an instance and a guest share a
+> name, `ssh rome@proxpass` reaches the **node**. The guest is still
+> reachable as `ssh rome@rome@proxpass` — `<guest>@<instance>` — whereas a
+> node has no such qualified form, so resolving the guest first would make
+> the node unreachable altogether. Nothing becomes unreachable this way.
+>
+> `admin` remains reserved: an instance called `admin` does not take the
+> administrator's login or CLI.
+
+File transfer to a node is not supported yet; `scp` and `sftp` still address
+guests only.
 
 The default policy is left out deliberately. It has no notion of a target —
 a client listed there reaches *anything* — and it is standing configuration,

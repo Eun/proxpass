@@ -38,6 +38,8 @@ const (
 	instMine   = "mine"
 	instSecret = "secretnode"
 	instRome   = "rome"
+	// romeAPIURL is instRome's api-url; the schema requires it unique.
+	romeAPIURL = "https://rome:8006"
 	instParis  = "paris"
 	pveAPIURL  = "https://pve:8006"
 	instPVE    = "pve"
@@ -396,6 +398,14 @@ func (l *lazyAPIDirectory) Connect(ctx context.Context, guestID int64) (*session
 	return l.resolve().Connect(ctx, guestID)
 }
 
+func (l *lazyAPIDirectory) AccessibleInstances(ctx context.Context) ([]*models.ProxmoxInstance, error) {
+	return l.resolve().AccessibleInstances(ctx)
+}
+
+func (l *lazyAPIDirectory) ConnectNode(ctx context.Context, instanceID int64) (*session.NodeInfo, error) {
+	return l.resolve().ConnectNode(ctx, instanceID)
+}
+
 func (l *lazyAPIDirectory) PublicEndpoint(ctx context.Context) (string, error) {
 	return l.resolve().PublicEndpoint(ctx)
 }
@@ -469,7 +479,7 @@ func TestLoginNameConnectsToTheGuest(t *testing.T) {
 					sessions[0].ProxmoxID, guest.ProxmoxID)
 			}
 			// The picker must not have been drawn: the name was understood.
-			if strings.Contains(tb.out.String(), "guests available to") {
+			if strings.Contains(tb.out.String(), "available to") {
 				t.Errorf("the picker was shown for a guest login name: %q", tb.out.String())
 			}
 		})
@@ -497,7 +507,7 @@ func TestNonGuestLoginNameShowsThePicker(t *testing.T) {
 			if code := session.Run(t.Context(), d); code != 0 {
 				t.Fatalf("exit code = %d, want 0 (stderr: %q)", code, tb.errb.String())
 			}
-			if !strings.Contains(tb.out.String(), "guests available to") {
+			if !strings.Contains(tb.out.String(), "available to") {
 				t.Errorf("login %q did not reach the picker: %q", login, tb.out.String())
 			}
 			if len(proxier.Sessions) != 0 {
@@ -520,7 +530,7 @@ func TestAmbiguousLoginNameIsReported(t *testing.T) {
 
 	// A distinct API URL: the schema requires it to be unique.
 	second := &models.ProxmoxInstance{
-		Name: instRome, APIURL: "https://rome:8006", Node: instRome,
+		Name: instRome, APIURL: romeAPIURL, Node: instRome,
 		ConsoleTransport: models.ConsoleTransportTermProxy,
 	}
 	if err := repo.AddProxmoxInstance(t.Context(), second); err != nil {
@@ -569,7 +579,7 @@ func TestAmbiguousLoginNameIsReported(t *testing.T) {
 				t.Errorf("stderr does not offer the picker as a way out: %q",
 					tb.errb.String())
 			}
-			if strings.Contains(tb.out.String(), "guests available to") {
+			if strings.Contains(tb.out.String(), "available to") {
 				t.Errorf("an ambiguous name must not fall back to the picker: %q",
 					tb.out.String())
 			}
@@ -747,7 +757,7 @@ func TestAmbiguityHintOnlyNamesAccessibleGuests(t *testing.T) {
 func TestQualifiedLoginNameSelectsTheInstance(t *testing.T) {
 	repo := newRepo(t)
 	rome := &models.ProxmoxInstance{
-		Name: instRome, APIURL: "https://rome:8006", Node: instRome,
+		Name: instRome, APIURL: romeAPIURL, Node: instRome,
 		ConsoleTransport: models.ConsoleTransportTermProxy,
 	}
 	paris := &models.ProxmoxInstance{
@@ -895,7 +905,7 @@ func TestReservedLoginNamesAreNeverTreatedAsGuests(t *testing.T) {
 			if len(proxier.Sessions) != 0 {
 				t.Errorf("login %q connected to a guest instead of browsing", reserved)
 			}
-			if !strings.Contains(tb.out.String(), "guests available to") {
+			if !strings.Contains(tb.out.String(), "available to") {
 				t.Errorf("login %q did not reach the picker: %q", reserved, tb.out.String())
 			}
 		})
@@ -1016,7 +1026,7 @@ func TestAClientWhoseNameIsTakenCanStillBrowse(t *testing.T) {
 	if len(proxier.SessionsSnapshot()) != 0 {
 		t.Error("browsing connected to a guest instead of showing the picker")
 	}
-	if !strings.Contains(tb.out.String(), "guests available to") {
+	if !strings.Contains(tb.out.String(), "available to") {
 		t.Errorf("the client could not reach the picker: %q", tb.out.String())
 	}
 }
@@ -1727,7 +1737,7 @@ func TestPickerTitleNamesTheConfiguredIdentity(t *testing.T) {
 			_ = session.Run(t.Context(), d)
 
 			out := tb.out.String()
-			want := "guests available to " + session.AdminUser
+			want := "available to " + session.AdminUser
 			if !strings.Contains(out, want) {
 				t.Errorf("title does not name the identity: want %q in %q", want, out)
 			}
@@ -1761,7 +1771,7 @@ func TestPickerTitleNamesTheClient(t *testing.T) {
 
 	_ = session.Run(t.Context(), d)
 
-	if out := tb.out.String(); !strings.Contains(out, "guests available to "+userAlice) {
+	if out := tb.out.String(); !strings.Contains(out, "available to "+userAlice) {
 		t.Errorf("title does not name the client: %q", out)
 	}
 }
@@ -1781,7 +1791,7 @@ func TestPickerTitleFallsBackToTheLoginName(t *testing.T) {
 
 	_ = session.Run(t.Context(), d)
 
-	if out := tb.out.String(); !strings.Contains(out, "guests available to "+session.AdminUser) {
+	if out := tb.out.String(); !strings.Contains(out, "available to "+session.AdminUser) {
 		t.Errorf("title is missing a name entirely: %q", out)
 	}
 }
@@ -1864,7 +1874,7 @@ func TestPickerFallsBackToANumberedPromptWithoutAPTY(t *testing.T) {
 	if strings.Contains(out, "\x1b[?1049h") {
 		t.Error("the fallback must not use the alternate screen")
 	}
-	if !strings.Contains(out, "Select a guest") {
+	if !strings.Contains(out, "Select [") {
 		t.Errorf("output %q does not contain the numbered prompt", out)
 	}
 	sessions := proxierSessions(proxier)

@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -170,5 +171,101 @@ func addNamedClient(t *testing.T, repo db.Repository, name string) {
 	c := &models.Client{Name: name, PublicKeys: []string{keyAlice}}
 	if err := repo.AddClient(t.Context(), c); err != nil {
 		t.Fatalf("add client %s: %v", name, err)
+	}
+}
+
+// The node endpoints, through the same full stack.
+//
+// These matter beyond the API tests because the session is where a node
+// grant is eventually acted on: a Directory that returned credentials for
+// an ungranted node would make the server's check irrelevant.
+
+// A session must not be handed credentials for a node it cannot reach.
+func TestAPIDirectoryWithholdsCredentialsForAForbiddenNode(t *testing.T) {
+	repo := newRepo(t)
+	world := seedWorld(t, repo)
+
+	dir := newAPIDirectory(t, repo, &models.SessionIdentity{
+		LoginName: userAlias, IdentityName: userAlice, ClientID: world.clientID,
+	})
+
+	// seedWorld grants a GUEST on this instance and no node at all, which
+	// is exactly the case that must not leak: the guest grant is real.
+	if _, err := dir.ConnectNode(t.Context(), world.instID); !errors.Is(err, session.ErrAccessDenied) {
+		t.Fatalf("got %v, want ErrAccessDenied: a session was offered "+
+			"credentials for a node it was never granted", err)
+	}
+}
+
+// And the list it is given is empty, for the same reason.
+func TestAPIDirectoryInstanceListIsScoped(t *testing.T) {
+	repo := newRepo(t)
+	world := seedWorld(t, repo)
+
+	dir := newAPIDirectory(t, repo, &models.SessionIdentity{
+		LoginName: userAlias, IdentityName: userAlice, ClientID: world.clientID,
+	})
+
+	// The guest list is not empty, so this cannot pass vacuously.
+	guests, err := dir.AccessibleGuests(t.Context())
+	if err != nil {
+		t.Fatalf("listing guests: %v", err)
+	}
+	if len(guests) == 0 {
+		t.Fatal("precondition: the client should see one guest")
+	}
+
+	instances, err := dir.AccessibleInstances(t.Context())
+	if err != nil {
+		t.Fatalf("listing instances: %v", err)
+	}
+	if len(instances) != 0 {
+		t.Errorf("a client granted only a guest saw %d instances: %+v",
+			len(instances), instances)
+	}
+}
+
+// Once granted, the node arrives with the key needed to reach it.
+func TestAPIDirectoryDeliversTheNodeKeyOnceGranted(t *testing.T) {
+	repo := newRepo(t)
+	world := seedWorld(t, repo)
+	ctx := t.Context()
+
+	// Configure the instance for SSH and grant it.
+	instances, err := repo.ListProxmoxInstances(ctx)
+	if err != nil {
+		t.Fatalf("list instances: %v", err)
+	}
+	inst := instances[0]
+	inst.SSHHost = "pve.example.com"
+	inst.SSHPort = 22
+	inst.SSHUser = "root"
+	if err := repo.UpdateProxmoxInstance(ctx, inst); err != nil {
+		t.Fatalf("configure ssh: %v", err)
+	}
+	if err := repo.GrantClientInstanceAccess(ctx, world.clientID, []int64{inst.ID}); err != nil {
+		t.Fatalf("grant node: %v", err)
+	}
+
+	keyPath := t.TempDir() + "/key"
+	const keyPEM = "-----BEGIN PRIVATE KEY-----\nNODEKEY\n-----END PRIVATE KEY-----"
+	if err := os.WriteFile(keyPath, []byte(keyPEM+"\n"), 0o600); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+	t.Setenv(models.SSHKeyPathEnv, keyPath)
+
+	dir := newAPIDirectory(t, repo, &models.SessionIdentity{
+		LoginName: userAlias, IdentityName: userAlice, ClientID: world.clientID,
+	})
+
+	info, err := dir.ConnectNode(ctx, inst.ID)
+	if err != nil {
+		t.Fatalf("connecting to a granted node: %v", err)
+	}
+	if info.SSHKey != keyPEM {
+		t.Errorf("SSHKey = %q, want the deployment key", info.SSHKey)
+	}
+	if info.Instance == nil || info.Instance.SSHHost != "pve.example.com" {
+		t.Errorf("instance = %+v, want the configured ssh host", info.Instance)
 	}
 }

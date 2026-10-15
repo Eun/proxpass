@@ -103,6 +103,12 @@ func Run(ctx context.Context, d *Deps) int {
 	// reachable under any name that is not a guest, and under the
 	// administrator's name whatever happens, since isReservedLoginName keeps
 	// that one as "browse" even when a guest shares it.
+
+	// A node first, in the same order connectByLoginName uses, so that
+	// `ssh rome@host uptime' and `ssh rome@host' reach the same place.
+	if inst, ok := d.namesANode(ctx, trimmedLoginName(d)); ok {
+		return d.runNodeCommand(ctx, inst, cmd)
+	}
 	if guest, ok := d.namesAGuest(ctx); ok {
 		return d.runGuestCommand(ctx, guest, cmd)
 	}
@@ -176,6 +182,28 @@ func (d *Deps) connectChecked(ctx context.Context, guest *models.Guest) int {
 	return d.attach(info.Guest, info.Instance, info.SSHKey)
 }
 
+// connectNodeChecked fetches the node's credentials and attaches to it.
+//
+// The node counterpart of connectChecked, and checked for the same reason:
+// asking for the credentials IS the access check, so there is no window in
+// which one could succeed without the other. The caller has usually scoped
+// the instance already; this is kept anyway, so that widening either alone
+// cannot open a hole.
+func (d *Deps) connectNodeChecked(ctx context.Context, inst *models.ProxmoxInstance) int {
+	info, err := d.Dir.ConnectNode(ctx, inst.ID)
+	if errors.Is(err, ErrAccessDenied) {
+		d.Logger.Printf("%s: access denied to node %s", d.IdentityName, inst.Name)
+		d.errf("access denied")
+		return 1
+	}
+	if err != nil {
+		d.Logger.Printf("%s: connect node failed: %v", d.IdentityName, err)
+		d.errf("internal error")
+		return 1
+	}
+	return d.attachNode(info.Instance, info.SSHKey)
+}
+
 // runAdmin runs an admin command through the admin CLI.
 //
 // A bare guest identifier used to connect directly from here ("ssh host
@@ -225,6 +253,30 @@ func (d *Deps) attach(guest *models.Guest, inst *models.ProxmoxInstance, sshKey 
 
 	if err := d.Proxier.Connect(d.Terminal, guest, inst, sshKey, d.Logger); err != nil {
 		d.Logger.Printf("%s: console error: %v", d.IdentityName, err)
+		d.errf("console error: %v", err)
+		return 1
+	}
+	return 0
+}
+
+// attachNode hands the terminal to a shell on the Proxmox node.
+//
+// The node counterpart of attach. The banner says "node" explicitly rather
+// than just naming the instance, because a node and a guest may share a
+// name and the two connections do very different things: one lands inside a
+// container, the other on the machine hosting it.
+func (d *Deps) attachNode(inst *models.ProxmoxInstance, sshKey string) int {
+	d.Logger.Printf("%s: connecting to node %s", d.IdentityName, inst.Name)
+
+	if console.WillDrawBar(d.Terminal) {
+		fmt.Fprintf(d.Terminal.UIOut(), "connecting to node %s\n", inst.Name)
+	} else {
+		fmt.Fprintf(d.Terminal.UIOut(), "connecting to node %s -- %s\n",
+			inst.Name, console.EscapeHint)
+	}
+
+	if err := d.Proxier.ConnectNode(d.Terminal, inst, sshKey, d.Logger); err != nil {
+		d.Logger.Printf("%s: node console error: %v", d.IdentityName, err)
 		d.errf("console error: %v", err)
 		return 1
 	}
@@ -301,7 +353,7 @@ func (d *Deps) writeHelp(ctx context.Context) int {
 	}
 
 	w := d.Terminal.UIErr()
-	fmt.Fprintf(w, "proxpass — connect to a Proxmox guest\n\n")
+	fmt.Fprintf(w, "proxpass — connect to a Proxmox guest or node\n\n")
 	// The display name, not the login name: this is an instruction to be
 	// retyped, so it has to name an identity rather than echo back an
 	// alias that happens to have resolved this time.
@@ -312,8 +364,13 @@ func (d *Deps) writeHelp(ctx context.Context) int {
 		d.displayName())
 	fmt.Fprintf(w, "  ssh %s@<host> guest ls                   list what you may reach\n\n",
 		d.displayName())
+	fmt.Fprintf(w, "  ssh <node>@<host>                        shell on a Proxmox node\n\n")
 	fmt.Fprintf(w, "A guest may be named by VMID (100), type+VMID (ct100, vm200),\n")
 	fmt.Fprintf(w, "name (webserver), or instance-qualified (ct101@rome).\n\n")
+	// Worth stating, because it is the one case where the obvious reading
+	// of a bare name is not the one that happens.
+	fmt.Fprintf(w, "A node is named by its instance name. If a guest shares that name the\n")
+	fmt.Fprintf(w, "node wins; reach the guest as <guest>@<instance>.\n\n")
 
 	guests, err := d.accessibleGuests(ctx)
 	if err != nil {

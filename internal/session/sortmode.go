@@ -2,8 +2,6 @@ package session
 
 import (
 	"sort"
-
-	"proxpass/internal/models"
 )
 
 // sortMode is the column the picker's list is ordered by.
@@ -117,24 +115,26 @@ func (m sortMode) prev() sortMode {
 // order instead of shuffling between repaints.
 func sortRows(rows []guestRow, mode sortMode) {
 	sort.SliceStable(rows, func(i, j int) bool {
-		a, b := rows[i], rows[j]
+		a, b := &rows[i], &rows[j]
 		switch mode {
 		case sortByID:
 			// Numeric, not lexical. The display id is a string like
 			// "ct118", so sorting it as text puts ct99 after ct118.
-			if a.guest.ProxmoxID != b.guest.ProxmoxID {
-				return a.guest.ProxmoxID < b.guest.ProxmoxID
+			// Nodes carry nodeSortID and land together at the top.
+			if a.vmid != b.vmid {
+				return a.vmid < b.vmid
 			}
 			// Same vmid on different instances is possible, and a CT and a
-			// VM may share a number, so fall through to type then name.
-			if a.guest.Type != b.guest.Type {
-				return a.guest.Type < b.guest.Type
+			// VM may share a number, so fall through to the display id --
+			// which encodes the type -- and then the name.
+			if a.id != b.id {
+				return a.id < b.id
 			}
 		case sortByStatus:
-			if a.guest.Status != b.guest.Status {
+			if rankA, rankB := a.statusRank(), b.statusRank(); rankA != rankB {
 				// Running first: those are the ones that can be entered,
 				// so they are what the user is usually looking for.
-				return statusRank(a.guest.Status) < statusRank(b.guest.Status)
+				return rankA < rankB
 			}
 		case sortByHost:
 			if a.instName != b.instName {
@@ -149,23 +149,32 @@ func sortRows(rows []guestRow, mode sortMode) {
 }
 
 // lessByNameThenID is the tie-breaker shared by every mode.
-func lessByNameThenID(a, b guestRow) bool {
-	if a.guest.Name != b.guest.Name {
-		return a.guest.Name < b.guest.Name
+//
+// It must be a TOTAL order over the rows, or a re-sort can shuffle equal
+// rows and the list appears to jump. key() is the final discriminator
+// because two nodes, or two guests with the same name and vmid on
+// different instances, agree on everything above it.
+func lessByNameThenID(a, b *guestRow) bool {
+	if a.name != b.name {
+		return a.name < b.name
 	}
-	if a.guest.ProxmoxID != b.guest.ProxmoxID {
-		return a.guest.ProxmoxID < b.guest.ProxmoxID
+	if a.vmid != b.vmid {
+		return a.vmid < b.vmid
 	}
-	return a.guest.Type < b.guest.Type
+	if a.id != b.id {
+		return a.id < b.id
+	}
+	return a.key() < b.key()
 }
 
-// statusRank orders statuses by usefulness rather than alphabetically, so a
-// status sort puts the guests you can actually connect to at the top.
+// statusRank orders rows by usefulness rather than alphabetically, so a
+// status sort puts the ones you can actually connect to at the top.
 //
 // Alphabetically "running" sorts after "stopped", which would bury every
-// usable guest below the unusable ones.
-func statusRank(s models.Status) int {
-	if s == models.StatusRunning {
+// usable guest below the unusable ones. A node ranks with the running
+// guests because it is always connectable.
+func (r *guestRow) statusRank() int {
+	if r.isRunning() {
 		return 0
 	}
 	return 1

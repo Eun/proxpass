@@ -187,6 +187,93 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /session/instances:
+    get:
+      tags: [session]
+      summary: The Proxmox nodes this session may reach.
+      description: |
+        The node equivalent of `/session/guests`, and filtered the same way:
+        an instance the caller has no grant for is not in the answer at all.
+        The administrator sees every instance.
+
+        A grant on an instance is INDEPENDENT of grants on the guests it
+        hosts. Being able to reach a node does not list its guests, and
+        being able to reach a guest does not list its node -- what happens
+        inside either is not proxpass's concern. So this list is not derived
+        from `/session/guests` and generally does not match it.
+
+        The default policy is deliberately not consulted. It predates node
+        rules and names no target, so reading it as consent would hand every
+        policy-covered client a shell on every node; see
+        `HasInstanceAccess`.
+
+        Carries no credentials. What it takes to reach a node comes from
+        `POST /session/node/{instanceId}`, one node at a time.
+      operationId: listSessionInstances
+      responses:
+        "200":
+          description: The reachable instances.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Instance"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /session/node/{instanceId}:
+    post:
+      tags: [session]
+      summary: What it takes to open a shell on this node.
+      description: |
+        The node equivalent of `/session/connect/{guestId}`: the SSH
+        credentials for ONE Proxmox node, after checking that this caller
+        has been granted it. The check is made here, server-side, from the
+        stored identity -- being able to name an instance is not permission
+        to reach it, and the list endpoint having filtered is not something
+        this endpoint may assume.
+
+        A node is reachable only over SSH, whatever `consoleTransport` says:
+        that field decides how a GUEST console is attached and says nothing
+        about the node itself. An instance configured for termproxy and
+        never given `sshHost` therefore cannot be opened, and asking for it
+        is an error rather than a refusal -- it is a configuration problem,
+        not a permission one.
+
+        Returns the same shape as a guest connection, so one converter
+        serves both. The Proxmox API token travels with it because it
+        identifies the instance rather than the node, and the caller has
+        already been granted the node it belongs to.
+      operationId: connectSessionNode
+      parameters:
+        - name: instanceId
+          in: path
+          required: true
+          description: The instance's row id, as given by `/session/instances`.
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: The credentials for reaching the node.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstanceCredentials"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: |
+            The caller may not reach this node. Deliberately the same answer
+            as for an instance that does not exist, for the same reason as
+            the guest endpoint: telling them apart would turn this into a
+            way to enumerate the cluster.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /session/login-name-reserved:
     get:
       tags: [session]
@@ -325,8 +412,38 @@ components:
           type: string
           description: |
             Included so a caller can show and match on it without a second
-            request. It is the only thing about an instance a picker needs,
-            which is why there is no endpoint that lists instances.
+            request. It is the only thing about an instance that BROWSING
+            GUESTS needs, so a guest list never costs a second call.
+
+            `/session/instances` is a different question -- which nodes may
+            be reached in their own right -- and its answer is not derived
+            from this one.
+
+    Instance:
+      type: object
+      description: |
+        A Proxmox node as a picker needs it. The node counterpart of
+        `Guest`, and like it deliberately carries nothing that could be used
+        to reach the node: a session holds this list for its whole life, and
+        most of it is never connected to.
+      required: [id, name, node]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: The row id, used to ask for a connection.
+        name:
+          type: string
+          description: |
+            What the administrator called this instance, and the name a
+            client reaches it by as `<name>@proxpass`. Stored lower case.
+        node:
+          type: string
+          description: |
+            The resolved Proxmox short node name, which is what the cluster
+            calls the machine. Usually equal to `name`, but not necessarily:
+            `name` is proxpass's label and an administrator may choose it
+            freely.
 
     ConnectInfo:
       type: object

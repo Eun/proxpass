@@ -19,10 +19,12 @@ func rows(t *testing.T, names ...string) []guestRow {
 	return newGuestRows(guestInfos(guests, map[int64]string{1: "pve"}))
 }
 
+// names reads the NAME column, which is what a node row has too -- reading
+// r.guest.Name would panic on one.
 func names(rs []guestRow) []string {
 	out := make([]string, 0, len(rs))
 	for _, r := range rs {
-		out = append(out, r.guest.Name)
+		out = append(out, r.name)
 	}
 	return out
 }
