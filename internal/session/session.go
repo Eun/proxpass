@@ -17,6 +17,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 
 	"proxpass/internal/cli"
@@ -71,6 +72,7 @@ type Deps struct {
 // Run executes the session and returns the process exit code.
 func Run(ctx context.Context, d *Deps) int {
 	cmd := strings.TrimSpace(d.Command)
+	d.logDispatch(cmd)
 
 	switch {
 	case isHelp(cmd):
@@ -117,6 +119,65 @@ func Run(ctx context.Context, d *Deps) int {
 		return d.runAdmin(ctx, cmd)
 	}
 	return d.runClient(ctx, cmd)
+}
+
+// logDispatch records which branch a session is about to take.
+//
+// Every other branch announces itself once it is doing something -- a
+// console logs "connecting to", a command logs "command on". A FILE
+// TRANSFER did not, and that asymmetry cost a long debugging session: a
+// failing scp produced no proxpass log line at all, so there was no way to
+// tell "the request was not recognized as sftp" from "it was recognized
+// and then failed". The two have completely different causes and the
+// client cannot tell them apart either, because sshd discards a subsystem
+// session's stderr and shows only "Connection closed".
+//
+// So the decision is logged BEFORE it is acted on, for every kind of
+// session.
+//
+// The LOGIN NAME is deliberately absent. It is an alias the caller picks,
+// so recording it lets one caller produce entries indistinguishable from
+// another's -- see TestLogRecordsTheIdentityNotTheLoginName, which caught
+// exactly that when this was first written. The identity comes from the
+// client row the authenticating key belongs to and cannot be chosen.
+//
+// The command is quoted and length-bounded rather than interpolated raw,
+// for the same reason: it comes from the client, and a log an operator
+// reads should not be forgeable with an embedded newline.
+func (d *Deps) logDispatch(cmd string) {
+	if d.Logger == nil {
+		return
+	}
+	d.Logger.Printf("%s: session: kind=%s command=%s",
+		d.IdentityName, dispatchKind(cmd), quoteForLog(cmd))
+}
+
+// dispatchKind names the branch Run will take for cmd.
+//
+// Kept beside Run's switch and in the same order, so the two cannot
+// disagree about what a given command means.
+func dispatchKind(cmd string) string {
+	switch {
+	case isHelp(cmd):
+		return "help"
+	case isSFTPRequest(cmd):
+		return "sftp"
+	case cmd == "":
+		return "login-name"
+	default:
+		return "command"
+	}
+}
+
+// maxLoggedCommand bounds what a client can write into the log.
+const maxLoggedCommand = 200
+
+// quoteForLog renders a client-supplied string safely for one log line.
+func quoteForLog(s string) string {
+	if len(s) > maxLoggedCommand {
+		return strconv.Quote(s[:maxLoggedCommand]) + "...(truncated)"
+	}
+	return strconv.Quote(s)
 }
 
 // runClient handles a command from a non-admin client.

@@ -620,6 +620,28 @@ so Alpine works. A distroless container cannot be served. A **node** needs
 none of that: it needs its own `sftp` subsystem enabled, which every stock
 Proxmox install has.
 
+### Diagnosing a failed transfer
+
+`sshd` discards a subsystem session's stderr, so a failing `scp` or `sftp`
+shows only `Connection closed` and writes nothing to the log. Set
+**`PROXPASS_SESSION_LOG`** to a file path and every session appends what it
+decided and why:
+
+```
+proxpass-session: start: command is 30 bytes
+proxpass-session: identity ok: identity="alice" admin=false clientID=7
+proxpass-session: alice: session: kind=sftp command="/usr/lib/openssh/sftp-server"
+proxpass-session: alice: sftp: connect node rome: access denied
+```
+
+The `kind=` field is the one to read first: it says which branch the request
+took, so *"not recognised as a transfer"* can be told apart from
+*"recognised, then failed"* — two very different causes that look identical
+from the client.
+
+Unset by default, and a path that cannot be opened is ignored rather than
+failing the session. The file is `0600`: it names logins and guests.
+
 > **Why `scp` works without `-O`:** since OpenSSH 9.0 `scp` speaks the SFTP
 > protocol by default and does *not* fall back to the legacy one, so serving
 > SFTP is what makes a plain `scp` work. Both commands are the same protocol
