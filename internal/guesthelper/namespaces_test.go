@@ -216,3 +216,90 @@ func TestTheCgroupFlagIsProbedBeforeUse(t *testing.T) {
 		}
 	}
 }
+
+// probePart returns everything the generated script does BEFORE the exec.
+//
+// The split matters: the exec line carries "$ppcg", so a test that searched
+// the whole command for the flag would pass on the strength of the USE and
+// never notice that the probe setting it had been weakened.
+func probePart(t *testing.T, cmd string) string {
+	t.Helper()
+	at := strings.Index(cmd, "exec ")
+	if at < 0 {
+		t.Fatalf("no exec in the generated command:\n%s", cmd)
+	}
+	return cmd[:at]
+}
+
+// The probe must RUN --join-cgroup, not merely ask whether it exists.
+//
+// util-linux ships a bug -- CVE-2026-78408 -- in which --join-cgroup
+// closes the caller's stdin and reopens /proc/<pid>/cgroup onto the freed
+// descriptor, because sys-utils/nsenter.c initializes its cgroup fd to 0
+// instead of -1 and open_target_fd() closes any fd >= 0 before opening.
+// On such a node the flag is present and advertised by --help, and
+// silently destroys standard input.
+//
+// Every release that has the flag is affected -- it arrived in 2.40 and
+// 2.42.4 is the first carrying the complete fix -- so this is not a probe
+// that can be deleted once the fleet is upgraded.
+//
+// That was not hypothetical. It shipped: every file transfer failed (the
+// helper read the cgroup file instead of the protocol stream, so the
+// handshake hit EOF) and every command reading stdin returned nothing,
+// while commands that ignore stdin kept working -- which is exactly why a
+// presence check let it through.
+//
+// So the probe has to execute the flag and confirm a byte survives the
+// round trip. This test pins that it does, by requiring the probe to both
+// pass -c to a real nsenter and compare the result against what was fed
+// in; a presence-only probe fails here.
+func TestTheCgroupProbeChecksThatStdinSurvives(t *testing.T) {
+	cmd := guesthelper.ShellCommand(110, true, "true")
+	probe := probePart(t, cmd)
+
+	// It must actually invoke nsenter WITH the flag, not just grep --help.
+	if !strings.Contains(probe, "nsenter -c ") {
+		t.Errorf("the probe never runs `nsenter -c', so an nsenter that "+
+			"advertises --join-cgroup and then eats stdin is accepted:\n%s",
+			probe)
+	}
+	// ...and it must feed something in and check it comes back out. Without
+	// the comparison, running the flag proves only that it does not crash.
+	if !strings.Contains(probe, "printf pp") || !strings.Contains(probe, "= pp") {
+		t.Errorf("the probe does not round-trip a byte through stdin, so it "+
+			"cannot tell a working --join-cgroup from one that closes fd 0:\n%s",
+			probe)
+	}
+	// The test runs inside the target's namespace, so it needs the pid --
+	// which means it must come after the lookup that sets it.
+	pidAt := strings.Index(cmd, "pid=$(")
+	probeAt := strings.Index(cmd, "ppcg=")
+	if pidAt < 0 || probeAt < pidAt {
+		t.Errorf("the probe does not follow the pid lookup it depends on "+
+			"(pid=%d probe=%d):\n%s", pidAt, probeAt, cmd)
+	}
+}
+
+// A failing probe must be an answer, not an abort.
+//
+// The generated script runs under `set -e', and the probe is expected to
+// fail on any node that is too old or affected by the stdin bug. If that
+// failure propagated, the flag's absence would stop the command rather
+// than merely leaving $ppcg empty -- turning a graceful degradation into
+// a hard failure on exactly the nodes the probe exists to protect.
+func TestAFailingCgroupProbeDoesNotAbortTheScript(t *testing.T) {
+	cmd := guesthelper.ShellCommand(110, true, "true")
+	probe := probePart(t, cmd)
+
+	// `if' makes the whole thing a condition, which `set -e' never acts on.
+	start := strings.Index(probe, "ppcg=")
+	if start < 0 {
+		t.Fatalf("no probe at all in:\n%s", cmd)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(probe[start:]), "ppcg=; if ") {
+		t.Errorf("the probe is not guarded by `if', so a node without a "+
+			"working --join-cgroup aborts under `set -e' instead of running "+
+			"the command without the flag:\n%s", probe)
+	}
+}
