@@ -91,9 +91,13 @@ func TestUnavailableNamespacesAreNotRequested(t *testing.T) {
 // what nsenter received.
 func nsenterArgs(t *testing.T, cmd string) map[string]bool {
 	t.Helper()
-	start := strings.Index(cmd, "nsenter ")
+	// From the EXEC, not the first "nsenter" in the string: the capability
+	// probe runs `nsenter --help' earlier on the same line, and slicing
+	// from that would read the probe's arguments instead of the real
+	// invocation's -- reporting every namespace as missing.
+	start := strings.Index(cmd, "exec nsenter ")
 	if start < 0 {
-		t.Fatalf("no nsenter invocation in:\n%s", cmd)
+		t.Fatalf("no `exec nsenter' invocation in:\n%s", cmd)
 	}
 	rest := cmd[start:]
 	end := strings.Index(rest, " -- ")
@@ -119,6 +123,9 @@ const (
 	wdArgSep   = "-w /"
 )
 
+// cgroupFlag is the shell variable nsenter's --join-cgroup flag arrives in.
+const cgroupFlag = "$ppcg"
+
 func TestNamespaceFlagsTakeNoSeparatedArgument(t *testing.T) {
 	for _, cmd := range []string{
 		guesthelper.ShellCommand(110, true, "true"),
@@ -128,6 +135,84 @@ func TestNamespaceFlagsTakeNoSeparatedArgument(t *testing.T) {
 			if strings.Contains(cmd, bad) {
 				t.Errorf("found %q, which makes / the program:\n%s", bad, cmd)
 			}
+		}
+	}
+}
+
+// A command must be accounted to the container's cgroup, not the node's.
+//
+// Without --join-cgroup the process stays in the cgroup of whatever
+// invoked it -- the node's sshd session -- so the container's memory and
+// CPU limits do not apply to it. Measured on a live one-CPU container
+// before the fix:
+//
+//	ssh ct@host nproc            -> 24      (the node's CPUs)
+//	pct enter, then nproc        -> 1       (the container's limit)
+//	ssh ct@host cat /proc/self/cgroup
+//	    -> 0::/user.slice/user-0.slice/session-152681.scope
+//
+// A runaway command therefore billed its memory to the node and the
+// container's OOM killer never fired.
+//
+// This is NOT -C. That enters the cgroup namespace and only changes the
+// path /proc/self/cgroup reports; the two were confused, which is how the
+// escape came to be documented as an accepted cost of using nsenter.
+//
+// The shell variable is spelled out rather than imported: these tests read
+// the command line as the node receives it, so a rename should make them
+// fail and be re-read, not quietly follow along.
+func TestTheContainersCgroupIsJoined(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cmd  string
+	}{
+		{"command", guesthelper.ShellCommand(110, true, "nproc")},
+		{"helper launch", guesthelper.LaunchCommand(110, guesthelper.ArchAMD64, true)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The flag reaches nsenter...
+			if args := nsenterArgs(t, tc.cmd); !args[cgroupFlag] {
+				t.Errorf("nsenter is not given %s, so the command keeps the "+
+					"node's cgroup and escapes the container's limits:\n%s",
+					cgroupFlag, tc.cmd)
+			}
+			// ...and something defines it, or it expands to nothing and
+			// the flag silently does not exist.
+			if !strings.Contains(tc.cmd, "ppcg=") {
+				t.Errorf("%s is never assigned, so it always expands to "+
+					"nothing:\n%s", cgroupFlag, tc.cmd)
+			}
+		})
+	}
+}
+
+// The cgroup flag is probed, not assumed.
+//
+// --join-cgroup needs a new enough util-linux and a unified cgroup v2
+// hierarchy. An nsenter without it exits with a usage error before running
+// anything, which would turn every command and every transfer into a hard
+// failure on an older node -- worse than the escape the flag closes. So
+// the generated shell asks first and leaves the flag out when the answer
+// is no.
+func TestTheCgroupFlagIsProbedBeforeUse(t *testing.T) {
+	cmd := guesthelper.ShellCommand(110, true, "true")
+
+	if !strings.Contains(cmd, "--join-cgroup") {
+		t.Errorf("no probe for --join-cgroup in:\n%s", cmd)
+	}
+	// The probe must come BEFORE the invocation that uses its result.
+	probeAt := strings.Index(cmd, "ppcg=")
+	useAt := strings.Index(cmd, "nsenter "+cgroupFlag)
+	if probeAt < 0 || useAt < 0 || probeAt > useAt {
+		t.Errorf("the probe does not precede the use (probe=%d use=%d):\n%s",
+			probeAt, useAt, cmd)
+	}
+	// Unquoted, so an empty result disappears from argv rather than
+	// becoming an empty argument -- which nsenter reads as the program.
+	for _, quoted := range []string{`"` + cgroupFlag + `"`, `'` + cgroupFlag + `'`} {
+		if strings.Contains(cmd, quoted) {
+			t.Errorf("%s is quoted, so an empty value becomes an empty "+
+				"argument:\n%s", quoted, cmd)
 		}
 	}
 }

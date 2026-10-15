@@ -37,13 +37,27 @@ import (
 // session and nowhere else, which is the only place that knows what the
 // client asked for.
 //
-// The cost is real and accepted: a command runs in the HOST cgroup and
-// outside the container's AppArmor profile, so it is not bound by the
-// container's memory or CPU limits. Verified on a live node:
-// /proc/self/cgroup reads "0::/user.slice/..." and /proc/self/attr/current
-// reads "unconfined", where lxc-attach gives "0::/.lxc". A correct transfer
-// was judged to matter more than a limit that only binds a command the
-// administrator already chose to allow.
+// What that costs, and what it no longer costs.
+//
+// The cgroup half is FIXED: nsenter -c (--join-cgroup) writes the new
+// process into the target's cgroup, so a command is bound by the
+// container's memory and CPU limits after all. This was previously
+// documented here as an accepted cost, which was wrong -- the flag was
+// confused with -C, which enters the cgroup NAMESPACE and is merely
+// cosmetic. Before it, `ssh ct100@host nproc' on a one-CPU container
+// reported the node's 24, and /proc/self/cgroup read
+// "0::/user.slice/user-0.slice/session-NNN.scope" -- the node's sshd
+// session, where a runaway command billed its memory to the node and the
+// container's OOM killer never fired. See cgroupArgs for why it is probed
+// rather than passed unconditionally.
+//
+// The LSM half remains: nsenter applies no AppArmor profile, no seccomp
+// filter and drops no capabilities, where lxc-attach does all three.
+// Measured on a live node, /proc/self/attr/current reads "unconfined" and
+// Seccomp is 0, against Seccomp 2 for `pct enter'. That is a real
+// difference and it is accepted for the terminal reason above: a correct
+// transfer matters more, and the command was one the administrator already
+// chose to allow. It is not something nsenter has a flag for.
 func ExecCommand(vmid int, unprivileged bool, argv ...string) string {
 	args := append([]string{}, enterArgs(unprivileged)...)
 	args = append(args, "--")
@@ -86,6 +100,20 @@ func ExecCommand(vmid int, unprivileged bool, argv ...string) string {
 // severed from the filesystem, which is the containment the chroot exists to
 // provide. A `cd' would only paper over a dangling cwd that is harmless, and
 // `cd "$HOME"' would land somewhere a container need not even have.
+//
+// # What is NOT cleaned up
+//
+// The argument above is about what a login shell would have SET. It says
+// nothing about what is already there, and nsenter keeps the caller's
+// environment -- which is the node's sshd. So HOME, USER, SHELL, LANG and
+// MAIL arrive describing the node, and $HOSTNAME in particular disagrees
+// with hostname(1) now that the UTS namespace is entered.
+//
+// Left alone deliberately, because `pct enter' leaks exactly the same set
+// (lxc-attach --keep-env; Proxmox's own pct.pm carries a FIXME about it),
+// and matching the interactive path is worth more here than being tidier
+// than the tool proxpass is standing in for. nsenter -e would adopt the
+// container init's environment instead, if that ever changes.
 const envPrelude = `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; export PATH; `
 
 // ShellCommand returns the command that opens a shell inside a container, or
@@ -165,12 +193,22 @@ func shellQuoteAll(args ...string) string {
 //	-i  its IPC namespace, for the same reason.
 //	-U -S 0 -G 0  its user namespace as uid 0, so writes into an
 //	    unprivileged container land as its root rather than nobody:nogroup.
+//	    Note -G also DROPS supplementary groups, which the man page says
+//	    and which is worth knowing: `id' here reports "uid=0 gid=0
+//	    groups=0" while `pct enter' shows the container root's real group
+//	    list. It errs in the safe direction -- the caller's node groups
+//	    are dropped rather than carried in -- so it stays, but a file
+//	    readable only through a supplementary group is readable in the
+//	    console and not over scp.
 //
 // Deliberately NOT entered:
 //
-//	-C  the cgroup namespace. It changes only what /proc/self/cgroup
-//	    reports; nothing proxpass runs reads it, and `pct enter' leaves it
-//	    alone too.
+//	-C  the cgroup NAMESPACE, which is not the same thing as -c above and
+//	    must not be confused with it: -C changes only the path
+//	    /proc/self/cgroup reports, while -c decides which cgroup the
+//	    process is actually accounted to. Nothing proxpass runs reads the
+//	    path, and `pct enter' leaves the namespace alone too (lxc
+//	    attach.c skips CLONE_NEWCGROUP unless asked).
 //	-T  the time namespace. A container usually does not have one -- lxc
 //	    does not create one by default -- so asking for it would fail on
 //	    every ordinary container.
@@ -181,12 +219,38 @@ func shellQuoteAll(args ...string) string {
 //
 //	nsenter: failed to execute /: Permission denied
 func enterArgs(unprivileged bool) []string {
-	args := []string{"nsenter", "-t", `"$pid"`, "-m", "-r", "-n", "-p", "-u", "-i"}
+	args := []string{
+		"nsenter", cgroupFlagVar, "-t", `"$pid"`,
+		"-m", "-r", "-n", "-p", "-u", "-i",
+	}
 	if unprivileged {
 		args = append(args, "-U", "-S", "0", "-G", "0")
 	}
 	return args
 }
+
+// cgroupFlagVar expands to "-c" on a node whose nsenter supports it, and to
+// nothing on one that does not. See cgroupProbe.
+//
+// Unquoted on purpose: an empty value must vanish from the argument list
+// rather than become an empty argument, which nsenter would read as the
+// program to run.
+const cgroupFlagVar = "$ppcg"
+
+// cgroupProbe sets $ppcg to "-c" when this node's nsenter understands it.
+//
+// Probed rather than passed unconditionally because --join-cgroup is not
+// universally available: it needs a util-linux new enough to have it (PVE
+// 9 ships 2.42, which does) and a unified cgroup v2 hierarchy. An nsenter
+// that does not recognize the flag exits with a usage error before running
+// anything, which would turn every command and every file transfer into a
+// hard failure on an older node -- a much worse outcome than the limit
+// escape the flag exists to close.
+//
+// --help is matched rather than a version number: the flag's presence is
+// the thing that matters, and parsing versions invites an off-by-one on
+// whichever distribution backported it.
+const cgroupProbe = `ppcg=; nsenter --help 2>&1 | grep -q -- --join-cgroup && ppcg=-c`
 
 // shellQuote wraps a string so a shell takes it as one literal argument.
 //
@@ -212,6 +276,11 @@ func containerCommand(vmid int, cmd string) string {
 		"pid=$(" + pidOf + ")",
 		`[ -n "$pid" ] || { echo "container ` + fmt.Sprint(vmid) +
 			` is not running" >&2; exit ` + fmt.Sprint(ErrNotRunningStatus) + "; }",
+		// Before the exec, because it decides one of its arguments. The
+		// probe must not be allowed to abort under `set -e': grep exits
+		// 1 when the flag is absent, which is an answer rather than a
+		// failure, so the && leaves $ppcg empty and carries on.
+		cgroupProbe,
 		"exec " + cmd,
 	}, "; ")
 }
