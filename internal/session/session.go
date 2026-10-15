@@ -67,6 +67,12 @@ type Deps struct {
 
 	// Command is the client's requested command ($SSH_ORIGINAL_COMMAND).
 	Command string
+
+	// Debug turns on the diagnostics that explain what a session
+	// decided. Off by default: they are verbose, and one of them names
+	// the client's command, which belongs in an operator's log only
+	// when an operator asked for it.
+	Debug bool
 }
 
 // Run executes the session and returns the process exit code.
@@ -145,7 +151,7 @@ func Run(ctx context.Context, d *Deps) int {
 // for the same reason: it comes from the client, and a log an operator
 // reads should not be forgeable with an embedded newline.
 func (d *Deps) logDispatch(cmd string) {
-	if d.Logger == nil {
+	if d.Logger == nil || !d.Debug {
 		return
 	}
 	d.Logger.Printf("%s: session: kind=%s command=%s",

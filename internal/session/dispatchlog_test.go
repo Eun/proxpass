@@ -10,8 +10,13 @@ import (
 	"proxpass/internal/testenv"
 )
 
-// helpFlag is the request that reaches the help branch.
-const helpFlag = "--help"
+const (
+	// helpFlag is the request that reaches the help branch.
+	helpFlag = "--help"
+	// cmdUptime is an ordinary command, used where the content does
+	// not matter.
+	cmdUptime = "uptime"
+)
 
 // Every session says which branch it took, before it takes it.
 //
@@ -25,7 +30,7 @@ func TestEverySessionLogsItsDispatch(t *testing.T) {
 		name, command, wantKind string
 	}{
 		{"interactive", "", "kind=login-name"},
-		{"command", "uptime", "kind=command"},
+		{"command", cmdUptime, "kind=command"},
 		{"sftp full path", "/usr/lib/openssh/sftp-server", "kind=sftp"},
 		{"sftp internal", "internal-sftp", "kind=sftp"},
 		{"help", helpFlag, "kind=help"},
@@ -41,6 +46,7 @@ func TestEverySessionLogsItsDispatch(t *testing.T) {
 			d.LoginName = userAlice
 			d.IdentityName = userAlice
 			d.IsAdmin = true
+			d.Debug = true
 			d.Command = tc.command
 
 			session.Run(t.Context(), d)
@@ -71,6 +77,7 @@ func TestTheLoggedCommandCannotForgeALine(t *testing.T) {
 	d.LoginName = userAlice
 	d.IdentityName = userAlice
 	d.IsAdmin = true
+	d.Debug = true
 	d.Command = "x\nproxpass: FORGED ADMIN LINE"
 
 	session.Run(t.Context(), d)
@@ -104,6 +111,7 @@ func TestALongCommandIsTruncatedInTheLog(t *testing.T) {
 	d.LoginName = userAlice
 	d.IdentityName = userAlice
 	d.IsAdmin = true
+	d.Debug = true
 	d.Command = strings.Repeat("A", 5000)
 
 	session.Run(t.Context(), d)
@@ -130,6 +138,7 @@ func TestANodeTransferLogsAsSFTP(t *testing.T) {
 	d.LoginName = instRome
 	d.IdentityName = userAlice
 	d.ClientID = client.ID
+	d.Debug = true
 	d.Command = "/usr/lib/openssh/sftp-server"
 
 	session.Run(t.Context(), d)
@@ -150,3 +159,29 @@ func TestANodeTransferLogsAsSFTP(t *testing.T) {
 
 // Guard: the model fixture must stay referenced so the import is real.
 var _ = models.GuestTypeCT
+
+// The diagnostics are OFF unless asked for.
+//
+// They are verbose and one of them names the client's command, which
+// belongs in an operator's log only when an operator turned it on.
+func TestDispatchIsNotLoggedByDefault(t *testing.T) {
+	repo := newRepo(t)
+	seedGuest(t, repo)
+
+	var logbuf strings.Builder
+	tb := newTerminal("")
+	d := newDeps(repo, tb, &testenv.MockProxier{})
+	d.Logger = log.New(&logbuf, "", 0)
+	d.LoginName = userAlice
+	d.IdentityName = userAlice
+	d.IsAdmin = true
+	d.Command = cmdUptime
+	// d.Debug deliberately left false.
+
+	session.Run(t.Context(), d)
+
+	if strings.Contains(logbuf.String(), "session: kind=") {
+		t.Errorf("the dispatch line was logged without --log-level=debug:\n%s",
+			logbuf.String())
+	}
+}

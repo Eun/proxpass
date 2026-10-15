@@ -28,6 +28,7 @@ import (
 	"proxpass/internal/cli"
 	"proxpass/internal/console"
 	"proxpass/internal/db"
+	"proxpass/internal/loglevel"
 	"proxpass/internal/proxmox"
 	"proxpass/internal/session"
 )
@@ -111,9 +112,18 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	dataPath := cmd.String("data")
 	interval := cmd.Duration("discovery-interval")
 
+	// Validated here even though `serve' logs the same either way: the
+	// level it is given is the one handed to every SESSION, so a typo
+	// would silently leave an operator at the default while they waited
+	// for diagnostics. Rejecting it at startup is how they find out.
+	level, err := loglevel.Parse(cmd.String("log-level"))
+	if err != nil {
+		return err
+	}
+
 	logger := log.New(os.Stdout, "proxpass: ", log.LstdFlags)
-	logger.Printf("config: listen=%s data=%s discovery-interval=%s",
-		listenAddr, dataPath, interval)
+	logger.Printf("config: listen=%s data=%s discovery-interval=%s log-level=%s",
+		listenAddr, dataPath, interval, level)
 
 	// Resolve the uid/gid layout before anything else: an invalid one must
 	// fail at startup rather than after sshd has accepted a key, where it
@@ -307,35 +317,42 @@ func runAuthorizedKeys(ctx context.Context, cmd *ucli.Command) error {
 		ctx, os.Stdout, repo, user, cmd.String("admin-key"))
 }
 
-// SessionLogEnv names a file every session appends diagnostics to.
+// sessionLog carries the session's debug diagnostics, nil unless the log
+// level is debug.
 //
-// Unset by default. It exists because the ordinary channels do not work
-// for a file transfer: sshd discards a subsystem session's stderr, so
-// neither the client nor the operator sees why one failed -- the client
-// gets "Connection closed" and the log gets nothing. Pointing this at a
-// file makes the whole decision visible without a rebuild.
-const SessionLogEnv = "PROXPASS_SESSION_LOG"
-
-// sessionLog is the diagnostic log, nil unless SessionLogEnv is set.
-//
-// A package variable rather than a parameter because the thing worth
-// recording is the EARLY failures -- before a Deps, a logger or a terminal
-// exists -- and threading one through every return path would be a larger
-// change than the diagnosis warrants.
+// A package variable rather than a parameter because the things worth
+// recording are the EARLY failures -- before a Deps, a logger or a
+// terminal exists -- and threading one through every return path would be
+// a larger change than the diagnosis warrants.
 var sessionLog *log.Logger
 
-// openSessionLog opens the diagnostic log, or returns nil when unset.
+// sessionLogPath is where a debug session writes its diagnostics.
+//
+// A file is needed at all because the ordinary channel does not work for
+// the case that most needs it: sshd discards a subsystem session's
+// stderr, so neither the client nor an operator sees why a transfer
+// failed. /run is the same tmpfs the entrypoint already uses to hand the
+// DSN across, so this needs no new volume and does not survive a restart
+// -- which is right for a debugging aid.
+//
+// Overridable so a deployment can put it somewhere persistent, and so a
+// test can point it at a temporary directory.
+const sessionLogPath = "/run/proxpass/session.log"
+
+// SessionLogPathEnv overrides sessionLogPath.
+const SessionLogPathEnv = "PROXPASS_SESSION_LOG"
+
+// openSessionLog opens the debug log, or returns nil when it cannot.
 //
 // A failure to open is deliberately silent: this is a debugging aid, and
 // taking a session down because its log file is unwritable would be a
 // worse outcome than the missing diagnostics.
 func openSessionLog() io.WriteCloser {
-	path := os.Getenv(SessionLogEnv)
+	path := os.Getenv(SessionLogPathEnv)
 	if path == "" {
-		return nil
+		path = sessionLogPath
 	}
-	// 0600: a session's log names guests and login names, and the file
-	// is written by whichever user sshd runs the session as.
+	// 0600: the log names logins and guests.
 	f, err := os.OpenFile(filepath.Clean(path),
 		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -344,24 +361,23 @@ func openSessionLog() io.WriteCloser {
 	return f
 }
 
-// sessionLogWriter adapts the diagnostic log to an io.Writer, so the
-// session's own logger can tee into it.
+// sessionLogWriter adapts the debug log to an io.Writer, so the session's
+// own logger can tee into it.
 func sessionLogWriter() io.Writer { return sessionLogSink{} }
 
 type sessionLogSink struct{}
 
 func (sessionLogSink) Write(p []byte) (int, error) {
-	// Output() rather than Printf: the session's logger has already
-	// added its own prefix and timestamp, and the calldepth is
-	// irrelevant because no file/line flags are set.
+	// Output rather than Printf: the session's logger has already added
+	// its prefix and timestamp.
 	if sessionLog != nil {
 		_ = sessionLog.Output(2, strings.TrimRight(string(p), "\n"))
 	}
 	return len(p), nil
 }
 
-// logSessionf writes to the diagnostic log when one is configured.
-func logSessionf(format string, args ...any) {
+// logDebugf writes a debug diagnostic when the level allows it.
+func logDebugf(format string, args ...any) {
 	if sessionLog == nil {
 		return
 	}
@@ -405,21 +421,25 @@ func runSession(ctx context.Context, cmd *ucli.Command) error {
 	// that was never recognized as a transfer, which is a bad place to
 	// start debugging from.
 	//
-	// A log file is used rather than syslog: the container has no
-	// /dev/log, so a syslog writer would fail to open or, worse, succeed
-	// and discard. The path is opt-in through PROXPASS_SESSION_LOG so a
-	// deployment that does not want it pays nothing, and so that turning
-	// it on needs no rebuild.
-	if w := openSessionLog(); w != nil {
-		defer func() { _ = w.Close() }()
-		sessionLog = log.New(w, "proxpass-session: ", log.LstdFlags|log.Lmicroseconds)
-		// No login name and no raw command: before the exchange there
-		// is no verified identity to attribute this to, and both of
-		// these are caller-chosen. The length is enough to correlate
-		// with the dispatch line the session logs once it knows who
-		// it is talking to.
-		sessionLog.Printf("start: command is %d bytes", len(cmd.String("command")))
-		defer func() { sessionLog.Printf("end") }()
+	// At debug these go to a file as well, because stderr is exactly the
+	// stream that is discarded. See sessionLogPath.
+	level, err := loglevel.Parse(cmd.String("log-level"))
+	if err != nil {
+		return err
+	}
+	if level.Enabled(loglevel.Debug) {
+		if w := openSessionLog(); w != nil {
+			defer func() { _ = w.Close() }()
+			sessionLog = log.New(w, "proxpass-session: ",
+				log.LstdFlags|log.Lmicroseconds)
+			// No login name and no raw command: before the exchange
+			// there is no verified identity to attribute this to, and
+			// both are caller-chosen. The length is enough to
+			// correlate with the dispatch line logged once the
+			// session knows who it is talking to.
+			logDebugf("start: command is %d bytes", len(cmd.String("command")))
+			defer logDebugf("end")
+		}
 	}
 
 	// Try the API first, and do NOT open the database to do it.
@@ -455,13 +475,13 @@ func runSession(ctx context.Context, cmd *ucli.Command) error {
 		// Logged as well as returned: for a subsystem the returned
 		// error goes to a stderr sshd discards, so this is the only
 		// place an operator can see it.
-		logSessionf("identity exchange failed: %v", apiErr)
+		logDebugf("identity exchange failed: %v", apiErr)
 		return fmt.Errorf(
 			"could not reach the proxpass API (%w); a session cannot run "+
 				"without it -- check that `proxpass serve' is up and that "+
 				"sshd sets %s", apiErr, session.TokenEnv)
 	}
-	logSessionf("identity ok: identity=%q admin=%v clientID=%d",
+	logDebugf("identity ok: identity=%q admin=%v clientID=%d",
 		identity.IdentityName, identity.IsAdmin, identity.ClientID)
 
 	// An administrator gets a repository served by the API, not the file.
@@ -511,7 +531,7 @@ func runSession(ctx context.Context, cmd *ucli.Command) error {
 	if apiErr != nil {
 		logger.Printf("the session API was not usable (%v); "+
 			"reading the database directly", apiErr)
-		logSessionf("session API unusable: %v", apiErr)
+		logDebugf("session API unusable: %v", apiErr)
 	}
 
 	// The endpoint comes from the directory, not the flag: sshd gives this
@@ -526,6 +546,7 @@ func runSession(ctx context.Context, cmd *ucli.Command) error {
 	}
 
 	code := session.Run(ctx, &session.Deps{
+		Debug:        level.Enabled(loglevel.Debug),
 		Dir:          dir,
 		Repo:         repo,
 		Discoverer:   proxmox.DefaultDiscovererFactory,

@@ -419,7 +419,7 @@ All flags can also be set via environment variables.
 | Flag | Env Var | Default | Description |
 |------|---------|---------|-------------|
 | `--data` | `PROXPASS_DATA` | `/var/lib/proxpass/proxpass.db` | SQLite file path, or a `postgres://` URL (see below) |
-| `--log-level` | `PROXPASS_LOG_LEVEL` | `info` | Log level (debug, info, warn, error) |
+| `--log-level` | `PROXPASS_LOG_LEVEL` | `info` | Log level (debug, info, warn, error). `debug` adds per-session diagnostics; see [Diagnosing a failed transfer](#diagnosing-a-failed-transfer). |
 | `--admin-key` | `PROXPASS_ADMIN_KEY` | | Admin public key (see below) |
 | `--public-endpoint` | `PROXPASS_PUBLIC_ENDPOINT` | | Hostname clients connect to, shown in the status bar (see below) |
 | `--listen` | `PROXPASS_LISTEN` | `127.0.0.1:8080` | Address of the NSS directory API (`serve` only) |
@@ -623,13 +623,13 @@ Proxmox install has.
 ### Diagnosing a failed transfer
 
 `sshd` discards a subsystem session's stderr, so a failing `scp` or `sftp`
-shows only `Connection closed` and writes nothing to the log. Set
-**`PROXPASS_SESSION_LOG`** to a file path and every session appends what it
-decided and why:
+shows only `Connection closed` and writes nothing to the log. Start the
+server at **`--log-level=debug`** (or `PROXPASS_LOG_LEVEL=debug`) and every
+session records what it decided:
 
 ```
 proxpass-session: start: command is 30 bytes
-proxpass-session: identity ok: identity="alice" admin=false clientID=7
+proxpass-session: identity exchange failed: no session token in the environment
 proxpass-session: alice: session: kind=sftp command="/usr/lib/openssh/sftp-server"
 proxpass-session: alice: sftp: connect node rome: access denied
 ```
@@ -639,8 +639,15 @@ took, so *"not recognised as a transfer"* can be told apart from
 *"recognised, then failed"* — two very different causes that look identical
 from the client.
 
-Unset by default, and a path that cannot be opened is ignored rather than
-failing the session. The file is `0600`: it names logins and guests.
+Sessions write to `/run/proxpass/session.log`, because the stream they would
+normally use is the one being discarded. Override the path with
+`PROXPASS_SESSION_LOG`. The file is `0600` — it names logins and guests —
+and lives on tmpfs, so it does not survive a restart.
+
+> The level reaches sessions through `/run/proxpass/log-level`, written by
+> the entrypoint. A session is a separate process started by `sshd`, which
+> scrubs the environment, so it cannot inherit the server's — the same
+> reason the database DSN is handed over the same way.
 
 > **Why `scp` works without `-O`:** since OpenSSH 9.0 `scp` speaks the SFTP
 > protocol by default and does *not* fall back to the legacy one, so serving
