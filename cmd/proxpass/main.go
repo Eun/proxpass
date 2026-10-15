@@ -457,7 +457,13 @@ func runSession(ctx context.Context, cmd *ucli.Command) error {
 	if apiClient != nil {
 		defer func() {
 			if err := apiClient.Revoke(context.WithoutCancel(ctx)); err != nil {
+				// Through logDebugf as well as the default logger: this
+				// runs during teardown, where for a subsystem the
+				// default logger writes to a stderr sshd has already
+				// discarded. A credential that failed to revoke is
+				// exactly the kind of thing worth finding later.
 				log.Printf("proxpass: revoking the session credential: %v", err)
+				logDebugf("revoking the session credential: %v", err)
 			}
 		}()
 	}
