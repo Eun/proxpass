@@ -193,8 +193,9 @@ func (d *Deps) runNodeCommand(ctx context.Context, inst *models.ProxmoxInstance,
 // Deliberately a separate resolution from resolveLoginNameGuest rather than
 // a widening of it. That helper also serves SFTP, where a node means
 // something different -- the plain subsystem rather than guesthelper inside
-// a container -- so teaching it about nodes would change file transfer by
-// accident.
+// a container. Keeping them apart is what let the transfer path adopt nodes
+// on its own terms: runSFTP calls THIS function and then takes a different
+// branch entirely, which a widened guest resolver could not have expressed.
 func (d *Deps) namesANode(ctx context.Context, name string) (*models.ProxmoxInstance, bool) {
 	if name == "" || isReservedLoginName(name) {
 		return nil, false

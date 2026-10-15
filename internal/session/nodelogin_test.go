@@ -15,6 +15,8 @@ const (
 	nodeSSHUser = "root"
 	// aliceKey is the public key the test client authenticates with.
 	aliceKey = "ssh-ed25519 AAAAalice alice"
+	// adminName is the reserved administrator login.
+	adminName = "admin"
 )
 
 // `ssh <instance-name>@proxpass' opens a shell on the Proxmox node.
@@ -297,7 +299,7 @@ func TestACommandUnderANonNodeNameStillReachesTheCLI(t *testing.T) {
 // away from the administrator.
 func TestAnInstanceNamedAdminDoesNotStealTheAdminLogin(t *testing.T) {
 	repo := newRepo(t)
-	seedNodeInstance(t, repo, "admin")
+	seedNodeInstance(t, repo, adminName)
 	// A guest so the picker has something to show rather than erroring.
 	instances, err := repo.ListProxmoxInstances(t.Context())
 	if err != nil {
@@ -309,7 +311,7 @@ func TestAnInstanceNamedAdminDoesNotStealTheAdminLogin(t *testing.T) {
 	tb := newTerminal("q\n")
 	tb.term.Raw = true
 	d := newDeps(repo, tb, proxier)
-	d.LoginName = "admin"
+	d.LoginName = adminName
 	d.IsAdmin = true
 
 	session.Run(t.Context(), d)
@@ -331,7 +333,7 @@ func TestAnInstanceNamedAdminDoesNotStealTheAdminLogin(t *testing.T) {
 // attempt against that node.
 func TestAnInstanceNamedAdminDoesNotStealTheAdminCLI(t *testing.T) {
 	repo := newRepo(t)
-	seedNodeInstance(t, repo, "admin")
+	seedNodeInstance(t, repo, adminName)
 	instances, err := repo.ListProxmoxInstances(t.Context())
 	if err != nil {
 		t.Fatalf("list instances: %v", err)
@@ -341,7 +343,7 @@ func TestAnInstanceNamedAdminDoesNotStealTheAdminCLI(t *testing.T) {
 	proxier := &testenv.MockProxier{}
 	tb := newTerminal("")
 	d := newDeps(repo, tb, proxier)
-	d.LoginName = "admin"
+	d.LoginName = adminName
 	d.IsAdmin = true
 	d.Command = cmdGuestLs
 

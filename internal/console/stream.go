@@ -32,6 +32,45 @@ type Stream struct {
 // them in its own log should say so explicitly rather than have them vanish
 // into a full pipe, which would block the remote process.
 func (r *NodeRunner) Stream(cmd string, stderr io.Writer) (*Stream, error) {
+	return r.stream(stderr, func(s *gossh.Session) error {
+		if err := s.Start(cmd); err != nil {
+			return fmt.Errorf("starting remote command: %w", err)
+		}
+		return nil
+	})
+}
+
+// Subsystem starts a named SSH subsystem on the node and returns its
+// streams.
+//
+// This is what makes `scp' and `sftp' work against a NODE: the node runs
+// its own sftp-server, so proxpass asks for it by name and pumps bytes
+// between it and the client. Nothing is staged and nothing is entered --
+// compare the guest path, which pushes a helper binary into the container
+// through nsenter because there is no server in there to ask.
+//
+// A subsystem is requested rather than `exec sftp-server' because that is
+// what the protocol is for, and because the remote path differs between
+// distributions -- asking by name lets the node's own sshd resolve it.
+//
+// No PTY, like Stream, and for the reason given there: a line discipline
+// would rewrite "\n" as "\r\n" and corrupt every binary payload. Real
+// OpenSSH never allocates one for a subsystem either.
+func (r *NodeRunner) Subsystem(name string, stderr io.Writer) (*Stream, error) {
+	return r.stream(stderr, func(s *gossh.Session) error {
+		if err := s.RequestSubsystem(name); err != nil {
+			return fmt.Errorf("requesting the %q subsystem: %w", name, err)
+		}
+		return nil
+	})
+}
+
+// stream opens a session, wires its pipes and hands it to start.
+//
+// Shared by Stream and Subsystem, which differ only in how the remote end
+// is kicked off. The pipe wiring and the no-PTY rule are the parts that
+// must not vary between them.
+func (r *NodeRunner) stream(stderr io.Writer, start func(*gossh.Session) error) (*Stream, error) {
 	r.mu.Lock()
 	client := r.client
 	r.mu.Unlock()
@@ -60,9 +99,9 @@ func (r *NodeRunner) Stream(cmd string, stderr io.Writer) (*Stream, error) {
 		session.Stderr = io.Discard
 	}
 
-	if err := session.Start(cmd); err != nil {
+	if err := start(session); err != nil {
 		_ = session.Close()
-		return nil, fmt.Errorf("starting remote command: %w", err)
+		return nil, err
 	}
 	return &Stream{session: session, stdin: stdin, stdout: stdout}, nil
 }

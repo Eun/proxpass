@@ -564,8 +564,8 @@ already exists.
 ### File transfer with scp and sftp
 
 > **Prerequisite: install the proxpass SSH key on the Proxmox node first.**
-> SFTP and `scp` reach a container *through* its node, so they do not work
-> until proxpass can log in to that node — regardless of
+> SFTP and `scp` reach a container *through* its node, and reach a node
+> directly, so neither works until proxpass can log in to that node — regardless of
 > `--console-transport`, and even for an instance whose consoles work fine
 > over termproxy. Append the key's public half to `~/.ssh/authorized_keys` for
 > the user in `--ssh-user` (`root` by default) on each node; see
@@ -576,37 +576,49 @@ already exists.
 > neither, because both are console checks — so there the first sign is a
 > transfer failing. Installing the key is what fixes it either way.
 
-Files can be copied into and out of a **container** by naming the guest as the
-login name:
+Files can be copied into and out of a **container** or a **node** by naming
+it as the login name:
 
 ```bash
+# a container
 scp ./app.tar.gz ct100@proxpass:/opt/
 scp ct100@proxpass:/var/log/syslog ./
 scp -r ./site ct100@proxpass:/var/www/
 sftp ct100@proxpass
+
+# a Proxmox node
+scp ./backup.sh pve1@proxpass:/root/
+sftp pve1@proxpass
 ```
 
-The same resolution as `ssh ct100@proxpass` applies, including the
-instance-qualified `ct100@rome` form, and it is scoped to the guests your key
-already reaches — naming a guest grants nothing.
+The same resolution as `ssh <name>@proxpass` applies, including the
+instance-qualified `ct100@rome` form and the rule that **a node wins a name
+collision**, and it is scoped to what your key already reaches — naming a
+target grants nothing.
 
-A transfer runs **inside the container's namespaces**, so a path means what it
-means in the container: a symlink there cannot point at a file on the Proxmox
-node. Nothing is staged on the node either; the bytes stream straight through.
+The two work quite differently underneath:
 
-Two limits worth knowing:
+| | How it works |
+|---|---|
+| **Container** | Runs **inside the container's namespaces**, so a path means what it means in the container: a symlink there cannot point at a file on the node. Nothing is staged on the node; the bytes stream straight through. |
+| **Node** | proxpass asks the node's own sshd for its `sftp` subsystem and pumps bytes between it and your client. Paths are the node's, and the transfer is as capable as the node's `sftp-server` makes it. |
+
+Limits worth knowing:
 
 | Not supported | Why |
 |---|---|
 | Virtual machines | A VM has no namespace to enter. Reaching its disk means the guest agent, whose write endpoint truncates at 60 KiB and cannot append. |
-| A node proxpass cannot log in to | The transfer runs commands on the node, so the key above is what enables it. |
+| A node proxpass cannot log in to | Both paths reach the node over SSH, so the key above is what enables them. |
+| A node with no `--ssh-host` | There is nowhere to connect; such an instance is not offered as a transfer target. |
 
 Note that `--console-transport` is **not** one of these: it selects how a
 *console* is attached and has nothing to do with file transfer. A termproxy
 instance transfers files over SSH to the node just as an `ssh` one does.
 
-The container also needs a shell and `cat`/`stat`/`dd` — BusyBox is enough, so
-Alpine works. A distroless container cannot be served.
+A **container** also needs a shell and `cat`/`stat`/`dd` — BusyBox is enough,
+so Alpine works. A distroless container cannot be served. A **node** needs
+none of that: it needs its own `sftp` subsystem enabled, which every stock
+Proxmox install has.
 
 > **Why `scp` works without `-O`:** since OpenSSH 9.0 `scp` speaks the SFTP
 > protocol by default and does *not* fall back to the legacy one, so serving
@@ -901,8 +913,8 @@ instance with no `--ssh-host` cannot be opened as one.
 > `admin` remains reserved: an instance called `admin` does not take the
 > administrator's login or CLI.
 
-File transfer to a node is not supported yet; `scp` and `sftp` still address
-guests only.
+`scp` and `sftp` reach a node too — see
+[File transfer](#file-transfer-with-scp-and-sftp).
 
 The default policy is left out deliberately. It has no notion of a target —
 a client listed there reaches *anything* — and it is standing configuration,
