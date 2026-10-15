@@ -16,4 +16,13 @@ if [ -r "${DSN_FILE}" ]; then
 	export PROXPASS_DATA
 fi
 
+# The log level, for the same reason and by the same route. Without it a
+# session always runs at the default, so `--log-level=debug' on the server
+# would not reach the sessions an operator is trying to debug.
+LEVEL_FILE="/run/proxpass/log-level"
+if [ -r "${LEVEL_FILE}" ]; then
+	PROXPASS_LOG_LEVEL="$(cat "${LEVEL_FILE}")"
+	export PROXPASS_LOG_LEVEL
+fi
+
 exec /app session

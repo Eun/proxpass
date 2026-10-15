@@ -119,6 +119,18 @@ printf '%s' "${PROXPASS_DATA}" > "${PROXPASS_DSN_FILE}"
 chown root:root "${PROXPASS_DSN_FILE}"
 chmod 0644 "${PROXPASS_DSN_FILE}"
 
+# The log level travels the same way, and for the same reason: a session
+# is a separate process started by sshd, which scrubs the environment, so
+# it cannot inherit the server's. Without this, --log-level=debug would
+# turn on diagnostics for `proxpass serve' and change nothing about the
+# sessions an operator is usually trying to debug.
+PROXPASS_LOG_LEVEL="${PROXPASS_LOG_LEVEL:-info}"
+PROXPASS_LEVEL_FILE="/run/proxpass/log-level"
+printf '%s' "${PROXPASS_LOG_LEVEL}" > "${PROXPASS_LEVEL_FILE}"
+chown root:root "${PROXPASS_LEVEL_FILE}"
+chmod 0644 "${PROXPASS_LEVEL_FILE}"
+export PROXPASS_LOG_LEVEL
+
 # proxpass_uses_postgres reports whether the database lives on a server rather
 # than in a file. The file-permission work below is meaningless then: there is
 # no file to chmod, and write access is decided by the DSN's credentials.

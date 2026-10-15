@@ -253,7 +253,7 @@ func TestACommandOnANodeIsNotTreatedAsAProxpassCommand(t *testing.T) {
 	d.LoginName = instRome
 	d.IdentityName = userAlice
 	d.ClientID = client.ID
-	d.Command = "uptime"
+	d.Command = cmdUptime
 
 	// The dial fails: the fixture host does not exist. That is the point --
 	// reaching a dial attempt proves the command was routed to the node.
