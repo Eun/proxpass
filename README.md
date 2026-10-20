@@ -337,18 +337,6 @@ ssh -p 2222 admin@proxpass instance add \
   --console-transport ssh \
   --ssh-host pve1.internal:2222
 
-# Add multiple instances in one call.
-# --name and --ssh-host are disallowed with multiple --url.
-# Each instance is named after its Proxmox node name and starts with no SSH
-# host; set one per instance afterwards with `instance update --ssh-host`.
-ssh -p 2222 admin@proxpass instance add \
-  --url https://pve1:8006 \
-  --url https://pve2:8006 \
-  --url https://pve3:8006 \
-  --token-id "user@pam!token" \
-  --token-secret "uuid" \
-  --console-transport ssh
-
 # Change an existing instance. Only the flags you pass are changed, and the
 # instance keeps its id -- so its access rules survive, which re-adding it
 # would not.

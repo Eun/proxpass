@@ -11,7 +11,7 @@ import (
 	ucli "github.com/urfave/cli/v3"
 )
 
-func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo // CLI command tree
+func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI command tree
 	return &ucli.Command{
 		Name:   "instance",
 		Usage:  "Manage Proxmox instances",
@@ -49,30 +49,24 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 			},
 			{
 				Name:  cmdAdd,
-				Usage: "Add one or more Proxmox instances",
-				Description: `Adds one or more Proxmox instances to proxpass.
+				Usage: "Add a Proxmox instance",
+				Description: `Adds one Proxmox instance to proxpass.
 
-When a single --url is supplied:
   - --name optionally overrides the automatically resolved node name.
   - --ssh-host optionally sets the SSH host/port for node shell, SFTP and
     file transfer. Accepts "host" or "host:port" (port defaults to 22). It is
     NOT derived from --url; when omitted the instance has no SSH host and those
     features stay disabled until you set one with "instance update --ssh-host".
-    The termproxy console works either way.
-
-When multiple --url flags are supplied:
-  - --name is disallowed; each instance is named after its Proxmox node name.
-  - --ssh-host is disallowed; add instances one at a time to give each its own
-    SSH host, or set it afterwards with "instance update --ssh-host".`,
+    The termproxy console works either way.`,
 				Flags: []ucli.Flag{
 					&ucli.StringFlag{
 						Name:  flagName,
-						Usage: "Instance name (only valid with a single --url; if omitted the Proxmox node name is used)",
+						Usage: "Instance name (if omitted the Proxmox node name is used)",
 					},
-					&ucli.StringSliceFlag{
+					&ucli.StringFlag{
 						Name:     "url",
 						Required: true,
-						Usage:    "Proxmox API URL — may be repeated to add multiple instances at once (e.g. https://pve:8006)",
+						Usage:    "Proxmox API URL (e.g. https://pve:8006)",
 					},
 					&ucli.StringFlag{Name: "token-id", Required: true, Usage: "API token ID (e.g. user@pam!token)"},
 					&ucli.StringFlag{Name: "token-secret", Required: true, Usage: "API token secret"},
@@ -81,50 +75,29 @@ When multiple --url flags are supplied:
 						Value: string(models.ConsoleTransportTermProxy),
 						Usage: `How a guest CONSOLE is attached: "termproxy" ` +
 							`(default) or "ssh". Does not affect file ` +
-							`transfer, which always reaches the node over ` +
-							`SSH. Applies to all supplied --url values`,
+							`transfer, which always reaches the node over SSH.`,
 					},
 					&ucli.StringFlag{
 						Name: "ssh-host",
-						Usage: "SSH host — \"host\" or \"host:port\" (single --url only)." +
+						Usage: "SSH host — \"host\" or \"host:port\"." +
 							" Enables node shell, SFTP and file transfer; not derived" +
-							" from --url, so when omitted the instance has no SSH host." +
-							" Disallowed when multiple --url flags are given.",
+							" from --url, so when omitted the instance has no SSH host.",
 					},
 					&ucli.StringFlag{Name: "ssh-user", Value: "root", Usage: "SSH username"},
 				},
-				Action: func(ctx context.Context, cmd *ucli.Command) error { //nolint:cyclop // CLI command validation is inherently branchy
-					urls := cmd.StringSlice("url")
-					multiURL := len(urls) > 1
-
-					// --name and --ssh-host are both disallowed with multiple --url.
-					if multiURL && cmd.String(flagName) != "" {
-						return fmt.Errorf(
-							"--name cannot be used when multiple --url flags are specified;" +
-								" each instance will be named after its Proxmox node name",
-						)
-					}
-					if multiURL && cmd.String("ssh-host") != "" {
-						return fmt.Errorf(
-							"--ssh-host cannot be used when multiple --url flags are specified;" +
-								" add them one at a time to give each its own SSH host," +
-								" or set it afterwards with `instance update --ssh-host`",
-						)
-					}
+				Action: func(ctx context.Context, cmd *ucli.Command) error {
+					rawURL := cmd.String("url")
 
 					connType := models.ConsoleTransport(cmd.String("console-transport"))
 					if connType != models.ConsoleTransportTermProxy && connType != models.ConsoleTransportSSH {
 						return fmt.Errorf("--console-transport must be %q or %q", models.ConsoleTransportTermProxy, models.ConsoleTransportSSH)
 					}
 
-					// Validate all supplied URLs up-front before touching anything.
-					for _, rawURL := range urls {
-						if err := validateAPIURL(rawURL); err != nil {
-							return err
-						}
+					if err := validateAPIURL(rawURL); err != nil {
+						return err
 					}
 
-					// Validate --ssh-host (single --url only) up-front.
+					// Validate --ssh-host up-front.
 					if cmd.String("ssh-host") != "" {
 						if _, _, err := parseHostPort(cmd.String("ssh-host"), 22); err != nil {
 							return fmt.Errorf("invalid --ssh-host: %w", err)
@@ -151,13 +124,7 @@ When multiple --url flags are supplied:
 						}
 					}
 
-					// Add each instance in sequence.
-					for _, rawURL := range urls {
-						if err := addSingleInstance(ctx, deps, cmd, connType, rawURL, sshKeyPEM); err != nil {
-							return err
-						}
-					}
-					return nil
+					return addInstance(ctx, deps, cmd, connType, rawURL, sshKeyPEM)
 				},
 			},
 			{
@@ -265,9 +232,8 @@ func parseExplicitSSHHost(explicitSSHHost string) (host string, port int, err er
 	return h, p, nil
 }
 
-// addSingleInstance handles adding one Proxmox instance for the given rawURL.
-// It is called once per --url value from the "instance add" action.
-func addSingleInstance( //nolint:cyclop // multi-URL dispatch adds branching
+// addInstance adds the Proxmox instance described by the "instance add" flags.
+func addInstance(
 	ctx context.Context,
 	deps *Deps,
 	cmd *ucli.Command,
@@ -307,7 +273,7 @@ func addSingleInstance( //nolint:cyclop // multi-URL dispatch adds branching
 
 	instName := cmd.String(flagName)
 	if instName == "" {
-		// Name was not supplied (or multiple URLs): fall back to the resolved node name.
+		// Name was not supplied: fall back to the resolved node name.
 		instName = nodeName
 	}
 
