@@ -26,6 +26,12 @@ type Deps struct {
 	Out            io.Writer
 	ErrOut         io.Writer
 	ConnectRequest *ConnectRequest
+
+	// SSHKeys resolves the deployment's SSH key material. The CLI runs inside
+	// a non-root session that cannot read the root-owned key file, so it asks
+	// `proxpass serve' (root) through this service rather than opening the
+	// file itself. See SSHKeyService.
+	SSHKeys SSHKeyService
 }
 
 // Build returns the root urfave/cli command tree.

@@ -129,7 +129,7 @@ func runInstanceUpdate(ctx context.Context, deps *Deps, cmd *ucli.Command) error
 	// and file transfer are unavailable (and show the key to install), rather
 	// than running a reachability check against an empty address.
 	if inst.SSHHost == "" {
-		warnMissingSSHHost(deps, inst)
+		warnMissingSSHHost(ctx, deps, inst)
 		return nil
 	}
 

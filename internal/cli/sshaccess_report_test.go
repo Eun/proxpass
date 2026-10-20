@@ -2,51 +2,42 @@ package cli
 
 import (
 	"bytes"
-	"path/filepath"
+	"errors"
 	"strings"
 	"testing"
 
 	"proxpass/internal/models"
-	"proxpass/internal/testenv"
 )
 
-// reportFor runs reportSSHKey and returns what it printed.
-func reportFor(t *testing.T, inst *models.ProxmoxInstance) string {
+// reportFor runs reportSSHKey with the given key service and returns what it
+// printed.
+func reportFor(t *testing.T, svc SSHKeyService, inst *models.ProxmoxInstance) string {
 	t.Helper()
 	var out bytes.Buffer
-	reportSSHKey(t.Context(), &Deps{Out: &out, ErrOut: &out}, inst)
+	reportSSHKey(t.Context(), &Deps{Out: &out, ErrOut: &out, SSHKeys: svc}, inst)
 	return out.String()
+}
+
+func sshInstance() *models.ProxmoxInstance {
+	return &models.ProxmoxInstance{
+		Name:             testInstanceName,
+		ConsoleTransport: models.ConsoleTransportSSH,
+		SSHHost:          testLoopback,
+		SSHPort:          22,
+		SSHUser:          testSSHUser,
+	}
 }
 
 // TestInspectReportsAccessOnceTheKeyIsInstalled is what the administrator
 // runs to confirm the key landed, which is what the README tells them to do.
 func TestInspectReportsAccessOnceTheKeyIsInstalled(t *testing.T) {
-	srv, err := testenv.NewMockSSHServer()
-	if err != nil {
-		t.Fatalf("starting the mock host: %v", err)
-	}
-	defer srv.Close()
+	svc := &fakeSSHKeys{pub: testPubKey, path: testKeyPath}
 
-	// The deployment key is the one the host accepts.
-	key := readKey(t, srv.KeyPath)
-	keyPath := writeKeyFile(t, key)
-	t.Setenv(models.SSHKeyPathEnv, keyPath)
-
-	// An instance with no key of its own, as `instance add' stores them now.
-	inst := &models.ProxmoxInstance{
-		Name:             testInstanceName,
-		ConsoleTransport: models.ConsoleTransportSSH,
-		SSHHost:          srv.Host,
-		SSHPort:          srv.Port,
-		SSHUser:          srv.User,
-		SSHFingerprint:   srv.HostKeyFingerprint(),
-	}
-
-	got := reportFor(t, inst)
+	got := reportFor(t, svc, sshInstance())
 	if !strings.Contains(got, "SSH Access:       ok") {
 		t.Fatalf("expected the deployment key to open the host:\n%s", got)
 	}
-	if !strings.Contains(got, keyPath) {
+	if !strings.Contains(got, testKeyPath) {
 		t.Fatalf("expected the report to name the key file:\n%s", got)
 	}
 	if !strings.Contains(got, "SSH Public Key:   ssh-") {
@@ -57,29 +48,13 @@ func TestInspectReportsAccessOnceTheKeyIsInstalled(t *testing.T) {
 // TestInspectReportsTheKeyIsNotInstalledYet is the state between adding an
 // instance and installing the key, and must say what to do about it.
 func TestInspectReportsTheKeyIsNotInstalledYet(t *testing.T) {
-	srv, err := testenv.NewMockSSHServer()
-	if err != nil {
-		t.Fatalf("starting the mock host: %v", err)
+	svc := &fakeSSHKeys{
+		pub:      testPubKey,
+		path:     testKeyPath,
+		reachErr: errors.New("authenticating as root: ssh: unable to authenticate"),
 	}
-	defer srv.Close()
 
-	// A valid key this host does not know.
-	other, err := testenv.NewMockSSHServer()
-	if err != nil {
-		t.Fatalf("starting the second host: %v", err)
-	}
-	defer other.Close()
-	wrong := readKey(t, other.KeyPath)
-	keyPath := writeKeyFile(t, wrong)
-	t.Setenv(models.SSHKeyPathEnv, keyPath)
-
-	got := reportFor(t, &models.ProxmoxInstance{
-		Name:             testInstanceName,
-		ConsoleTransport: models.ConsoleTransportSSH,
-		SSHHost:          srv.Host,
-		SSHPort:          srv.Port,
-		SSHUser:          srv.User,
-	})
+	got := reportFor(t, svc, sshInstance())
 	if !strings.Contains(got, "UNAVAILABLE") {
 		t.Fatalf("expected the missing key to be reported:\n%s", got)
 	}
@@ -95,16 +70,21 @@ func TestInspectReportsTheKeyIsNotInstalledYet(t *testing.T) {
 // TestInspectReportsAMissingDeploymentKey covers a deployment whose key file
 // has gone, which otherwise looks like an ordinary connection failure.
 func TestInspectReportsAMissingDeploymentKey(t *testing.T) {
-	t.Setenv(models.SSHKeyPathEnv, filepath.Join(t.TempDir(), "absent"))
+	svc := &fakeSSHKeys{pub: "", path: testKeyPath}
 
-	got := reportFor(t, &models.ProxmoxInstance{
-		Name:             testInstanceName,
-		ConsoleTransport: models.ConsoleTransportSSH,
-		SSHHost:          testLoopback,
-		SSHPort:          22,
-		SSHUser:          testSSHUser,
-	})
+	got := reportFor(t, svc, sshInstance())
 	if !strings.Contains(got, "none at") {
 		t.Fatalf("expected the absent key to be named as such:\n%s", got)
+	}
+}
+
+// TestInspectReportsAKeyServiceError surfaces a failure to reach `proxpass
+// serve' for the key, rather than silently claiming there is none.
+func TestInspectReportsAKeyServiceError(t *testing.T) {
+	svc := &fakeSSHKeys{err: errors.New("reaching the proxpass API")}
+
+	got := reportFor(t, svc, sshInstance())
+	if !strings.Contains(got, "SSH Key:") || !strings.Contains(got, "reaching the proxpass API") {
+		t.Fatalf("expected the key service error to be reported:\n%s", got)
 	}
 }

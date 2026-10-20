@@ -10,6 +10,7 @@ import (
 	"proxpass/internal/api"
 	"proxpass/internal/db"
 	"proxpass/internal/models"
+	"proxpass/internal/sshhostkey"
 )
 
 // AdminRepository is a db.Repository served by the loopback API.
@@ -72,6 +73,7 @@ func (r *AdminRepository) Close() error { return nil }
 // JSON parameter names that appear in several operations.
 const (
 	keyID         = "id"
+	keyInstance   = "instance"
 	keyPublicKey  = "public_key"
 	keyClientID   = "client_id"
 	keyGuestID    = "guest_id"
@@ -86,7 +88,7 @@ func (r *AdminRepository) AddProxmoxInstance(ctx context.Context, inst *models.P
 	// copied over the caller's struct -- the CLI reads inst.ID afterwards.
 	var out models.ProxmoxInstance
 	if err := r.call(ctx, "AddProxmoxInstance",
-		map[string]any{"instance": inst}, &out); err != nil {
+		map[string]any{keyInstance: inst}, &out); err != nil {
 		return err
 	}
 	*inst = out
@@ -284,6 +286,62 @@ func (r *AdminRepository) GetSetting(ctx context.Context, key string) (string, e
 	return out, nil
 }
 
+// --- SSH key file ---
+//
+// These two are NOT db.Repository methods: the proxpass SSH key is a
+// root-owned file the session cannot read, so the work happens in `proxpass
+// serve' (root) and only the public half / a reachability answer come back.
+// They satisfy cli.SSHKeyService, which the admin CLI calls instead of
+// reading the file itself.
+
+// SSHPublicKey returns the authorized_keys line for the deployment key, or ""
+// when the deployment has no key. The second value is the key's path, for the
+// CLI's "none at <path>" message.
+func (r *AdminRepository) SSHPublicKey(ctx context.Context) (pub, path string, err error) {
+	var out struct {
+		Key  string `json:"key"`
+		Path string `json:"path"`
+	}
+	if err := r.call(ctx, "GetSSHPublicKey", nil, &out); err != nil {
+		return "", "", err
+	}
+	return out.Key, out.Path, nil
+}
+
+// CheckInstanceSSHAccess reports whether the deployment key opens a session on
+// the instance's host. A non-nil error is the reason it does not, suitable for
+// printing; a nil error means the host is reachable.
+//
+// An unverifiable host key is rebuilt as a *sshhostkey.ErrNoFingerprint so the
+// CLI's errors.As check still recognizes the fatal case across the API: the
+// serve side carries the host and presented fingerprint as structured data
+// rather than as a plain string, because the message alone cannot be
+// re-typed.
+func (r *AdminRepository) CheckInstanceSSHAccess(ctx context.Context, inst *models.ProxmoxInstance) error {
+	var out struct {
+		OK            bool   `json:"ok"`
+		Err           string `json:"err"`
+		NoFingerprint *struct {
+			Host        string `json:"host"`
+			Fingerprint string `json:"fingerprint"`
+		} `json:"no_fingerprint"`
+	}
+	if err := r.call(ctx, "CheckInstanceSSHAccess",
+		map[string]any{keyInstance: inst}, &out); err != nil {
+		return err
+	}
+	if out.OK {
+		return nil
+	}
+	if out.NoFingerprint != nil {
+		return &sshhostkey.ErrNoFingerprint{
+			Host:        out.NoFingerprint.Host,
+			Fingerprint: out.NoFingerprint.Fingerprint,
+		}
+	}
+	return errors.New(out.Err)
+}
+
 // --- Admin keys ---
 
 func (r *AdminRepository) AddAdminKey(ctx context.Context, pubKey string) error {
@@ -348,7 +406,7 @@ func (r *AdminRepository) UpdateProxmoxInstance(ctx context.Context, inst *model
 	// slash -- is what the caller then prints.
 	var out models.ProxmoxInstance
 	if err := r.call(ctx, "UpdateProxmoxInstance",
-		map[string]any{"instance": inst}, &out); err != nil {
+		map[string]any{keyInstance: inst}, &out); err != nil {
 		return err
 	}
 	*inst = out
