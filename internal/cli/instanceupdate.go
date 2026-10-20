@@ -104,6 +104,14 @@ func runInstanceUpdate(ctx context.Context, deps *Deps, cmd *ucli.Command) error
 	}
 	fmt.Fprintf(deps.Out, "Instance %q updated.\n", inst.Name)
 
+	// With no SSH host there is nothing to reach: warn that node shell, SFTP
+	// and file transfer are unavailable (and show the key to install), rather
+	// than running a reachability check against an empty address.
+	if inst.SSHHost == "" {
+		warnMissingSSHHost(deps, inst)
+		return nil
+	}
+
 	// Report reachability the same way `instance add' does, so a change that
 	// breaks SSH is visible now rather than at the next transfer.
 	reportSSHKey(ctx, deps, inst)
@@ -125,17 +133,11 @@ func applyInstanceFlags(cmd *ucli.Command, inst *models.ProxmoxInstance) error {
 			return err
 		}
 		inst.APIURL = rawURL
-		// Re-derive the SSH host: it came from the OLD url, so leaving it
-		// would point the instance's API at one machine and its file
-		// transfers at another.
-		//
-		// An explicit --ssh-host overrides this, by being applied after --
-		// see the ordering note at the end of this function.
-		host, port, err := resolveSSHHostPort("", rawURL, false)
-		if err != nil {
-			return err
-		}
-		inst.SSHHost, inst.SSHPort = host, port
+		// Deliberately leave SSHHost/SSHPort untouched here. The SSH host is
+		// never derived from --url: the API address is just as often a bare IP
+		// or an alias that does not resolve from where proxpass runs, and the
+		// node a file transfer should reach is identified by its own value, not
+		// by the API URL. Change the SSH host with --ssh-host when it moves.
 	}
 	if cmd.IsSet("token-id") {
 		inst.APITokenID = cmd.String("token-id")
@@ -152,9 +154,9 @@ func applyInstanceFlags(cmd *ucli.Command, inst *models.ProxmoxInstance) error {
 		}
 		inst.ConsoleTransport = transport
 	}
-	// AFTER the --url branch, deliberately: --url re-derives the SSH host,
-	// and an explicit --ssh-host must win over that derivation when both are
-	// given. Moving this above --url would silently reverse that.
+	// --ssh-host sets the SSH host/port directly. It is the ONLY way the SSH
+	// host changes: --url no longer touches it (the host is never derived from
+	// the API URL), so the two flags are independent.
 	if cmd.IsSet("ssh-host") {
 		host, port, err := parseHostPort(cmd.String("ssh-host"), 22)
 		if err != nil {

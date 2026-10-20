@@ -114,24 +114,29 @@ func TestUpdateSSHHostAcceptsAPort(t *testing.T) {
 	}
 }
 
-// TestUpdateURLRederivesTheSSHHost checks that the two do not drift apart.
-//
-// The SSH host was derived from the URL when the instance was added, so
-// moving the URL without moving it would leave the instance pointing its API
-// at one machine and its file transfers at another.
-func TestUpdateURLRederivesTheSSHHost(t *testing.T) {
+// TestUpdateURLLeavesTheSSHHostUntouched pins the decision that --url never
+// touches the SSH host. The host is never derived from the API URL -- the API
+// address is just as often a bare IP or an alias that does not resolve from
+// where proxpass runs -- so moving the URL must leave the stored SSH host
+// exactly as it was. (--url still re-resolves the node name; that is a
+// separate, network-touching step not exercised here.)
+func TestUpdateURLLeavesTheSSHHostUntouched(t *testing.T) {
 	_, inst := seedInstance(t)
+	before := inst.SSHHost
+	beforePort := inst.SSHPort
 	if err := updateFlags(t, inst, "--url", "https://pve9.example.com:8006"); err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if inst.SSHHost != "pve9.example.com" {
-		t.Fatalf("ssh host = %q, want pve9.example.com", inst.SSHHost)
+	if inst.SSHHost != before || inst.SSHPort != beforePort {
+		t.Fatalf("ssh target = %s:%d, want it unchanged at %s:%d",
+			inst.SSHHost, inst.SSHPort, before, beforePort)
 	}
 }
 
-// TestUpdateURLKeepsAnExplicitSSHHost is the other half: when both are given,
-// the explicit one wins rather than being overwritten by the derivation.
-func TestUpdateURLKeepsAnExplicitSSHHost(t *testing.T) {
+// TestUpdateChangesTheSSHHostIndependentlyOfURL is the other half: --url and
+// --ssh-host are independent, so an explicit --ssh-host sets the host whether
+// or not --url is also given.
+func TestUpdateChangesTheSSHHostIndependentlyOfURL(t *testing.T) {
 	_, inst := seedInstance(t)
 	if err := updateFlags(t, inst,
 		"--url", "https://pve9.example.com:8006",
@@ -208,5 +213,44 @@ func TestUpdateReportsAnUnknownInstance(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "nope") {
 		t.Fatalf("the error should name the instance: %v", err)
+	}
+}
+
+// TestUpdateWarnsWhenTheInstanceHasNoSSHHost drives the real `instance update'
+// command and checks that an instance left without an SSH host is called out:
+// its console may work, but node shell, SFTP and file transfer cannot, and the
+// administrator is told how to fix it. Updating only --ssh-user touches no
+// network, so this exercises the wiring without a mock Proxmox API.
+func TestUpdateWarnsWhenTheInstanceHasNoSSHHost(t *testing.T) {
+	repo, err := db.NewRepository(t.TempDir() + "/p.db")
+	if err != nil {
+		t.Fatalf("opening the repository: %v", err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+
+	// An instance with no SSH host, as `instance add' now stores one when
+	// --ssh-host is omitted.
+	inst := &models.ProxmoxInstance{
+		Name:             testInstName,
+		APIURL:           "https://pve1:8006",
+		APITokenID:       "root@pam!tok",
+		APITokenSecret:   "SECRET",
+		ConsoleTransport: models.ConsoleTransportTermProxy,
+		Node:             testInstName,
+		SSHUser:          testSSHUser,
+	}
+	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+
+	out, err := runCLI(t, repo, cmdInstance, "update", flagArgName, testInstName, "--ssh-user", "admin")
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if !strings.Contains(out, "no SSH host") || !strings.Contains(out, "SFTP") {
+		t.Fatalf("expected a missing-ssh-host warning:\n%s", out)
+	}
+	if !strings.Contains(out, "--ssh-host") {
+		t.Fatalf("expected the warning to say how to set a host:\n%s", out)
 	}
 }

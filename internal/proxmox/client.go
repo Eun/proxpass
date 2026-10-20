@@ -89,10 +89,16 @@ func (c *APIClient) DiscoverGuests(ctx context.Context) ([]*models.Guest, error)
 // When sshHost is non-empty, it is matched against the cluster node list
 // (case-insensitive exact match, or FQDN-prefix: "rome.domain" → "rome").
 //
-// When sshHost is empty, the local node is identified via
-// GET /api2/json/cluster/status which marks the node serving the request
-// with local=1. This is the correct approach for termproxy mode where
-// --api-url already points at the target node.
+// When sshHost is empty, OR when it matches no node in the cluster, the local
+// node is identified via GET /api2/json/cluster/status, which marks the node
+// serving the request with local=1. This is the right answer whenever
+// --api-url already points at the target node: the node that answers the API
+// request is the node we want, regardless of what name was used to reach it.
+//
+// The fallback matters because an ssh-host need not look anything like a node
+// name -- it is frequently a bare IP address (e.g. "10.0.0.5"), which can
+// never equal or prefix a short node name like "pve-ravioli". Rather than
+// fail, we let the API tell us which node --api-url landed on.
 func (c *APIClient) ResolveNodeName(ctx context.Context, sshHost string) (string, error) {
 	if sshHost == "" {
 		// No ssh-host hint: ask the API which node is local (serves this request).
@@ -111,8 +117,12 @@ func (c *APIClient) ResolveNodeName(ctx context.Context, sshHost string) (string
 			return node, nil
 		}
 	}
-	return "", fmt.Errorf("no Proxmox node matches ssh-host %q (known nodes: %s)",
-		sshHost, strings.Join(nodes, ", "))
+
+	// ssh-host matched no node name. Fall back to the node that served this
+	// API request (--api-url points at exactly one node), instead of failing:
+	// an IP address or any alias that does not resemble the node name is a
+	// perfectly valid way to reach a node.
+	return c.getLocalNode(ctx)
 }
 
 // getLocalNode calls GET /api2/json/cluster/status and returns the node name

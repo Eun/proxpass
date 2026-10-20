@@ -124,6 +124,38 @@ func reportSSHKey(ctx context.Context, deps *Deps, inst *models.ProxmoxInstance)
 	fmt.Fprintf(deps.Out, "SSH Access:       ok\n")
 }
 
+// warnMissingSSHHost prints a warning, to ErrOut, when an instance has no SSH
+// host. Such an instance is valid -- its termproxy console works -- but node
+// shell, SFTP and file transfer all reach the node over SSH and so are
+// unavailable until a host is set. The warning also shows the public key the
+// administrator has to install, because a host without the key is as unusable
+// as no host at all, and this is the moment they learn they need both.
+//
+// It is a no-op when SSHHost is set, so callers can invoke it unconditionally.
+func warnMissingSSHHost(deps *Deps, inst *models.ProxmoxInstance) {
+	if inst.SSHHost != "" {
+		return
+	}
+
+	fmt.Fprintf(deps.ErrOut,
+		"Warning: instance %q has no SSH host, so node shell, SFTP and file "+
+			"transfer are unavailable (the %s console still works).\n"+
+			"Set one with: instance update --name %s --ssh-host <host>\n",
+		inst.Name, inst.ConsoleTransport, inst.Name)
+
+	// Show the key the administrator must install on the node, so they can do
+	// it in the same step as setting the host.
+	key, err := models.ReadSSHKey()
+	if err != nil || key == "" {
+		return
+	}
+	if pub, pubErr := publicKeyLine(key); pubErr == nil {
+		fmt.Fprintf(deps.ErrOut,
+			"Then add proxpass's public key to %s on the node:\n%s",
+			authorizedKeysPath, pub)
+	}
+}
+
 // publicKeyLine returns the authorized_keys line for a PEM private key, which
 // is what the administrator has to install on the Proxmox host.
 func publicKeyLine(pemKey string) (string, error) {
