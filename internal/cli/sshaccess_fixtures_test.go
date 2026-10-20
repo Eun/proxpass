@@ -10,6 +10,10 @@ const (
 	// and public-key derivation are tested in internal/api.
 	testKeyPath = "/var/lib/proxpass/ssh/proxpass_key"
 	testPubKey  = "ssh-ed25519 AAAAexamplekey proxpass\n"
+
+	// Shared Proxmox API credential fixtures.
+	testAPITokenID     = "root@pam!tok"
+	testAPITokenSecret = "SECRET"
 )
 
 // Fixture values shared across the CLI tests more widely.

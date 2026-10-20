@@ -3,9 +3,12 @@ package proxmox
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -364,6 +367,74 @@ func (c *APIClient) CheckTermProxySupport(ctx context.Context) error {
 		)
 	}
 	return nil
+}
+
+// APIConnectionStatus classifies the result of probing the Proxmox REST API.
+type APIConnectionStatus int
+
+const (
+	// APIConnectionOK means the HTTPS handshake completed, the token was
+	// accepted and the API answered: TLS is working end to end.
+	APIConnectionOK APIConnectionStatus = iota
+	// APIConnectionCertError means the TLS certificate was rejected. The host
+	// serves a certificate this proxpass does not trust; add the instance with
+	// --insecure-tls or give the host a trusted certificate.
+	APIConnectionCertError
+	// APIConnectionUnreachable means the host could not be reached at all
+	// (connection refused, no route, timeout, DNS failure).
+	APIConnectionUnreachable
+	// APIConnectionAuthError means the host answered but rejected the API token
+	// (HTTP 401). TLS is working; the credentials are wrong.
+	APIConnectionAuthError
+	// APIConnectionError is any other failure (e.g. an unexpected status or a
+	// malformed response).
+	APIConnectionError
+)
+
+// APIConnectionResult is the outcome of CheckAPIConnection.
+type APIConnectionResult struct {
+	Status APIConnectionStatus
+	// Err is the underlying error for a non-OK status, suitable for printing.
+	Err error
+}
+
+// OK reports whether the API connection (including TLS verification) works.
+func (r APIConnectionResult) OK() bool { return r.Status == APIConnectionOK }
+
+// CheckAPIConnection probes the Proxmox REST API with a single authenticated
+// GET /api2/json/version and classifies the outcome, so a caller can tell
+// "TLS working" from a certificate rejection, an unreachable host, or a
+// rejected token. TLS verification is governed by the instance's InsecureTLS
+// setting, exactly as every other call on this client.
+func (c *APIClient) CheckAPIConnection(ctx context.Context) APIConnectionResult {
+	_, err := c.doGet(ctx, "/api2/json/version")
+	if err == nil {
+		return APIConnectionResult{Status: APIConnectionOK}
+	}
+
+	// A rejected certificate: the handshake failed verification.
+	var certErr *tls.CertificateVerificationError
+	var unknownAuthErr x509.UnknownAuthorityError
+	var hostnameErr x509.HostnameError
+	if errors.As(err, &certErr) || errors.As(err, &unknownAuthErr) || errors.As(err, &hostnameErr) {
+		return APIConnectionResult{Status: APIConnectionCertError, Err: err}
+	}
+
+	// The token was rejected: the host answered, so TLS itself is fine.
+	// doGet reports this as a plain status error, not a typed one.
+	if strings.Contains(err.Error(), "status 401") {
+		return APIConnectionResult{Status: APIConnectionAuthError, Err: err}
+	}
+
+	// A transport-level failure with no certificate error is an unreachable
+	// host (refused, timed out, no route, DNS).
+	var netErr net.Error
+	var opErr *net.OpError
+	if errors.As(err, &netErr) || errors.As(err, &opErr) {
+		return APIConnectionResult{Status: APIConnectionUnreachable, Err: err}
+	}
+
+	return APIConnectionResult{Status: APIConnectionError, Err: err}
 }
 
 // parsePVEVersion parses a pve-manager version string (e.g. "9.1.9") into

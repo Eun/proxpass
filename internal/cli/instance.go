@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"proxpass/internal/models"
 	"proxpass/internal/proxmox"
@@ -26,27 +27,7 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI com
 					&ucli.StringFlag{Name: flagFormat, Value: formatPlain, Usage: usageFormat},
 				},
 				Action: func(ctx context.Context, cmd *ucli.Command) error {
-					instances, err := deps.Repo.ListProxmoxInstances(ctx)
-					if err != nil {
-						return err
-					}
-					if cmd.String(flagFormat) == formatJSON {
-						return json.NewEncoder(deps.Out).Encode(instances)
-					}
-					if len(instances) == 0 {
-						fmt.Fprintln(deps.Out, "No instances configured.")
-						return nil
-					}
-					for _, inst := range instances {
-						if inst.ConsoleTransport == models.ConsoleTransportSSH {
-							fmt.Fprintf(deps.Out, "%-20s  API: %s  SSH: %s:%d  node: %s\n",
-								inst.Name, inst.APIURL, inst.SSHHost, inst.SSHPort, inst.Node)
-						} else {
-							fmt.Fprintf(deps.Out, "%-20s  API: %s  node: %s  (termproxy)\n",
-								inst.Name, inst.APIURL, inst.Node)
-						}
-					}
-					return nil
+					return listInstances(ctx, deps, cmd.String(flagFormat))
 				},
 			},
 			{
@@ -73,19 +54,19 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI com
 					&ucli.StringFlag{Name: "token-id", Required: true, Usage: "API token ID (e.g. user@pam!token)"},
 					&ucli.StringFlag{Name: "token-secret", Required: true, Usage: "API token secret"},
 					&ucli.BoolFlag{
-						Name: "insecure-tls",
+						Name: flagInsecureTLS,
 						Usage: "Skip TLS certificate verification for this instance's" +
 							" Proxmox API and console. Needed for a host serving a" +
 							" self-signed certificate. Off by default.",
 					},
 					&ucli.BoolFlag{
-						Name: "insecure-ssh",
+						Name: flagInsecureSSH,
 						Usage: "Skip SSH host-key verification for this instance's node" +
 							" connections (node shell, SFTP, file transfer). Off by" +
 							" default; prefer --ssh-fingerprint or SSHFP.",
 					},
 					&ucli.BoolFlag{
-						Name: "insecure",
+						Name: flagInsecure,
 						Usage: "Shorthand for both --insecure-tls and --insecure-ssh:" +
 							" skip all verification for this instance.",
 					},
@@ -205,25 +186,122 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI com
 						if i > 0 {
 							fmt.Fprintln(deps.Out)
 						}
-						fmt.Fprintf(deps.Out, "Name:             %s\n", inst.Name)
-						fmt.Fprintf(deps.Out, "API URL:          %s\n", inst.APIURL)
-						fmt.Fprintf(deps.Out, "TLS:              %s\n", tlsStatus(inst.InsecureTLS))
-						fmt.Fprintf(deps.Out, "API Token ID:     %s\n", inst.APITokenID)
-						fmt.Fprintf(deps.Out, "API Token Secret: %s\n", inst.APITokenSecret)
-						fmt.Fprintf(deps.Out, "Connection Type:  %s\n", inst.ConsoleTransport)
-						fmt.Fprintf(deps.Out, "Node:             %s\n", inst.Node)
-						if inst.ConsoleTransport == models.ConsoleTransportSSH {
-							fmt.Fprintf(deps.Out, "SSH Host:         %s\n", inst.SSHHost)
-							fmt.Fprintf(deps.Out, "SSH Port:         %d\n", inst.SSHPort)
-							fmt.Fprintf(deps.Out, "SSH User:         %s\n", inst.SSHUser)
-							fmt.Fprintf(deps.Out, "SSH Host Key:     %s\n", sshHostKeyStatus(inst.InsecureSSH, inst.SSHFingerprint))
-							reportSSHKey(ctx, deps, inst)
-						}
+						inspectInstance(ctx, deps, inst)
 					}
 					return nil
 				},
 			},
 		},
+	}
+}
+
+// listInstances renders `instance ls`. It is deliberately a pure database
+// read: it shows what is CONFIGURED for each instance, never probing the
+// network. Use `instance inspect` to test whether TLS and SSH actually work.
+func listInstances(ctx context.Context, deps *Deps, format string) error {
+	instances, err := deps.Repo.ListProxmoxInstances(ctx)
+	if err != nil {
+		return err
+	}
+	if format == formatJSON {
+		return json.NewEncoder(deps.Out).Encode(instances)
+	}
+	if len(instances) == 0 {
+		fmt.Fprintln(deps.Out, "No instances configured.")
+		return nil
+	}
+	for _, inst := range instances {
+		fmt.Fprintf(deps.Out, "%-20s  API: %s  TLS: %s  node: %s  %s\n",
+			inst.Name, inst.APIURL, configuredTLS(inst), inst.Node, configuredSSH(inst))
+	}
+	return nil
+}
+
+// configuredTLS summarizes an instance's TLS configuration for `instance ls`,
+// from stored fields only. "off" means the API URL is plain http, so no TLS is
+// in use at all.
+func configuredTLS(inst *models.ProxmoxInstance) string {
+	if !strings.HasPrefix(strings.ToLower(inst.APIURL), "https://") {
+		return "off (http)"
+	}
+	if inst.InsecureTLS {
+		return statusInsecure
+	}
+	return statusVerified
+}
+
+// configuredSSH summarizes an instance's SSH configuration for `instance ls`,
+// from stored fields only: whether a host is set and how the host key would be
+// verified. It does not say whether SSH actually works.
+func configuredSSH(inst *models.ProxmoxInstance) string {
+	if inst.SSHHost == "" {
+		return "SSH: not configured"
+	}
+	var verify string
+	switch {
+	case inst.InsecureSSH:
+		verify = statusInsecure
+	case inst.SSHFingerprint != "":
+		verify = "pinned"
+	default:
+		verify = "sshfp"
+	}
+	return fmt.Sprintf("SSH: %s:%d (%s)", inst.SSHHost, inst.SSHPort, verify)
+}
+
+// inspectInstance prints the full detail for one instance, including LIVE
+// probes: unlike `instance ls`, it tests whether TLS and SSH actually work.
+func inspectInstance(ctx context.Context, deps *Deps, inst *models.ProxmoxInstance) {
+	fmt.Fprintf(deps.Out, "Name:             %s\n", inst.Name)
+	fmt.Fprintf(deps.Out, "API URL:          %s\n", inst.APIURL)
+	fmt.Fprintf(deps.Out, "TLS:              %s\n", tlsStatus(inst.InsecureTLS))
+	fmt.Fprintf(deps.Out, "TLS Connection:   %s\n", probeTLS(ctx, inst))
+	fmt.Fprintf(deps.Out, "API Token ID:     %s\n", inst.APITokenID)
+	fmt.Fprintf(deps.Out, "API Token Secret: %s\n", inst.APITokenSecret)
+	fmt.Fprintf(deps.Out, "Connection Type:  %s\n", inst.ConsoleTransport)
+	fmt.Fprintf(deps.Out, "Node:             %s\n", inst.Node)
+
+	// SSH reaches the node for shell, SFTP and file transfer regardless of the
+	// console transport, so report it whenever a host is configured -- not only
+	// for the ssh console transport.
+	if inst.SSHHost == "" {
+		fmt.Fprintf(deps.Out, "SSH:              not configured (set one with `instance update --ssh-host')\n")
+		return
+	}
+	fmt.Fprintf(deps.Out, "SSH Host:         %s\n", inst.SSHHost)
+	fmt.Fprintf(deps.Out, "SSH Port:         %d\n", inst.SSHPort)
+	fmt.Fprintf(deps.Out, "SSH User:         %s\n", inst.SSHUser)
+	fmt.Fprintf(deps.Out, "SSH Host Key:     %s\n", sshHostKeyStatus(inst.InsecureSSH, inst.SSHFingerprint))
+	reportSSHKey(ctx, deps, inst)
+}
+
+// probeTLS makes a live, classified Proxmox API request and renders whether TLS
+// (and the rest of the API handshake) actually works for this instance. A plain
+// http API URL is reported as "not in use". The probe honors the instance's
+// InsecureTLS setting, so an insecure instance reports ok once reachable.
+func probeTLS(ctx context.Context, inst *models.ProxmoxInstance) string {
+	if !strings.HasPrefix(strings.ToLower(inst.APIURL), "https://") {
+		return "not in use (http API URL)"
+	}
+	client, err := proxmox.NewAPIClient(inst)
+	if err != nil {
+		return fmt.Sprintf("FAILED: %v", err)
+	}
+	res := client.CheckAPIConnection(ctx)
+	switch res.Status {
+	case proxmox.APIConnectionOK:
+		return "ok"
+	case proxmox.APIConnectionCertError:
+		return fmt.Sprintf("FAILED: certificate not trusted "+
+			"(add with --insecure-tls or install a trusted certificate): %v", res.Err)
+	case proxmox.APIConnectionAuthError:
+		return fmt.Sprintf("TLS ok, but the API token was rejected: %v", res.Err)
+	case proxmox.APIConnectionUnreachable:
+		return fmt.Sprintf("host unreachable: %v", res.Err)
+	case proxmox.APIConnectionError:
+		return fmt.Sprintf("FAILED: %v", res.Err)
+	default:
+		return fmt.Sprintf("FAILED: %v", res.Err)
 	}
 }
 
@@ -254,7 +332,7 @@ func tlsStatus(insecure bool) string {
 	if insecure {
 		return "insecure (certificate verification disabled)"
 	}
-	return "verified"
+	return statusVerified
 }
 
 // sshHostKeyStatus renders how an instance's SSH host key is verified for
@@ -335,8 +413,8 @@ func addInstance(
 		Node:             nodeName,
 		// --insecure is shorthand for both; --insecure-tls / --insecure-ssh
 		// toggle each independently.
-		InsecureTLS:    cmd.Bool("insecure") || cmd.Bool("insecure-tls"),
-		InsecureSSH:    cmd.Bool("insecure") || cmd.Bool("insecure-ssh"),
+		InsecureTLS:    cmd.Bool(flagInsecure) || cmd.Bool(flagInsecureTLS),
+		InsecureSSH:    cmd.Bool(flagInsecure) || cmd.Bool(flagInsecureSSH),
 		SSHHost:        sshHost,
 		SSHPort:        sshPort,
 		SSHUser:        cmd.String("ssh-user"),
