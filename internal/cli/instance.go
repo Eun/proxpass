@@ -104,27 +104,15 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI com
 						}
 					}
 
-					// The deployment's own key, which the entrypoint generated
-					// on the volume. Instances no longer carry one: its
-					// public half has to be installed on the Proxmox host by
-					// hand, and a key per instance multiplies that work
-					// without isolating anything.
-					var sshKeyPEM string
-					if connType == models.ConsoleTransportSSH {
-						var err error
-						sshKeyPEM, err = models.ReadSSHKey()
-						if err != nil {
-							return err
-						}
-						if sshKeyPEM == "" {
-							return fmt.Errorf(
-								"no ssh key at %s: the container entrypoint generates one at "+
-									"startup, so this deployment is either running an older "+
-									"image or has had the file removed", models.SSHKeyPath())
-						}
-					}
-
-					return addInstance(ctx, deps, cmd, connType, rawURL, sshKeyPEM)
+					// The deployment's own key lives in a root-owned file this
+					// session cannot read. Its public half, and the reachability
+					// check that needs the private half, are obtained from
+					// `proxpass serve' (root) through deps.SSHKeys inside
+					// addInstance -- not read here. Instances no longer carry a key
+					// of their own: its public half has to be installed on the
+					// Proxmox host by hand, and a key per instance multiplies that
+					// work without isolating anything.
+					return addInstance(ctx, deps, cmd, connType, rawURL)
 				},
 			},
 			{
@@ -239,7 +227,6 @@ func addInstance(
 	cmd *ucli.Command,
 	connType models.ConsoleTransport,
 	rawURL string,
-	sshKeyPEM string,
 ) error {
 	// Determine the SSH host and port.
 	//
@@ -299,8 +286,8 @@ func addInstance(
 	// make the obvious order impossible. So it prints the key and what to do
 	// with it, and adds the instance anyway.
 	if connType == models.ConsoleTransportSSH && inst.SSHHost != "" {
-		if err := checkSSHAccess(ctx, inst, sshKeyPEM); err != nil {
-			pub, pubErr := publicKeyLine(sshKeyPEM)
+		if err := deps.SSHKeys.CheckInstanceSSHAccess(ctx, inst); err != nil {
+			pub, _, pubErr := deps.SSHKeys.SSHPublicKey(ctx)
 			if pubErr != nil {
 				return fmt.Errorf("deriving the public key: %w", pubErr)
 			}
@@ -319,7 +306,7 @@ func addInstance(
 	// Warn when there is no SSH host: the instance was still added (its console
 	// may work), but node shell, SFTP and file transfer are unavailable until
 	// a host is set. No-op when a host is present.
-	warnMissingSSHHost(deps, inst)
+	warnMissingSSHHost(ctx, deps, inst)
 
 	// Run discovery on the new instance.
 	if deps.Discoverer != nil {

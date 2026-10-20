@@ -42,7 +42,16 @@ func runAccess(t *testing.T, repo db.Repository, args ...string) (string, error)
 func runCLI(t *testing.T, repo db.Repository, args ...string) (string, error) {
 	t.Helper()
 	var out bytes.Buffer
-	deps := &Deps{Repo: repo, Out: &out, ErrOut: &out}
+	// A key service so the instance commands can report the public key without
+	// reading the root-owned file (which the CLI no longer does). A canned
+	// public key and "reachable" answer keep these end-to-end tests off the
+	// network; the real file read and dial are tested in internal/api.
+	deps := &Deps{
+		Repo:    repo,
+		Out:     &out,
+		ErrOut:  &out,
+		SSHKeys: &fakeSSHKeys{pub: testPubKey, path: testKeyPath},
+	}
 	cmd := &ucli.Command{Commands: []*ucli.Command{
 		accessCmd(deps),
 		clientCmd(deps),

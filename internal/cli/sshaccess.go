@@ -3,14 +3,31 @@ package cli
 import (
 	"context"
 	"fmt"
-	"net"
-	"strconv"
-	"time"
-
-	gossh "golang.org/x/crypto/ssh"
 
 	"proxpass/internal/models"
 )
+
+// SSHKeyService resolves the deployment's SSH key material on behalf of the
+// admin CLI.
+//
+// The CLI runs inside a non-root session (sshd starts it as the logged-in
+// user), and the proxpass key is a root-owned 0600 file. The session cannot
+// read it -- that is the whole point of locking it to root -- so it must not
+// open the file itself. Instead it asks `proxpass serve', which runs as root,
+// through this service. Only the PUBLIC half and a yes/no reachability answer
+// come back; the private key never reaches the session.
+//
+// Implemented by session.AdminRepository over the loopback admin API.
+type SSHKeyService interface {
+	// SSHPublicKey returns the authorized_keys line for the deployment key,
+	// the path it lives at (for messages), or an empty key when the
+	// deployment has none (a termproxy-only setup).
+	SSHPublicKey(ctx context.Context) (pub, path string, err error)
+	// CheckInstanceSSHAccess reports whether the deployment key opens a
+	// session on the instance's host. A nil error means reachable; a non-nil
+	// error is the reason it is not, suitable for printing.
+	CheckInstanceSSHAccess(ctx context.Context, inst *models.ProxmoxInstance) error
+}
 
 // authorizedKeysPath is where the administrator installs proxpass's public
 // key on a Proxmox node.
@@ -23,99 +40,30 @@ import (
 // or by a node join.
 const authorizedKeysPath = "~/.ssh/authorized_keys"
 
-// sshCheckTimeout bounds the reachability check.
-//
-// Short on purpose: this runs inside `instance add', which an administrator
-// is watching, and the answer is almost always immediate. An unreachable
-// host is reported as a warning rather than a failure, so erring towards a
-// quick "no" costs nothing.
-const sshCheckTimeout = 10 * time.Second
-
-// checkSSHAccess reports whether proxpass can open an SSH session on the
-// instance's host with keyPEM.
-//
-// The key is passed in rather than read from inst because an instance added
-// after proxpass owned a key carries none of its own: the key it will
-// actually connect with is the deployment-wide one.
-//
-// It authenticates and opens a session rather than only completing the
-// handshake: a key can be accepted while the account is still unable to run
-// anything (a forced command, a disabled shell), and `pct enter' would then
-// fail at the first console connection instead of here.
-//
-// The host key is deliberately NOT verified, which matches how the console
-// connects today. Proxmox publishes no SSH host key or fingerprint over its
-// API -- every `fingerprint' field it exposes is a TLS certificate -- so
-// there is nothing to check it against yet. Changing that needs its own
-// change: pin the host key on first contact and store it per instance.
-func checkSSHAccess(ctx context.Context, inst *models.ProxmoxInstance, keyPEM string) error {
-	signer, err := gossh.ParsePrivateKey([]byte(keyPEM))
-	if err != nil {
-		return fmt.Errorf("parsing the proxpass key: %w", err)
-	}
-
-	addr := net.JoinHostPort(inst.SSHHost, strconv.Itoa(inst.SSHPort))
-	dialer := net.Dialer{Timeout: sshCheckTimeout}
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
-	if err != nil {
-		return fmt.Errorf("connecting to %s: %w", addr, err)
-	}
-	defer func() { _ = conn.Close() }()
-
-	// The deadline covers the handshake, which DialContext does not.
-	if err := conn.SetDeadline(time.Now().Add(sshCheckTimeout)); err != nil {
-		return fmt.Errorf("setting deadline: %w", err)
-	}
-
-	clientConn, chans, reqs, err := gossh.NewClientConn(conn, addr, &gossh.ClientConfig{
-		User:            inst.SSHUser,
-		Auth:            []gossh.AuthMethod{gossh.PublicKeys(signer)},
-		HostKeyCallback: gossh.InsecureIgnoreHostKey(), //nolint:gosec // see the doc comment: Proxmox publishes no SSH host key to check against.
-		Timeout:         sshCheckTimeout,
-	})
-	if err != nil {
-		return fmt.Errorf("authenticating as %s: %w", inst.SSHUser, err)
-	}
-	client := gossh.NewClient(clientConn, chans, reqs)
-	defer func() { _ = client.Close() }()
-
-	session, err := client.NewSession()
-	if err != nil {
-		return fmt.Errorf("opening a session: %w", err)
-	}
-	defer func() { _ = session.Close() }()
-
-	// Clear the deadline: the connection is healthy and the remaining calls
-	// have their own bounds. Leaving it set would expire mid-session.
-	if err := conn.SetDeadline(time.Time{}); err != nil {
-		return fmt.Errorf("clearing deadline: %w", err)
-	}
-	return nil
-}
-
 // reportSSHKey prints which key an instance uses and whether it currently
 // opens the host.
 //
 // The reachability check is re-run here rather than cached from `instance
 // add', because the answer changes the moment the administrator installs the
 // public key -- and this is how they confirm that it landed.
+//
+// Both the public key and the reachability check come from `proxpass serve'
+// (root): the session cannot read the private key the check needs.
 func reportSSHKey(ctx context.Context, deps *Deps, inst *models.ProxmoxInstance) {
-	key, err := models.ReadSSHKey()
+	pub, path, err := deps.SSHKeys.SSHPublicKey(ctx)
 	if err != nil {
 		fmt.Fprintf(deps.Out, "SSH Key:          %v\n", err)
 		return
 	}
-	if key == "" {
-		fmt.Fprintf(deps.Out, "SSH Key:          none at %s\n", models.SSHKeyPath())
+	if pub == "" {
+		fmt.Fprintf(deps.Out, "SSH Key:          none at %s\n", path)
 		return
 	}
 
-	fmt.Fprintf(deps.Out, "SSH Key:          %s\n", models.SSHKeyPath())
-	if pub, pubErr := publicKeyLine(key); pubErr == nil {
-		fmt.Fprintf(deps.Out, "SSH Public Key:   %s", pub)
-	}
+	fmt.Fprintf(deps.Out, "SSH Key:          %s\n", path)
+	fmt.Fprintf(deps.Out, "SSH Public Key:   %s", pub)
 
-	if err := checkSSHAccess(ctx, inst, key); err != nil {
+	if err := deps.SSHKeys.CheckInstanceSSHAccess(ctx, inst); err != nil {
 		fmt.Fprintf(deps.Out, "SSH Access:       UNAVAILABLE: %v\n", err)
 		fmt.Fprintf(deps.Out, "                  install the public key above in %s on %s\n",
 			authorizedKeysPath, inst.SSHHost)
@@ -132,7 +80,7 @@ func reportSSHKey(ctx context.Context, deps *Deps, inst *models.ProxmoxInstance)
 // as no host at all, and this is the moment they learn they need both.
 //
 // It is a no-op when SSHHost is set, so callers can invoke it unconditionally.
-func warnMissingSSHHost(deps *Deps, inst *models.ProxmoxInstance) {
+func warnMissingSSHHost(ctx context.Context, deps *Deps, inst *models.ProxmoxInstance) {
 	if inst.SSHHost != "" {
 		return
 	}
@@ -145,23 +93,11 @@ func warnMissingSSHHost(deps *Deps, inst *models.ProxmoxInstance) {
 
 	// Show the key the administrator must install on the node, so they can do
 	// it in the same step as setting the host.
-	key, err := models.ReadSSHKey()
-	if err != nil || key == "" {
+	pub, _, err := deps.SSHKeys.SSHPublicKey(ctx)
+	if err != nil || pub == "" {
 		return
 	}
-	if pub, pubErr := publicKeyLine(key); pubErr == nil {
-		fmt.Fprintf(deps.ErrOut,
-			"Then add proxpass's public key to %s on the node:\n%s",
-			authorizedKeysPath, pub)
-	}
-}
-
-// publicKeyLine returns the authorized_keys line for a PEM private key, which
-// is what the administrator has to install on the Proxmox host.
-func publicKeyLine(pemKey string) (string, error) {
-	signer, err := gossh.ParsePrivateKey([]byte(pemKey))
-	if err != nil {
-		return "", fmt.Errorf("parsing the proxpass key: %w", err)
-	}
-	return string(gossh.MarshalAuthorizedKey(signer.PublicKey())), nil
+	fmt.Fprintf(deps.ErrOut,
+		"Then add proxpass's public key to %s on the node:\n%s",
+		authorizedKeysPath, pub)
 }

@@ -286,6 +286,13 @@ func (d *Deps) runAdmin(ctx context.Context, cmd string) int {
 		Out:        d.Terminal.UIOut(),
 		ErrOut:     d.Terminal.UIErr(),
 	}
+	// The admin repo (AdminRepository) also resolves SSH key material over the
+	// loopback API, because the session cannot read the root-owned key file.
+	// It is the concrete repo for every admin session; the assertion simply
+	// hands the CLI that same object through its narrower interface.
+	if svc, ok := d.Repo.(cli.SSHKeyService); ok {
+		deps.SSHKeys = svc
+	}
 	argv := append([]string{cliProgName}, splitArgs(cmd)...)
 	if err := cli.Build(deps).Run(detachValues(ctx), argv); err != nil {
 		d.errf("Error: %v", err)

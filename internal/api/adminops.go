@@ -295,6 +295,20 @@ var adminOps = map[string]adminOp{
 		return nil, repo.SetSetting(ctx, args.Key, args.Value)
 	},
 
+	// --- SSH key file ---
+	//
+	// These two do NOT take `repo': the proxpass SSH key is a root-owned file,
+	// not a database row (see models.sshkey.go), so they read it here, in the
+	// root `serve' process, on behalf of an admin session that cannot. Only
+	// the PUBLIC half and a yes/no reachability answer cross back -- the
+	// private key never leaves this process. See sshkeyops.go.
+	"GetSSHPublicKey": func(ctx context.Context, _ db.Repository, p json.RawMessage) (json.RawMessage, error) {
+		return getSSHPublicKey(ctx, p)
+	},
+	"CheckInstanceSSHAccess": func(ctx context.Context, _ db.Repository, p json.RawMessage) (json.RawMessage, error) {
+		return checkInstanceSSHAccess(ctx, p)
+	},
+
 	// --- Instance access rules ---
 	"ListInstanceAccessRules": func(ctx context.Context, repo db.Repository, _ json.RawMessage) (json.RawMessage, error) {
 		out, err := repo.ListInstanceAccessRules(ctx)

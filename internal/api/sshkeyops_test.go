@@ -1,4 +1,4 @@
-package cli
+package api
 
 import (
 	"net"
@@ -11,14 +11,15 @@ import (
 	"proxpass/internal/testenv"
 )
 
+const (
+	testInstanceName = "pve"
+	testLoopback     = "127.0.0.1"
+	testSSHUser      = "root"
+)
+
 // instanceFor builds an instance pointing at the mock Proxmox host.
 func instanceFor(t *testing.T, srv *testenv.MockSSHServer) *models.ProxmoxInstance {
 	t.Helper()
-	key, err := os.ReadFile(srv.KeyPath)
-	if err != nil {
-		t.Fatalf("reading the mock server key: %v", err)
-	}
-	_ = key
 	return &models.ProxmoxInstance{
 		Name:             testInstanceName,
 		ConsoleTransport: models.ConsoleTransportSSH,
@@ -28,36 +29,46 @@ func instanceFor(t *testing.T, srv *testenv.MockSSHServer) *models.ProxmoxInstan
 	}
 }
 
+// readKey returns the PEM bytes written by a mock host.
+func readKey(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the key %s: %v", path, err)
+	}
+	return b
+}
+
 // keyFor returns the PEM key the mock host accepts.
 func keyFor(t *testing.T, srv *testenv.MockSSHServer) string {
 	t.Helper()
 	return string(readKey(t, srv.KeyPath))
 }
 
-// checkSSHAccessFor runs the check with the instance's own key.
-func checkSSHAccessFor(t *testing.T, srv *testenv.MockSSHServer) error {
+// dialSSHSessionFor runs the dial with the instance's own key.
+func dialSSHSessionFor(t *testing.T, srv *testenv.MockSSHServer) error {
 	t.Helper()
-	return checkSSHAccess(t.Context(), instanceFor(t, srv), keyFor(t, srv))
+	return dialSSHSession(t.Context(), instanceFor(t, srv), keyFor(t, srv))
 }
 
-// TestCheckSSHAccessAcceptsAWorkingKey is the case the administrator sees
-// once the public key is installed.
-func TestCheckSSHAccessAcceptsAWorkingKey(t *testing.T) {
+// TestDialSSHSessionAcceptsAWorkingKey is the case the administrator sees once
+// the public key is installed.
+func TestDialSSHSessionAcceptsAWorkingKey(t *testing.T) {
 	srv, err := testenv.NewMockSSHServer()
 	if err != nil {
 		t.Fatalf("starting the mock host: %v", err)
 	}
 	defer srv.Close()
 
-	if err := checkSSHAccessFor(t, srv); err != nil {
+	if err := dialSSHSessionFor(t, srv); err != nil {
 		t.Fatalf("expected the configured key to be accepted: %v", err)
 	}
 }
 
-// TestCheckSSHAccessRejectsAnUninstalledKey is the case BEFORE the
+// TestDialSSHSessionRejectsAnUninstalledKey is the case BEFORE the
 // administrator has installed the public key, which is the whole reason the
 // check exists.
-func TestCheckSSHAccessRejectsAnUninstalledKey(t *testing.T) {
+func TestDialSSHSessionRejectsAnUninstalledKey(t *testing.T) {
 	srv, err := testenv.NewMockSSHServer()
 	if err != nil {
 		t.Fatalf("starting the mock host: %v", err)
@@ -71,7 +82,7 @@ func TestCheckSSHAccessRejectsAnUninstalledKey(t *testing.T) {
 	defer other.Close()
 
 	// A valid key that this host does not know.
-	err = checkSSHAccess(t.Context(), instanceFor(t, srv), string(readKey(t, other.KeyPath)))
+	err = dialSSHSession(t.Context(), instanceFor(t, srv), string(readKey(t, other.KeyPath)))
 	if err == nil {
 		t.Fatal("expected a key the host does not know to be refused")
 	}
@@ -82,9 +93,9 @@ func TestCheckSSHAccessRejectsAnUninstalledKey(t *testing.T) {
 	}
 }
 
-// TestCheckSSHAccessReportsAClosedPort covers the other common failure: the
+// TestDialSSHSessionReportsAClosedPort covers the other common failure: the
 // host is not listening, or a firewall is in the way.
-func TestCheckSSHAccessReportsAClosedPort(t *testing.T) {
+func TestDialSSHSessionReportsAClosedPort(t *testing.T) {
 	// Bind and release a port so it is almost certainly closed.
 	l, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", testLoopback+":0")
 	if err != nil {
@@ -106,7 +117,7 @@ func TestCheckSSHAccessReportsAClosedPort(t *testing.T) {
 		SSHPort:          port,
 		SSHUser:          testSSHUser,
 	}
-	err = checkSSHAccess(t.Context(), inst, testKeyPEM(t))
+	err = dialSSHSession(t.Context(), inst, testKeyPEM(t))
 	if err == nil {
 		t.Fatal("expected a closed port to be reported")
 	}
@@ -115,9 +126,9 @@ func TestCheckSSHAccessReportsAClosedPort(t *testing.T) {
 	}
 }
 
-// TestCheckSSHAccessRejectsAnUnparseableKey keeps a malformed key from
+// TestDialSSHSessionRejectsAnUnparseableKey keeps a malformed key from
 // reaching the dialer, where it would be reported as a connection problem.
-func TestCheckSSHAccessRejectsAnUnparseableKey(t *testing.T) {
+func TestDialSSHSessionRejectsAnUnparseableKey(t *testing.T) {
 	inst := &models.ProxmoxInstance{
 		Name:             testInstanceName,
 		ConsoleTransport: models.ConsoleTransportSSH,
@@ -125,7 +136,7 @@ func TestCheckSSHAccessRejectsAnUnparseableKey(t *testing.T) {
 		SSHPort:          22,
 		SSHUser:          testSSHUser,
 	}
-	err := checkSSHAccess(t.Context(), inst, "not a key")
+	err := dialSSHSession(t.Context(), inst, "not a key")
 	if err == nil {
 		t.Fatal("expected a malformed key to be refused")
 	}
@@ -159,9 +170,5 @@ func testKeyPEM(t *testing.T) string {
 		t.Fatalf("starting a mock host for its key: %v", err)
 	}
 	defer srv.Close()
-	b, err := os.ReadFile(srv.KeyPath)
-	if err != nil {
-		t.Fatalf("reading the key: %v", err)
-	}
-	return string(b)
+	return string(readKey(t, srv.KeyPath))
 }
