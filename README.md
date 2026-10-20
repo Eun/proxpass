@@ -60,8 +60,8 @@ to look, so this has to come before you connect.
 ```bash
 ssh -p 2222 admin@localhost instance add \
   --url https://pve:8006 \
-  --token-id "user@pam!token" \
-  --token-secret "uuid"
+  --token-id 'user@pam!token' \
+  --token-secret 'uuid'
 ```
 
 The Proxmox host must be reachable now: `instance add` calls the API to learn
@@ -311,18 +311,24 @@ ssh -p 2222 admin@proxpass
 ssh -p 2222 admin@proxpass instance ls
 
 # Add a single instance (termproxy console — the default)
+#
+# Note the SINGLE quotes around --token-id: a Proxmox API token id contains a
+# "!" (e.g. user@pam!token), and inside double quotes an interactive bash
+# triggers history expansion on it, mangling the value. Single quotes pass it
+# through literally. The token secret is single-quoted for the same reason, in
+# case it contains shell metacharacters.
 ssh -p 2222 admin@proxpass instance add \
   --url https://pve:8006 \
-  --token-id "user@pam!token" \
-  --token-secret "uuid"
+  --token-id 'user@pam!token' \
+  --token-secret 'uuid'
 
 # A Proxmox host serving its stock self-signed certificate: TLS verification
 # is ON by default, so either present a trusted certificate or add
 # --insecure-tls (TLS and SSH each have their own toggle; --insecure sets both).
 ssh -p 2222 admin@proxpass instance add \
   --url https://pve:8006 \
-  --token-id "user@pam!token" \
-  --token-secret "uuid" \
+  --token-id 'user@pam!token' \
+  --token-secret 'uuid' \
   --insecure-tls
 
 # Attach consoles over SSH (pct enter) instead of the termproxy websocket.
@@ -333,16 +339,16 @@ ssh -p 2222 admin@proxpass instance add \
 # An explicit --ssh-host may include a port: --ssh-host pve:2222
 ssh -p 2222 admin@proxpass instance add \
   --url https://pve:8006 \
-  --token-id "user@pam!token" \
-  --token-secret "uuid" \
+  --token-id 'user@pam!token' \
+  --token-secret 'uuid' \
   --console-transport ssh
 
 # Override the SSH host/port explicitly (single --url only)
 ssh -p 2222 admin@proxpass instance add \
   --name pve1 \
   --url https://pve1:8006 \
-  --token-id "user@pam!token" \
-  --token-secret "uuid" \
+  --token-id 'user@pam!token' \
+  --token-secret 'uuid' \
   --console-transport ssh \
   --ssh-host pve1.internal:2222
 
@@ -350,7 +356,7 @@ ssh -p 2222 admin@proxpass instance add \
 # instance keeps its id -- so its access rules survive, which re-adding it
 # would not.
 ssh -p 2222 admin@proxpass instance update --name pve1 --ssh-host pve1.internal:2222
-ssh -p 2222 admin@proxpass instance update --name pve1 --token-id "user@pam!new" --token-secret "uuid"
+ssh -p 2222 admin@proxpass instance update --name pve1 --token-id 'user@pam!new' --token-secret 'uuid'
 ssh -p 2222 admin@proxpass instance update --name pve1 --rename pve-old
 
 ssh -p 2222 admin@proxpass instance rm --name pve1
