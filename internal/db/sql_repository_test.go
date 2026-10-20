@@ -110,14 +110,20 @@ func TestProxmoxInstances(t *testing.T) {
 	repo := newTestRepo(t)
 	ctx := context.Background()
 
+	const fingerprint = "SHA256:abc123+/pinnedhostkey"
 	inst := &models.ProxmoxInstance{
 		Name:           "pve1",
 		APIURL:         "https://pve1.local:8006",
 		APITokenID:     testTokenID,
 		APITokenSecret: testTokenSecret,
+		// Deliberately asymmetric: the two insecure flags are independent, so
+		// the round-trip must not conflate them.
+		InsecureTLS:    true,
+		InsecureSSH:    false,
 		SSHHost:        "pve1.local",
 		SSHPort:        22,
 		SSHUser:        "root",
+		SSHFingerprint: fingerprint,
 	}
 	if err := repo.AddProxmoxInstance(ctx, inst); err != nil {
 		t.Fatal(err)
@@ -133,8 +139,20 @@ func TestProxmoxInstances(t *testing.T) {
 	if len(list) != 1 || list[0].Name != "pve1" {
 		t.Fatalf("unexpected list: %+v", list)
 	}
+	// The new security fields must survive the round-trip, independently.
+	if !list[0].InsecureTLS || list[0].InsecureSSH {
+		t.Errorf("insecure flags did not round-trip independently: %+v", list[0])
+	}
+	if list[0].SSHFingerprint != fingerprint {
+		t.Errorf("ssh fingerprint = %q, want %q", list[0].SSHFingerprint, fingerprint)
+	}
 
 	inst.Name = "pve1-updated"
+	// Flip both: TLS now verified, SSH now insecure -- proves the UPDATE writes
+	// each column from its own field.
+	inst.InsecureTLS = false
+	inst.InsecureSSH = true
+	inst.SSHFingerprint = ""
 	if err := repo.UpdateProxmoxInstance(ctx, inst); err != nil {
 		t.Fatal(err)
 	}
@@ -142,6 +160,9 @@ func TestProxmoxInstances(t *testing.T) {
 	list, _ = repo.ListProxmoxInstances(ctx)
 	if list[0].Name != "pve1-updated" {
 		t.Fatalf("update failed: %+v", list[0])
+	}
+	if list[0].InsecureTLS || !list[0].InsecureSSH || list[0].SSHFingerprint != "" {
+		t.Errorf("update did not persist the flipped security fields: %+v", list[0])
 	}
 
 	if err := repo.RemoveProxmoxInstance(ctx, inst.ID); err != nil {

@@ -51,6 +51,18 @@ type MockSSHServer struct {
 	subsystems []string
 }
 
+// HostKey returns the server's SSH host public key, so a test can pin or
+// publish its fingerprint for host-key verification.
+func (m *MockSSHServer) HostKey() gossh.PublicKey {
+	return m.signer.PublicKey()
+}
+
+// HostKeyFingerprint returns the server's host-key fingerprint in the
+// "SHA256:<base64>" form proxpass pins (models.ProxmoxInstance.SSHFingerprint).
+func (m *MockSSHServer) HostKeyFingerprint() string {
+	return gossh.FingerprintSHA256(m.signer.PublicKey())
+}
+
 // NewMockSSHServer starts a mock SSH server on a random port.
 // It generates an ED25519 keypair; the private key is written to a
 // temp file whose path is available as KeyPath. Callers must call

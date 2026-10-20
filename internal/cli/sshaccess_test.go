@@ -25,6 +25,9 @@ func instanceFor(t *testing.T, srv *testenv.MockSSHServer) *models.ProxmoxInstan
 		SSHHost:          srv.Host,
 		SSHPort:          srv.Port,
 		SSHUser:          srv.User,
+		// Pin the mock server's host key: a test host publishes no SSHFP, so
+		// without a pin verification would fall back to a (failing) DNS lookup.
+		SSHFingerprint: srv.HostKeyFingerprint(),
 	}
 }
 

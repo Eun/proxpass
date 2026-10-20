@@ -27,6 +27,7 @@ func TestAPIClientDiscoverGuests(t *testing.T) {
 
 	inst := &models.ProxmoxInstance{
 		APIURL:         api.URL(),
+		InsecureTLS:    true, // mock API serves a self-signed cert
 		APITokenID:     testTokenID,
 		APITokenSecret: testTokenSecret,
 		SSHHost:        testNode1, // scope discovery to node1 only
@@ -75,6 +76,7 @@ func TestAPIClientDiscoverGuestsFQDN(t *testing.T) {
 
 	inst := &models.ProxmoxInstance{
 		APIURL:         api.URL(),
+		InsecureTLS:    true, // mock API serves a self-signed cert
 		APITokenID:     testTokenID,
 		APITokenSecret: testTokenSecret,
 		// FQDN: should match node "rome" via prefix "rome."
@@ -106,6 +108,7 @@ func TestAPIClientBadAuth(t *testing.T) {
 
 	inst := &models.ProxmoxInstance{
 		APIURL:         api.URL(),
+		InsecureTLS:    true, // mock API serves a self-signed cert
 		APITokenID:     "wrong",
 		APITokenSecret: "wrong",
 		SSHHost:        testNode1,
@@ -165,6 +168,7 @@ func TestCreateTermProxyTicket(t *testing.T) {
 
 	inst := &models.ProxmoxInstance{
 		APIURL:         api.URL(),
+		InsecureTLS:    true, // mock API serves a self-signed cert
 		APITokenID:     testTokenID,
 		APITokenSecret: testTokenSecret,
 		SSHHost:        testNode1,
@@ -202,6 +206,7 @@ func TestResolveNodeNameLocalNode(t *testing.T) {
 
 	inst := &models.ProxmoxInstance{
 		APIURL:         api.URL(),
+		InsecureTLS:    true, // mock API serves a self-signed cert
 		APITokenID:     testTokenID,
 		APITokenSecret: testTokenSecret,
 	}
@@ -232,6 +237,7 @@ func TestResolveNodeNameFallsBackToLocalWhenSSHHostMatchesNoNode(t *testing.T) {
 
 	inst := &models.ProxmoxInstance{
 		APIURL:         api.URL(),
+		InsecureTLS:    true, // mock API serves a self-signed cert
 		APITokenID:     testTokenID,
 		APITokenSecret: testTokenSecret,
 		SSHHost:        "10.208.13.5",

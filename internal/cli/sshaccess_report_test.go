@@ -39,6 +39,7 @@ func TestInspectReportsAccessOnceTheKeyIsInstalled(t *testing.T) {
 		SSHHost:          srv.Host,
 		SSHPort:          srv.Port,
 		SSHUser:          srv.User,
+		SSHFingerprint:   srv.HostKeyFingerprint(),
 	}
 
 	got := reportFor(t, inst)

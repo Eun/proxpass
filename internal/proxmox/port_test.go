@@ -29,6 +29,7 @@ func TestAPIURLPortPreserved(t *testing.T) {
 	// srv.URL is e.g. "http://127.0.0.1:54321" -- a non-standard port.
 	inst := &models.ProxmoxInstance{
 		APIURL:         srv.URL,
+		InsecureTLS:    true, // mock server serves a self-signed cert
 		APITokenID:     testTokenID,
 		APITokenSecret: "secret",
 	}

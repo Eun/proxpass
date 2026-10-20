@@ -54,6 +54,8 @@ func sshInstance(t *testing.T, mock *testenv.MockSSHServer) *models.ProxmoxInsta
 		SSHHost:          mock.Host,
 		SSHPort:          mock.Port,
 		SSHUser:          mock.User,
+		// Pin the mock host key; a test host has no SSHFP record.
+		SSHFingerprint: mock.HostKeyFingerprint(),
 	}
 }
 
