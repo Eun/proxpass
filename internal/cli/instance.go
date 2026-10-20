@@ -298,7 +298,7 @@ func addInstance(
 	// before an instance exists to tell them which host. Refusing here would
 	// make the obvious order impossible. So it prints the key and what to do
 	// with it, and adds the instance anyway.
-	if connType == models.ConsoleTransportSSH {
+	if connType == models.ConsoleTransportSSH && inst.SSHHost != "" {
 		if err := checkSSHAccess(ctx, inst, sshKeyPEM); err != nil {
 			pub, pubErr := publicKeyLine(sshKeyPEM)
 			if pubErr != nil {
@@ -315,6 +315,11 @@ func addInstance(
 		return err
 	}
 	fmt.Fprintf(deps.Out, "Instance %q added (connection: %s, node: %s).\n", inst.Name, inst.ConsoleTransport, inst.Node)
+
+	// Warn when there is no SSH host: the instance was still added (its console
+	// may work), but node shell, SFTP and file transfer are unavailable until
+	// a host is set. No-op when a host is present.
+	warnMissingSSHHost(deps, inst)
 
 	// Run discovery on the new instance.
 	if deps.Discoverer != nil {

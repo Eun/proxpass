@@ -104,6 +104,14 @@ func runInstanceUpdate(ctx context.Context, deps *Deps, cmd *ucli.Command) error
 	}
 	fmt.Fprintf(deps.Out, "Instance %q updated.\n", inst.Name)
 
+	// With no SSH host there is nothing to reach: warn that node shell, SFTP
+	// and file transfer are unavailable (and show the key to install), rather
+	// than running a reachability check against an empty address.
+	if inst.SSHHost == "" {
+		warnMissingSSHHost(deps, inst)
+		return nil
+	}
+
 	// Report reachability the same way `instance add' does, so a change that
 	// breaks SSH is visible now rather than at the next transfer.
 	reportSSHKey(ctx, deps, inst)

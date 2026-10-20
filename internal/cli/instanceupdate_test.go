@@ -215,3 +215,42 @@ func TestUpdateReportsAnUnknownInstance(t *testing.T) {
 		t.Fatalf("the error should name the instance: %v", err)
 	}
 }
+
+// TestUpdateWarnsWhenTheInstanceHasNoSSHHost drives the real `instance update'
+// command and checks that an instance left without an SSH host is called out:
+// its console may work, but node shell, SFTP and file transfer cannot, and the
+// administrator is told how to fix it. Updating only --ssh-user touches no
+// network, so this exercises the wiring without a mock Proxmox API.
+func TestUpdateWarnsWhenTheInstanceHasNoSSHHost(t *testing.T) {
+	repo, err := db.NewRepository(t.TempDir() + "/p.db")
+	if err != nil {
+		t.Fatalf("opening the repository: %v", err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+
+	// An instance with no SSH host, as `instance add' now stores one when
+	// --ssh-host is omitted.
+	inst := &models.ProxmoxInstance{
+		Name:             testInstName,
+		APIURL:           "https://pve1:8006",
+		APITokenID:       "root@pam!tok",
+		APITokenSecret:   "SECRET",
+		ConsoleTransport: models.ConsoleTransportTermProxy,
+		Node:             testInstName,
+		SSHUser:          testSSHUser,
+	}
+	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+
+	out, err := runCLI(t, repo, cmdInstance, "update", flagArgName, testInstName, "--ssh-user", "admin")
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if !strings.Contains(out, "no SSH host") || !strings.Contains(out, "SFTP") {
+		t.Fatalf("expected a missing-ssh-host warning:\n%s", out)
+	}
+	if !strings.Contains(out, "--ssh-host") {
+		t.Fatalf("expected the warning to say how to set a host:\n%s", out)
+	}
+}
