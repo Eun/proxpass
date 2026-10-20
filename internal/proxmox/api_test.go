@@ -255,3 +255,79 @@ func TestResolveNodeNameFallsBackToLocalWhenSSHHostMatchesNoNode(t *testing.T) {
 		t.Errorf("node: got %q, want %q", node, "pve-ravioli")
 	}
 }
+
+// TestCheckAPIConnectionOK verifies a working TLS + auth probe against the
+// self-signed mock when verification is disabled.
+func TestCheckAPIConnectionOK(t *testing.T) {
+	api := testenv.NewMockAPIServer(testTokenID, testTokenSecret)
+	defer api.Close()
+	api.AddLXC(testNode1, 100, "ct1", "running")
+
+	client := mustClient(t, &models.ProxmoxInstance{
+		APIURL: api.URL(), InsecureTLS: true,
+		APITokenID: testTokenID, APITokenSecret: testTokenSecret,
+	})
+	res := client.CheckAPIConnection(context.Background())
+	if !res.OK() {
+		t.Fatalf("expected OK, got status %d err %v", res.Status, res.Err)
+	}
+}
+
+// TestCheckAPIConnectionCertError verifies that a self-signed cert is reported
+// as a certificate failure when verification is ON -- not as unreachable.
+func TestCheckAPIConnectionCertError(t *testing.T) {
+	api := testenv.NewMockAPIServer(testTokenID, testTokenSecret)
+	defer api.Close()
+
+	client := mustClient(t, &models.ProxmoxInstance{
+		APIURL: api.URL(), InsecureTLS: false, // verify against the self-signed cert
+		APITokenID: testTokenID, APITokenSecret: testTokenSecret,
+	})
+	res := client.CheckAPIConnection(context.Background())
+	if res.Status != proxmox.APIConnectionCertError {
+		t.Fatalf("expected APIConnectionCertError, got status %d err %v", res.Status, res.Err)
+	}
+}
+
+// TestCheckAPIConnectionAuthError verifies that a rejected token is reported as
+// an auth failure (TLS working), distinct from a cert or network failure.
+func TestCheckAPIConnectionAuthError(t *testing.T) {
+	api := testenv.NewMockAPIServer(testTokenID, testTokenSecret)
+	defer api.Close()
+
+	client := mustClient(t, &models.ProxmoxInstance{
+		APIURL: api.URL(), InsecureTLS: true,
+		APITokenID: testTokenID, APITokenSecret: "wrong-secret",
+	})
+	res := client.CheckAPIConnection(context.Background())
+	if res.Status != proxmox.APIConnectionAuthError {
+		t.Fatalf("expected APIConnectionAuthError, got status %d err %v", res.Status, res.Err)
+	}
+}
+
+// TestCheckAPIConnectionUnreachable verifies that a closed host is reported as
+// unreachable, not as a cert or auth failure.
+func TestCheckAPIConnectionUnreachable(t *testing.T) {
+	api := testenv.NewMockAPIServer(testTokenID, testTokenSecret)
+	url := api.URL()
+	api.Close() // nothing is listening any more
+
+	client := mustClient(t, &models.ProxmoxInstance{
+		APIURL: url, InsecureTLS: true,
+		APITokenID: testTokenID, APITokenSecret: testTokenSecret,
+	})
+	res := client.CheckAPIConnection(context.Background())
+	if res.Status != proxmox.APIConnectionUnreachable {
+		t.Fatalf("expected APIConnectionUnreachable, got status %d err %v", res.Status, res.Err)
+	}
+}
+
+// mustClient builds an APIClient or fails the test.
+func mustClient(t *testing.T, inst *models.ProxmoxInstance) *proxmox.APIClient {
+	t.Helper()
+	client, err := proxmox.NewAPIClient(inst)
+	if err != nil {
+		t.Fatalf("NewAPIClient: %v", err)
+	}
+	return client
+}

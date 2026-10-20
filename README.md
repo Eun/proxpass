@@ -593,6 +593,14 @@ API itself — this is why a fingerprint or an SSHFP record is required. On a
 trusted path you can instead skip host-key verification entirely with
 `--insecure-ssh`.
 
+**Checking it.** `instance ls` shows what is *configured* per instance — the
+TLS mode (`verified` / `insecure` / `off (http)`) and the SSH host plus how its
+key is verified (`pinned` / `sshfp` / `insecure`, or `not configured`) — without
+touching the network. `instance inspect` additionally *probes*: it reports
+whether the TLS connection actually works (distinguishing an untrusted
+certificate, an unreachable host, and a rejected token) and whether SSH to the
+node actually works.
+
 > **Upgrading:** instances added before this could carry their own key, and
 > the migration that removes the columns **discards it**. Such an instance
 > falls back to the deployment key, so install that key's public half on its

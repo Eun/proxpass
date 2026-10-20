@@ -30,8 +30,8 @@ func seedInstance(t *testing.T) (db.Repository, *models.ProxmoxInstance) {
 	inst := &models.ProxmoxInstance{
 		Name:             testInstName,
 		APIURL:           "https://pve1:8006",
-		APITokenID:       "root@pam!tok",
-		APITokenSecret:   "SECRET",
+		APITokenID:       testAPITokenID,
+		APITokenSecret:   testAPITokenSecret,
 		ConsoleTransport: models.ConsoleTransportTermProxy,
 		Node:             testInstName,
 		SSHHost:          testInstName,
@@ -233,8 +233,8 @@ func TestUpdateWarnsWhenTheInstanceHasNoSSHHost(t *testing.T) {
 	inst := &models.ProxmoxInstance{
 		Name:             testInstName,
 		APIURL:           "https://pve1:8006",
-		APITokenID:       "root@pam!tok",
-		APITokenSecret:   "SECRET",
+		APITokenID:       testAPITokenID,
+		APITokenSecret:   testAPITokenSecret,
 		ConsoleTransport: models.ConsoleTransportTermProxy,
 		Node:             testInstName,
 		SSHUser:          testSSHUser,

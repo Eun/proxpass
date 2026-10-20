@@ -55,6 +55,7 @@ func NewMockAPIServer(tokenID, tokenSecret string) *MockAPIServer {
 		token: tokenID + "=" + tokenSecret,
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api2/json/version", m.handleVersion)
 	mux.HandleFunc("/api2/json/nodes", m.handleNodes)
 	// Use a catch-all pattern and parse the path manually for
 	// /api2/json/nodes/{node}/lxc, /api2/json/nodes/{node}/qemu,
@@ -81,6 +82,7 @@ func (m *MockAPIServer) Close() {
 // Handler returns the underlying http.Handler for standalone use.
 func (m *MockAPIServer) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api2/json/version", m.handleVersion)
 	mux.HandleFunc("/api2/json/nodes", m.handleNodes)
 	mux.HandleFunc("/api2/json/nodes/", m.handleNodePaths)
 	mux.HandleFunc("/api2/json/cluster/status", m.handleClusterStatus)
@@ -203,6 +205,19 @@ func (m *MockAPIServer) handleNodes(w http.ResponseWriter, r *http.Request) {
 		entries = append(entries, nodeEntry{Node: name, Status: "online"})
 	}
 	writeJSON(w, map[string]any{apiDataKey: entries})
+}
+
+// handleVersion serves GET /api2/json/version. It requires auth, so a wrong
+// token yields 401 -- which lets a test exercise the "TLS ok, auth rejected"
+// classification. The version is new enough to satisfy CheckTermProxySupport.
+func (m *MockAPIServer) handleVersion(w http.ResponseWriter, r *http.Request) {
+	if !m.checkAuth(w, r) {
+		return
+	}
+	writeJSON(w, map[string]any{apiDataKey: map[string]string{
+		"version": "9.1.9",
+		"release": "9.1",
+	}})
 }
 
 func (m *MockAPIServer) handleClusterStatus(w http.ResponseWriter, r *http.Request) {

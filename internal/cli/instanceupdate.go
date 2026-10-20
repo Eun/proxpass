@@ -56,17 +56,17 @@ stored one describes the host that was there before.`,
 			&ucli.StringFlag{Name: "token-id", Usage: "API token ID"},
 			&ucli.StringFlag{Name: "token-secret", Usage: "API token secret"},
 			&ucli.BoolFlag{
-				Name: "insecure-tls",
+				Name: flagInsecureTLS,
 				Usage: "Skip TLS certificate verification (--insecure-tls) or " +
 					"re-enable it (--insecure-tls=false).",
 			},
 			&ucli.BoolFlag{
-				Name: "insecure-ssh",
+				Name: flagInsecureSSH,
 				Usage: "Skip SSH host-key verification (--insecure-ssh) or " +
 					"re-enable it (--insecure-ssh=false).",
 			},
 			&ucli.BoolFlag{
-				Name: "insecure",
+				Name: flagInsecure,
 				Usage: "Shorthand that sets both --insecure-tls and " +
 					"--insecure-ssh (or clears both with --insecure=false).",
 			},
@@ -168,15 +168,15 @@ func applyInstanceFlags(cmd *ucli.Command, inst *models.ProxmoxInstance) error {
 	}
 	// --insecure is shorthand for both; --insecure-tls / --insecure-ssh set
 	// each independently and win over the shorthand when both are given.
-	if cmd.IsSet("insecure") {
-		inst.InsecureTLS = cmd.Bool("insecure")
-		inst.InsecureSSH = cmd.Bool("insecure")
+	if cmd.IsSet(flagInsecure) {
+		inst.InsecureTLS = cmd.Bool(flagInsecure)
+		inst.InsecureSSH = cmd.Bool(flagInsecure)
 	}
-	if cmd.IsSet("insecure-tls") {
-		inst.InsecureTLS = cmd.Bool("insecure-tls")
+	if cmd.IsSet(flagInsecureTLS) {
+		inst.InsecureTLS = cmd.Bool(flagInsecureTLS)
 	}
-	if cmd.IsSet("insecure-ssh") {
-		inst.InsecureSSH = cmd.Bool("insecure-ssh")
+	if cmd.IsSet(flagInsecureSSH) {
+		inst.InsecureSSH = cmd.Bool(flagInsecureSSH)
 	}
 	if cmd.IsSet("ssh-fingerprint") {
 		fp := cmd.String("ssh-fingerprint")
