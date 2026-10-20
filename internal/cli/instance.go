@@ -3,10 +3,12 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"proxpass/internal/models"
 	"proxpass/internal/proxmox"
+	"proxpass/internal/sshhostkey"
 
 	ucli "github.com/urfave/cli/v3"
 )
@@ -70,6 +72,31 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI com
 					},
 					&ucli.StringFlag{Name: "token-id", Required: true, Usage: "API token ID (e.g. user@pam!token)"},
 					&ucli.StringFlag{Name: "token-secret", Required: true, Usage: "API token secret"},
+					&ucli.BoolFlag{
+						Name: "insecure-tls",
+						Usage: "Skip TLS certificate verification for this instance's" +
+							" Proxmox API and console. Needed for a host serving a" +
+							" self-signed certificate. Off by default.",
+					},
+					&ucli.BoolFlag{
+						Name: "insecure-ssh",
+						Usage: "Skip SSH host-key verification for this instance's node" +
+							" connections (node shell, SFTP, file transfer). Off by" +
+							" default; prefer --ssh-fingerprint or SSHFP.",
+					},
+					&ucli.BoolFlag{
+						Name: "insecure",
+						Usage: "Shorthand for both --insecure-tls and --insecure-ssh:" +
+							" skip all verification for this instance.",
+					},
+					&ucli.StringFlag{
+						Name: "ssh-fingerprint",
+						Usage: "Pin the node's SSH host key as \"SHA256:<base64>\"" +
+							" (the form ssh-keyscan prints). When omitted the host" +
+							" key is verified against DNSSEC-validated SSHFP records;" +
+							" if none exist the add fails and prints the fingerprint" +
+							" to pin here.",
+					},
 					&ucli.StringFlag{
 						Name:  "console-transport",
 						Value: string(models.ConsoleTransportTermProxy),
@@ -192,6 +219,7 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI com
 						}
 						fmt.Fprintf(deps.Out, "Name:             %s\n", inst.Name)
 						fmt.Fprintf(deps.Out, "API URL:          %s\n", inst.APIURL)
+						fmt.Fprintf(deps.Out, "TLS:              %s\n", tlsStatus(inst.InsecureTLS))
 						fmt.Fprintf(deps.Out, "API Token ID:     %s\n", inst.APITokenID)
 						fmt.Fprintf(deps.Out, "API Token Secret: %s\n", inst.APITokenSecret)
 						fmt.Fprintf(deps.Out, "Connection Type:  %s\n", inst.ConsoleTransport)
@@ -200,6 +228,7 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI com
 							fmt.Fprintf(deps.Out, "SSH Host:         %s\n", inst.SSHHost)
 							fmt.Fprintf(deps.Out, "SSH Port:         %d\n", inst.SSHPort)
 							fmt.Fprintf(deps.Out, "SSH User:         %s\n", inst.SSHUser)
+							fmt.Fprintf(deps.Out, "SSH Host Key:     %s\n", sshHostKeyStatus(inst.InsecureSSH, inst.SSHFingerprint))
 							reportSSHKey(ctx, deps, inst)
 						}
 					}
@@ -232,6 +261,27 @@ func parseExplicitSSHHost(explicitSSHHost string) (host string, port int, err er
 	return h, p, nil
 }
 
+// tlsStatus renders an instance's TLS verification setting for display.
+func tlsStatus(insecure bool) string {
+	if insecure {
+		return "insecure (certificate verification disabled)"
+	}
+	return "verified"
+}
+
+// sshHostKeyStatus renders how an instance's SSH host key is verified for
+// display: insecure (not verified), a pinned fingerprint, or the SSHFP
+// fallback when none is pinned.
+func sshHostKeyStatus(insecure bool, fingerprint string) string {
+	if insecure {
+		return "insecure (host-key verification disabled)"
+	}
+	if fingerprint == "" {
+		return "(none pinned; verified via DNS SSHFP)"
+	}
+	return fingerprint
+}
+
 // addInstance adds the Proxmox instance described by the "instance add" flags.
 func addInstance(
 	ctx context.Context,
@@ -252,6 +302,18 @@ func addInstance(
 	sshHost, sshPort, err := parseExplicitSSHHost(cmd.String("ssh-host"))
 	if err != nil {
 		return err
+	}
+
+	// A pinned SSH host-key fingerprint, if the administrator supplied one.
+	// Validated here so a malformed value is rejected before anything is
+	// stored. When empty, the host key is verified against DNSSEC-validated
+	// SSHFP records instead.
+	var sshFingerprint string
+	if fp := cmd.String("ssh-fingerprint"); fp != "" {
+		sshFingerprint, err = sshhostkey.NormalizeFingerprint(fp)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Resolve the node name from the API.
@@ -284,9 +346,14 @@ func addInstance(
 		APITokenSecret:   cmd.String("token-secret"),
 		ConsoleTransport: connType,
 		Node:             nodeName,
-		SSHHost:          sshHost,
-		SSHPort:          sshPort,
-		SSHUser:          cmd.String("ssh-user"),
+		// --insecure is shorthand for both; --insecure-tls / --insecure-ssh
+		// toggle each independently.
+		InsecureTLS:    cmd.Bool("insecure") || cmd.Bool("insecure-tls"),
+		InsecureSSH:    cmd.Bool("insecure") || cmd.Bool("insecure-ssh"),
+		SSHHost:        sshHost,
+		SSHPort:        sshPort,
+		SSHUser:        cmd.String("ssh-user"),
+		SSHFingerprint: sshFingerprint,
 	}
 
 	// Check that the key actually opens the host BEFORE storing anything,
@@ -299,15 +366,8 @@ func addInstance(
 	// make the obvious order impossible. So it prints the key and what to do
 	// with it, and adds the instance anyway.
 	if connType == models.ConsoleTransportSSH && inst.SSHHost != "" {
-		if err := checkSSHAccess(ctx, inst, sshKeyPEM); err != nil {
-			pub, pubErr := publicKeyLine(sshKeyPEM)
-			if pubErr != nil {
-				return fmt.Errorf("deriving the public key: %w", pubErr)
-			}
-			fmt.Fprintf(deps.ErrOut,
-				"Warning: %s is not reachable over SSH yet: %v\n"+
-					"Add this key to %s on %s, then run `instance inspect %s' to re-check:\n%s",
-				inst.SSHHost, err, authorizedKeysPath, inst.SSHHost, instName, pub)
+		if err := probeSSHAccessBeforeAdd(ctx, deps, inst, sshKeyPEM, instName); err != nil {
+			return err
 		}
 	}
 
@@ -348,6 +408,45 @@ func addInstance(
 			break
 		}
 	}
+	return nil
+}
+
+// probeSSHAccessBeforeAdd checks that the node is reachable over SSH before the
+// instance is stored, so a mistake is reported against the command that made
+// it rather than against the first guest somebody tries to reach.
+//
+// An unverifiable host key (no pinned fingerprint and no DNSSEC-validated
+// SSHFP) is fatal and returned, because the instance cannot be used over SSH
+// until the operator confirms and pins a fingerprint. Every other failure --
+// notably the public key not being installed on the host yet -- is NOT fatal:
+// the administrator installs the key by hand, and cannot do that before an
+// instance exists to name the host. Those print the key and what to do with
+// it and return nil, so the caller adds the instance anyway.
+func probeSSHAccessBeforeAdd(
+	ctx context.Context,
+	deps *Deps,
+	inst *models.ProxmoxInstance,
+	sshKeyPEM, instName string,
+) error {
+	err := checkSSHAccess(ctx, inst, sshKeyPEM)
+	if err == nil {
+		return nil
+	}
+
+	var noFP *sshhostkey.ErrNoFingerprint
+	if errors.As(err, &noFP) {
+		// The error already names the presented fingerprint and how to pin it.
+		return err
+	}
+
+	pub, pubErr := publicKeyLine(sshKeyPEM)
+	if pubErr != nil {
+		return fmt.Errorf("deriving the public key: %w", pubErr)
+	}
+	fmt.Fprintf(deps.ErrOut,
+		"Warning: %s is not reachable over SSH yet: %v\n"+
+			"Add this key to %s on %s, then run `instance inspect %s' to re-check:\n%s",
+		inst.SSHHost, err, authorizedKeysPath, inst.SSHHost, instName, pub)
 	return nil
 }
 

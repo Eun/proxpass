@@ -49,6 +49,12 @@ func instanceFromAPI(c *api.InstanceCredentials) *models.ProxmoxInstance {
 	if c.APITokenSecret != nil {
 		inst.APITokenSecret = *c.APITokenSecret
 	}
+	if c.InsecureTLS != nil {
+		inst.InsecureTLS = *c.InsecureTLS
+	}
+	if c.InsecureSSH != nil {
+		inst.InsecureSSH = *c.InsecureSSH
+	}
 	if c.SSHHost != nil {
 		inst.SSHHost = *c.SSHHost
 	}
@@ -57,6 +63,9 @@ func instanceFromAPI(c *api.InstanceCredentials) *models.ProxmoxInstance {
 	}
 	if c.SSHUser != nil {
 		inst.SSHUser = *c.SSHUser
+	}
+	if c.SSHFingerprint != nil {
+		inst.SSHFingerprint = *c.SSHFingerprint
 	}
 	return inst
 }

@@ -7,6 +7,7 @@ import (
 	ucli "github.com/urfave/cli/v3"
 
 	"proxpass/internal/models"
+	"proxpass/internal/sshhostkey"
 )
 
 // instanceUpdateCmd changes settings on an instance that already exists.
@@ -54,6 +55,21 @@ stored one describes the host that was there before.`,
 			},
 			&ucli.StringFlag{Name: "token-id", Usage: "API token ID"},
 			&ucli.StringFlag{Name: "token-secret", Usage: "API token secret"},
+			&ucli.BoolFlag{
+				Name: "insecure-tls",
+				Usage: "Skip TLS certificate verification (--insecure-tls) or " +
+					"re-enable it (--insecure-tls=false).",
+			},
+			&ucli.BoolFlag{
+				Name: "insecure-ssh",
+				Usage: "Skip SSH host-key verification (--insecure-ssh) or " +
+					"re-enable it (--insecure-ssh=false).",
+			},
+			&ucli.BoolFlag{
+				Name: "insecure",
+				Usage: "Shorthand that sets both --insecure-tls and " +
+					"--insecure-ssh (or clears both with --insecure=false).",
+			},
 			&ucli.StringFlag{
 				Name: "console-transport",
 				Usage: `How a guest CONSOLE is attached: "termproxy" or ` +
@@ -64,6 +80,11 @@ stored one describes the host that was there before.`,
 				Usage: `SSH host — "host" or "host:port"`,
 			},
 			&ucli.StringFlag{Name: "ssh-user", Usage: "SSH username"},
+			&ucli.StringFlag{
+				Name: "ssh-fingerprint",
+				Usage: `Pin the node's SSH host key as "SHA256:<base64>". ` +
+					`Pass "" to clear it and fall back to SSHFP.`,
+			},
 		},
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
 			return runInstanceUpdate(ctx, deps, cmd)
@@ -144,6 +165,30 @@ func applyInstanceFlags(cmd *ucli.Command, inst *models.ProxmoxInstance) error {
 	}
 	if cmd.IsSet("token-secret") {
 		inst.APITokenSecret = cmd.String("token-secret")
+	}
+	// --insecure is shorthand for both; --insecure-tls / --insecure-ssh set
+	// each independently and win over the shorthand when both are given.
+	if cmd.IsSet("insecure") {
+		inst.InsecureTLS = cmd.Bool("insecure")
+		inst.InsecureSSH = cmd.Bool("insecure")
+	}
+	if cmd.IsSet("insecure-tls") {
+		inst.InsecureTLS = cmd.Bool("insecure-tls")
+	}
+	if cmd.IsSet("insecure-ssh") {
+		inst.InsecureSSH = cmd.Bool("insecure-ssh")
+	}
+	if cmd.IsSet("ssh-fingerprint") {
+		fp := cmd.String("ssh-fingerprint")
+		if fp != "" {
+			normalized, err := sshhostkey.NormalizeFingerprint(fp)
+			if err != nil {
+				return err
+			}
+			fp = normalized
+		}
+		// An empty value deliberately clears the pin, falling back to SSHFP.
+		inst.SSHFingerprint = fp
 	}
 	if cmd.IsSet("console-transport") {
 		transport := models.ConsoleTransport(cmd.String("console-transport"))

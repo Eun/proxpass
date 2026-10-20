@@ -129,6 +129,16 @@ func (r *sqlRepo) Close() error {
 	return r.db.Close()
 }
 
+// boolToInt maps a Go bool to the 0/1 INTEGER used for boolean columns. The
+// schema stores booleans as INTEGER (not BOOLEAN) so one scan path serves both
+// SQLite and Postgres; see the session-token and 00010 migrations.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 // --- Proxmox Instances ---
 
 func (r *sqlRepo) AddProxmoxInstance(ctx context.Context, inst *models.ProxmoxInstance) error {
@@ -148,12 +158,14 @@ func (r *sqlRepo) AddProxmoxInstance(ctx context.Context, inst *models.ProxmoxIn
 	err := r.queryRow(ctx,
 		`INSERT INTO proxmox_instances
 		(name, api_url, api_token_id, api_token_secret, console_transport, node,
-		 ssh_host, ssh_port, ssh_user)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 insecure_tls, insecure_ssh, ssh_host, ssh_port, ssh_user, ssh_fingerprint)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		RETURNING id`,
 		inst.Name, inst.APIURL, inst.APITokenID, inst.APITokenSecret,
 		string(inst.ConsoleTransport), inst.Node,
+		boolToInt(inst.InsecureTLS), boolToInt(inst.InsecureSSH),
 		inst.SSHHost, inst.SSHPort, inst.SSHUser,
+		inst.SSHFingerprint,
 	).Scan(&inst.ID)
 	if err != nil {
 		if r.d.isUniqueViolation(err) {
@@ -175,7 +187,7 @@ func (r *sqlRepo) ListProxmoxInstances(ctx context.Context) ([]*models.ProxmoxIn
 		// its rowid reused.
 		`SELECT id, name, api_url, api_token_id, api_token_secret,
 		console_transport, node,
-		ssh_host, ssh_port, ssh_user
+		insecure_tls, insecure_ssh, ssh_host, ssh_port, ssh_user, ssh_fingerprint
 		FROM proxmox_instances ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -185,15 +197,21 @@ func (r *sqlRepo) ListProxmoxInstances(ctx context.Context) ([]*models.ProxmoxIn
 	for rows.Next() {
 		inst := &models.ProxmoxInstance{}
 		var connType string
+		// The insecure flags are stored as INTEGER (not BOOLEAN) so one scan
+		// path serves both SQLite and Postgres; see the 00010 migration.
+		var insecureTLS, insecureSSH int64
 		if err := rows.Scan(
 			&inst.ID, &inst.Name, &inst.APIURL,
 			&inst.APITokenID, &inst.APITokenSecret,
 			&connType, &inst.Node,
-			&inst.SSHHost, &inst.SSHPort, &inst.SSHUser,
+			&insecureTLS, &insecureSSH, &inst.SSHHost, &inst.SSHPort, &inst.SSHUser,
+			&inst.SSHFingerprint,
 		); err != nil {
 			return nil, err
 		}
 		inst.ConsoleTransport = models.ConsoleTransport(connType)
+		inst.InsecureTLS = insecureTLS != 0
+		inst.InsecureSSH = insecureSSH != 0
 		list = append(list, inst)
 	}
 	return list, rows.Err()
@@ -206,13 +224,14 @@ func (r *sqlRepo) UpdateProxmoxInstance(ctx context.Context, inst *models.Proxmo
 		`UPDATE proxmox_instances SET
 		name = ?, api_url = ?, api_token_id = ?,
 		api_token_secret = ?, console_transport = ?, node = ?,
-		ssh_host = ?, ssh_port = ?,
-		ssh_user = ?
+		insecure_tls = ?, insecure_ssh = ?, ssh_host = ?, ssh_port = ?,
+		ssh_user = ?, ssh_fingerprint = ?
 		WHERE id = ?`,
 		inst.Name, inst.APIURL, inst.APITokenID,
 		inst.APITokenSecret, string(inst.ConsoleTransport), inst.Node,
+		boolToInt(inst.InsecureTLS), boolToInt(inst.InsecureSSH),
 		inst.SSHHost, inst.SSHPort,
-		inst.SSHUser, inst.ID,
+		inst.SSHUser, inst.SSHFingerprint, inst.ID,
 	)
 	if err != nil && r.d.isUniqueViolation(err) {
 		if strings.Contains(err.Error(), "api_url") {

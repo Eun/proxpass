@@ -10,6 +10,7 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 
 	"proxpass/internal/models"
+	"proxpass/internal/sshhostkey"
 )
 
 // authorizedKeysPath is where the administrator installs proxpass's public
@@ -43,11 +44,11 @@ const sshCheckTimeout = 10 * time.Second
 // anything (a forced command, a disabled shell), and `pct enter' would then
 // fail at the first console connection instead of here.
 //
-// The host key is deliberately NOT verified, which matches how the console
-// connects today. Proxmox publishes no SSH host key or fingerprint over its
-// API -- every `fingerprint' field it exposes is a TLS certificate -- so
-// there is nothing to check it against yet. Changing that needs its own
-// change: pin the host key on first contact and store it per instance.
+// The host key is verified the same way every other SSH path is: against the
+// instance's pinned fingerprint if it has one, else against DNSSEC-validated
+// SSHFP records. Proxmox publishes no SSH host key over its API -- every
+// `fingerprint' field it exposes is a TLS certificate -- so there is nothing
+// to pin from the API; see internal/sshhostkey.
 func checkSSHAccess(ctx context.Context, inst *models.ProxmoxInstance, keyPEM string) error {
 	signer, err := gossh.ParsePrivateKey([]byte(keyPEM))
 	if err != nil {
@@ -70,7 +71,7 @@ func checkSSHAccess(ctx context.Context, inst *models.ProxmoxInstance, keyPEM st
 	clientConn, chans, reqs, err := gossh.NewClientConn(conn, addr, &gossh.ClientConfig{
 		User:            inst.SSHUser,
 		Auth:            []gossh.AuthMethod{gossh.PublicKeys(signer)},
-		HostKeyCallback: gossh.InsecureIgnoreHostKey(), //nolint:gosec // see the doc comment: Proxmox publishes no SSH host key to check against.
+		HostKeyCallback: sshhostkey.Callback(inst.SSHHost, inst.SSHFingerprint, inst.InsecureSSH),
 		Timeout:         sshCheckTimeout,
 	})
 	if err != nil {

@@ -445,10 +445,18 @@ func (h *SessionHandler) instanceCredentials(inst *models.ProxmoxInstance) (Inst
 	setIfNotEmpty(&out.APITokenSecret, inst.APITokenSecret)
 	setIfNotEmpty(&out.SSHHost, inst.SSHHost)
 	setIfNotEmpty(&out.SSHUser, inst.SSHUser)
+	setIfNotEmpty(&out.SSHFingerprint, inst.SSHFingerprint)
 	if inst.SSHPort != 0 {
 		port := inst.SSHPort
 		out.SSHPort = &port
 	}
+	// Carry both insecure flags so the session verifies (or skips verifying)
+	// TLS and SSH exactly as the stored instance does. Always set them, even
+	// when false, so a verified instance is never silently treated as insecure.
+	insecureTLS := inst.InsecureTLS
+	out.InsecureTLS = &insecureTLS
+	insecureSSH := inst.InsecureSSH
+	out.InsecureSSH = &insecureSSH
 
 	// The deployment's key, which is the only one there is.
 	//

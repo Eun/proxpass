@@ -45,20 +45,32 @@ func NewAPIClient(inst *models.ProxmoxInstance) (*APIClient, error) {
 		tokenID:     inst.APITokenID,
 		tokenSecret: inst.APITokenSecret,
 		sshHost:     inst.SSHHost,
-		httpClient: &http.Client{
-			// Never follow redirects. Proxmox can redirect to a URL that
-			// drops the port (e.g. https://host:8006 → https://host),
-			// which would silently connect to port 443 instead.
-			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{
-					InsecureSkipVerify: true, //nolint:gosec // Proxmox often uses self-signed certs
-				},
-			},
-		},
+		httpClient:  newHTTPClient(inst.InsecureTLS),
 	}, nil
+}
+
+// newHTTPClient builds the *http.Client used for every REST call and the
+// termproxy ticket POST. TLS certificate verification is ON unless insecure is
+// set -- a Proxmox host with a self-signed certificate (the stock config) must
+// either present a trusted certificate or be added with --insecure.
+func newHTTPClient(insecure bool) *http.Client {
+	var tlsConfig *tls.Config
+	if insecure {
+		tlsConfig = &tls.Config{
+			InsecureSkipVerify: true, //nolint:gosec // opt-in per instance via --insecure; Proxmox often uses self-signed certs
+		}
+	}
+	return &http.Client{
+		// Never follow redirects. Proxmox can redirect to a URL that drops the
+		// port (e.g. https://host:8006 → https://host), which would silently
+		// connect to port 443 instead.
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Transport: &http.Transport{
+			TLSClientConfig: tlsConfig,
+		},
+	}
 }
 
 // DiscoverGuests fetches LXC containers and QEMU VMs from the single cluster
@@ -372,18 +384,10 @@ func parsePVEVersion(v string) ([3]int, error) {
 	return out, nil
 }
 
-// InsecureHTTPClient returns an *http.Client that skips TLS certificate
-// verification. Used by the termproxy WebSocket dialer to connect to
-// Proxmox hosts that use self-signed certificates.
-func InsecureHTTPClient() *http.Client {
-	return &http.Client{
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true, //nolint:gosec // Proxmox self-signed certs
-			},
-		},
-	}
+// HTTPClient returns the *http.Client the termproxy WebSocket dialer should
+// use. It mirrors the REST client: TLS certificate verification is on unless
+// insecure is set (pass inst.Insecure), so a verified instance verifies its
+// console connection too.
+func HTTPClient(insecure bool) *http.Client {
+	return newHTTPClient(insecure)
 }

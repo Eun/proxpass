@@ -316,6 +316,15 @@ ssh -p 2222 admin@proxpass instance add \
   --token-id "user@pam!token" \
   --token-secret "uuid"
 
+# A Proxmox host serving its stock self-signed certificate: TLS verification
+# is ON by default, so either present a trusted certificate or add
+# --insecure-tls (TLS and SSH each have their own toggle; --insecure sets both).
+ssh -p 2222 admin@proxpass instance add \
+  --url https://pve:8006 \
+  --token-id "user@pam!token" \
+  --token-secret "uuid" \
+  --insecure-tls
+
 # Attach consoles over SSH (pct enter) instead of the termproxy websocket.
 # No key flag: proxpass uses its own key (see "The Proxmox SSH key" below).
 # --ssh-host is optional and is NEVER derived from --url: when omitted the
@@ -345,6 +354,12 @@ ssh -p 2222 admin@proxpass instance update --name pve1 --token-id "user@pam!new"
 ssh -p 2222 admin@proxpass instance update --name pve1 --rename pve-old
 
 ssh -p 2222 admin@proxpass instance rm --name pve1
+
+# Pin a node's SSH host key when it has no DNSSEC-validated SSHFP record.
+# Adding an ssh-transport instance fails with the presented fingerprint when
+# the host key cannot be verified; confirm it out of band, then pin it:
+ssh -p 2222 admin@proxpass instance update --name pve1 \
+  --ssh-fingerprint "SHA256:abc123...the/value/printed/by/the/failure"
 
 # List and connect to guests
 ssh -p 2222 admin@proxpass guest ls
@@ -543,6 +558,40 @@ Proxmox credential stays out of a table an admin session can read through
 `/admin/rpc`. `PROXPASS_SSH_KEY_FILE` points at a different file for a
 deployment that manages its own key; nothing is generated when that file
 already exists.
+
+### Verifying Proxmox connections
+
+proxpass authenticates the Proxmox end of every connection, so a
+man-in-the-middle between proxpass and a node is detected rather than silently
+trusted.
+
+TLS (the API/console) and SSH (node connections) are separate connections with
+separate trust, so each has its **own** independent insecure toggle.
+`--insecure` is a shorthand that sets both.
+
+**TLS (REST API and termproxy console).** Certificates are verified against the
+system trust store by default. A Proxmox host serving its stock self-signed
+certificate must either present one proxpass trusts or be added with
+`--insecure-tls` (stored per instance; toggle later with `instance update
+--insecure-tls` / `--insecure-tls=false`).
+
+**SSH host keys (node shell, SFTP, file transfer).** The node's host key is
+verified in two ways, in order:
+
+1. A fingerprint pinned on the instance (`--ssh-fingerprint "SHA256:<base64>"`),
+   which the presented key must match exactly.
+2. DNS **SSHFP** records (RFC 4255) for the node, which must be
+   **DNSSEC-validated** — the same guarantee OpenSSH's `VerifyHostKeyDNS=yes`
+   relies on. Set `PROXPASS_SSHFP_REQUIRE_DNSSEC=0` to accept SSHFP records from
+   a trusted resolver without DNSSEC (weaker).
+
+When neither verifies the key, an ssh-transport `instance add` **fails** and
+prints the presented fingerprint. Confirm it out of band, then pin it with
+`--ssh-fingerprint` (on `add`, or afterwards with `instance update`). Proxmox
+publishes no SSH host key through its API, so there is nothing to pin from the
+API itself — this is why a fingerprint or an SSHFP record is required. On a
+trusted path you can instead skip host-key verification entirely with
+`--insecure-ssh`.
 
 > **Upgrading:** instances added before this could carry their own key, and
 > the migration that removes the columns **discards it**. Such an instance

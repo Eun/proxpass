@@ -13,6 +13,7 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 
 	"proxpass/internal/models"
+	"proxpass/internal/sshhostkey"
 )
 
 // NodeRunner runs commands on a Proxmox node over SSH.
@@ -31,11 +32,11 @@ type NodeRunner struct {
 
 // DialNode opens an SSH connection to the instance's Proxmox host.
 //
-// The host key is not verified, matching the console path. Proxmox publishes
-// no SSH host key or fingerprint through its API -- every `fingerprint' field
-// it exposes belongs to a TLS certificate -- so there is nothing to check
-// against yet. Fixing that is its own change: pin on first contact and store
-// the key per instance.
+// The host key is verified against the instance's pinned fingerprint if it has
+// one, else against DNSSEC-validated SSHFP records. Proxmox publishes no SSH
+// host key through its API -- every `fingerprint' field it exposes belongs to
+// a TLS certificate -- so there is nothing to pin from the API; see
+// internal/sshhostkey.
 func DialNode(inst *models.ProxmoxInstance, sshKey string, logger *log.Logger) (*NodeRunner, error) {
 	signer, err := gossh.ParsePrivateKey([]byte(sshKey))
 	if err != nil {
@@ -45,7 +46,7 @@ func DialNode(inst *models.ProxmoxInstance, sshKey string, logger *log.Logger) (
 	client, err := gossh.Dial("tcp", addr, &gossh.ClientConfig{
 		User:            inst.SSHUser,
 		Auth:            []gossh.AuthMethod{gossh.PublicKeys(signer)},
-		HostKeyCallback: gossh.InsecureIgnoreHostKey(), //nolint:gosec // see the doc comment.
+		HostKeyCallback: sshhostkey.Callback(inst.SSHHost, inst.SSHFingerprint, inst.InsecureSSH),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dialing proxmox %s: %w", addr, err)
