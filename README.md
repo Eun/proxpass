@@ -318,7 +318,9 @@ ssh -p 2222 admin@proxpass instance add \
 
 # Attach consoles over SSH (pct enter) instead of the termproxy websocket.
 # No key flag: proxpass uses its own key (see "The Proxmox SSH key" below).
-# --ssh-host is optional: when omitted the hostname from --url is used (pve, port 22).
+# --ssh-host is optional and is NEVER derived from --url: when omitted the
+# instance has no SSH host, so node shell, SFTP and file transfer stay
+# disabled until you set one (the termproxy console works regardless).
 # An explicit --ssh-host may include a port: --ssh-host pve:2222
 ssh -p 2222 admin@proxpass instance add \
   --url https://pve:8006 \
@@ -337,8 +339,8 @@ ssh -p 2222 admin@proxpass instance add \
 
 # Add multiple instances in one call.
 # --name and --ssh-host are disallowed with multiple --url.
-# Each instance is named after its Proxmox node name; SSH host is derived
-# from the hostname in each --url (port 22).
+# Each instance is named after its Proxmox node name and starts with no SSH
+# host; set one per instance afterwards with `instance update --ssh-host`.
 ssh -p 2222 admin@proxpass instance add \
   --url https://pve1:8006 \
   --url https://pve2:8006 \

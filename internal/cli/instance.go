@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
-	"strings"
 
 	"proxpass/internal/models"
 	"proxpass/internal/proxmox"
@@ -56,14 +54,16 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen,gocyclo //
 
 When a single --url is supplied:
   - --name optionally overrides the automatically resolved node name.
-  - --ssh-host optionally overrides the SSH host/port derived from --url.
-    Accepts "host" or "host:port"; when omitted, the hostname from --url is
-    used with the default SSH port (22).
+  - --ssh-host optionally sets the SSH host/port for node shell, SFTP and
+    file transfer. Accepts "host" or "host:port" (port defaults to 22). It is
+    NOT derived from --url; when omitted the instance has no SSH host and those
+    features stay disabled until you set one with "instance update --ssh-host".
+    The termproxy console works either way.
 
 When multiple --url flags are supplied:
   - --name is disallowed; each instance is named after its Proxmox node name.
-  - --ssh-host is disallowed; each instance's SSH host is derived from the
-    hostname in its --url, with the default SSH port (22).`,
+  - --ssh-host is disallowed; add instances one at a time to give each its own
+    SSH host, or set it afterwards with "instance update --ssh-host".`,
 				Flags: []ucli.Flag{
 					&ucli.StringFlag{
 						Name:  flagName,
@@ -87,7 +87,8 @@ When multiple --url flags are supplied:
 					&ucli.StringFlag{
 						Name: "ssh-host",
 						Usage: "SSH host — \"host\" or \"host:port\" (single --url only)." +
-							" When omitted the hostname from --url is used with port 22." +
+							" Enables node shell, SFTP and file transfer; not derived" +
+							" from --url, so when omitted the instance has no SSH host." +
 							" Disallowed when multiple --url flags are given.",
 					},
 					&ucli.StringFlag{Name: "ssh-user", Value: "root", Usage: "SSH username"},
@@ -106,7 +107,8 @@ When multiple --url flags are supplied:
 					if multiURL && cmd.String("ssh-host") != "" {
 						return fmt.Errorf(
 							"--ssh-host cannot be used when multiple --url flags are specified;" +
-								" the SSH host is derived from the hostname in each --url",
+								" add them one at a time to give each its own SSH host," +
+								" or set it afterwards with `instance update --ssh-host`",
 						)
 					}
 
@@ -241,41 +243,26 @@ When multiple --url flags are supplied:
 	}
 }
 
-// sshHostFromURL extracts the hostname (without port) from a Proxmox API URL
-// for use as the default SSH host when --ssh-host is not specified.
-// e.g. "https://pve1:8006" -> "pve1".
-func sshHostFromURL(rawURL string) (string, error) {
-	parsed, err := url.Parse(strings.TrimRight(rawURL, "/"))
-	if err != nil {
-		return "", err
-	}
-	host := parsed.Hostname() // strips port if present
-	if host == "" {
-		return "", fmt.Errorf("cannot derive SSH host from URL %q: missing host", rawURL)
-	}
-	return host, nil
-}
-
-// resolveSSHHostPort determines the SSH host and port for a single instance.
+// parseExplicitSSHHost parses the SSH host and port from an explicit
+// --ssh-host value. An empty value yields an empty host and a zero port,
+// deliberately: the SSH host is NEVER derived from --url, because the API URL
+// is just as often a bare IP or an address that does not resolve from where
+// proxpass runs. An instance with no SSH host is a valid, handled state --
+// its termproxy console still works, and node shell / SFTP / file transfer
+// are cleanly refused until an admin sets a host with `instance update
+// --ssh-host`.
 //
-// When multiURL is true (or explicitSSHHost is empty) the SSH host is derived
-// from the hostname in rawURL and the port defaults to 22.
-// When explicitSSHHost is non-empty it is parsed as "host" or "host:port".
-func resolveSSHHostPort(explicitSSHHost, rawURL string, multiURL bool) (host string, port int, err error) {
-	if !multiURL && explicitSSHHost != "" {
-		// Explicit --ssh-host: parse it, honoring an optional :port.
-		h, p, parseErr := parseHostPort(explicitSSHHost, 22)
-		if parseErr != nil {
-			return "", 0, fmt.Errorf("invalid --ssh-host: %w", parseErr)
-		}
-		return h, p, nil
+// A non-empty value is parsed as "host" or "host:port"; the port defaults to
+// 22 when omitted.
+func parseExplicitSSHHost(explicitSSHHost string) (host string, port int, err error) {
+	if explicitSSHHost == "" {
+		return "", 0, nil
 	}
-	// Derive SSH host from the API URL hostname; always use port 22.
-	h, urlErr := sshHostFromURL(rawURL)
-	if urlErr != nil {
-		return "", 0, fmt.Errorf("deriving SSH host from --url: %w", urlErr)
+	h, p, parseErr := parseHostPort(explicitSSHHost, 22)
+	if parseErr != nil {
+		return "", 0, fmt.Errorf("invalid --ssh-host: %w", parseErr)
 	}
-	return h, 22, nil
+	return h, p, nil
 }
 
 // addSingleInstance handles adding one Proxmox instance for the given rawURL.
@@ -288,20 +275,15 @@ func addSingleInstance( //nolint:cyclop // multi-URL dispatch adds branching
 	rawURL string,
 	sshKeyPEM string,
 ) error {
-	multiURL := len(cmd.StringSlice("url")) > 1
-
 	// Determine the SSH host and port.
 	//
-	// Priority (single --url):
-	//   1. --ssh-host "host" or "host:port"  → use as-is
-	//   2. (omitted)                          → hostname from --url, port 22
-	//
-	// Multiple --url: always derive from --url hostname, port 22.
-	// (--ssh-host is already rejected above for the multi-URL case.)
-	// Always, whatever the console transport. The node is the same machine
-	// either way, and file transfer reaches it over SSH even when consoles
-	// go through the websocket.
-	sshHost, sshPort, err := resolveSSHHostPort(cmd.String("ssh-host"), rawURL, multiURL)
+	// --ssh-host "host" or "host:port" is used as-is. When it is omitted the
+	// instance has no SSH host at all: it is NEVER derived from --url, because
+	// the API address is just as often a bare IP or an alias that does not
+	// resolve from where proxpass runs. The termproxy console works without
+	// it; node shell / SFTP / file transfer are cleanly refused until an admin
+	// sets a host with `instance update --ssh-host`.
+	sshHost, sshPort, err := parseExplicitSSHHost(cmd.String("ssh-host"))
 	if err != nil {
 		return err
 	}
@@ -417,9 +399,9 @@ func checkTermProxyVersion(ctx context.Context, apiURL, tokenID, tokenSecret str
 // Proxmox node name that should be stored with this instance.
 //
 // When sshHost is non-empty it is matched against the cluster node list
-// (exact or FQDN-prefix match). When sshHost is empty and the cluster has
-// exactly one node that node is used automatically; otherwise an error is
-// returned asking the caller to supply --ssh-host for disambiguation.
+// (exact or FQDN-prefix match). When sshHost is empty, or when it matches no
+// node, the node that served the API request (--api-url points at exactly one
+// node) is used. See proxmox.APIClient.ResolveNodeName.
 func resolveInstanceNode(ctx context.Context, apiURL, tokenID, tokenSecret, sshHost string) (string, error) {
 	inst := &models.ProxmoxInstance{
 		APIURL:         apiURL,

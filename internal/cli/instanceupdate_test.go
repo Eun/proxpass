@@ -114,24 +114,29 @@ func TestUpdateSSHHostAcceptsAPort(t *testing.T) {
 	}
 }
 
-// TestUpdateURLRederivesTheSSHHost checks that the two do not drift apart.
-//
-// The SSH host was derived from the URL when the instance was added, so
-// moving the URL without moving it would leave the instance pointing its API
-// at one machine and its file transfers at another.
-func TestUpdateURLRederivesTheSSHHost(t *testing.T) {
+// TestUpdateURLLeavesTheSSHHostUntouched pins the decision that --url never
+// touches the SSH host. The host is never derived from the API URL -- the API
+// address is just as often a bare IP or an alias that does not resolve from
+// where proxpass runs -- so moving the URL must leave the stored SSH host
+// exactly as it was. (--url still re-resolves the node name; that is a
+// separate, network-touching step not exercised here.)
+func TestUpdateURLLeavesTheSSHHostUntouched(t *testing.T) {
 	_, inst := seedInstance(t)
+	before := inst.SSHHost
+	beforePort := inst.SSHPort
 	if err := updateFlags(t, inst, "--url", "https://pve9.example.com:8006"); err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if inst.SSHHost != "pve9.example.com" {
-		t.Fatalf("ssh host = %q, want pve9.example.com", inst.SSHHost)
+	if inst.SSHHost != before || inst.SSHPort != beforePort {
+		t.Fatalf("ssh target = %s:%d, want it unchanged at %s:%d",
+			inst.SSHHost, inst.SSHPort, before, beforePort)
 	}
 }
 
-// TestUpdateURLKeepsAnExplicitSSHHost is the other half: when both are given,
-// the explicit one wins rather than being overwritten by the derivation.
-func TestUpdateURLKeepsAnExplicitSSHHost(t *testing.T) {
+// TestUpdateChangesTheSSHHostIndependentlyOfURL is the other half: --url and
+// --ssh-host are independent, so an explicit --ssh-host sets the host whether
+// or not --url is also given.
+func TestUpdateChangesTheSSHHostIndependentlyOfURL(t *testing.T) {
 	_, inst := seedInstance(t)
 	if err := updateFlags(t, inst,
 		"--url", "https://pve9.example.com:8006",

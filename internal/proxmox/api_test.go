@@ -218,3 +218,34 @@ func TestResolveNodeNameLocalNode(t *testing.T) {
 		t.Errorf("node: got %q, want %q", node, "rome")
 	}
 }
+
+// TestResolveNodeNameFallsBackToLocalWhenSSHHostMatchesNoNode verifies that a
+// non-empty ssh-host that matches no node name falls back to the local node
+// (served by this API request) instead of failing. This is the IP-address
+// case: "10.208.13.5" can never equal or prefix a short node name like
+// "pve-ravioli", but --api-url already points at exactly that node.
+func TestResolveNodeNameFallsBackToLocalWhenSSHHostMatchesNoNode(t *testing.T) {
+	api := testenv.NewMockAPIServer(testTokenID, testTokenSecret)
+	defer api.Close()
+	api.AddLXC("pve-ravioli", 100, "ct1", "running")
+	api.SetLocalNode("pve-ravioli")
+
+	inst := &models.ProxmoxInstance{
+		APIURL:         api.URL(),
+		APITokenID:     testTokenID,
+		APITokenSecret: testTokenSecret,
+		SSHHost:        "10.208.13.5",
+	}
+	client, err := proxmox.NewAPIClient(inst)
+	if err != nil {
+		t.Fatalf("NewAPIClient: %v", err)
+	}
+
+	node, err := client.ResolveNodeName(context.Background(), "10.208.13.5")
+	if err != nil {
+		t.Fatalf("ResolveNodeName: %v", err)
+	}
+	if node != "pve-ravioli" {
+		t.Errorf("node: got %q, want %q", node, "pve-ravioli")
+	}
+}
