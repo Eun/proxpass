@@ -90,7 +90,8 @@ func buildNodeSCPHelper(t *testing.T, mock *testenv.MockSSHServer) string {
 	// writing one directly trips the repository's file-permission lint.
 	script := filepath.Join(dir, "run.sh")
 	body := "#!/bin/sh\nexec " + bin + " " + mock.Host + " " +
-		strconv.Itoa(mock.Port) + " " + mock.User + " " + mock.KeyPath + "\n"
+		strconv.Itoa(mock.Port) + " " + mock.User + " " + mock.KeyPath + " " +
+		mock.HostKeyFingerprint() + "\n"
 	if err := os.WriteFile(script, []byte(body), 0o600); err != nil {
 		t.Fatalf("write wrapper: %v", err)
 	}

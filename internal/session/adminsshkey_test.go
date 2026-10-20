@@ -1,6 +1,7 @@
 package session_test
 
 import (
+	"errors"
 	"io"
 	"log"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"proxpass/internal/api"
 	"proxpass/internal/models"
 	"proxpass/internal/session"
+	"proxpass/internal/sshhostkey"
 	"proxpass/internal/testenv"
 )
 
@@ -105,9 +107,56 @@ func TestCheckInstanceSSHAccessReachesTheHost(t *testing.T) {
 		SSHHost:          srv.Host,
 		SSHPort:          srv.Port,
 		SSHUser:          srv.User,
+		// Pin the mock host key: a test host publishes no SSHFP, so without a
+		// pin the server-side dial would fall back to a failing DNS lookup.
+		SSHFingerprint: srv.HostKeyFingerprint(),
 	}
 	if err := remote.CheckInstanceSSHAccess(t.Context(), inst); err != nil {
 		t.Fatalf("expected the configured key to open the host: %v", err)
+	}
+}
+
+// TestCheckInstanceSSHAccessCarriesTheNoFingerprintCase is the crux of the
+// merge with the host-key-verification feature: when the host key cannot be
+// verified (no pinned fingerprint, no SSHFP), the server-side dial fails with
+// a *sshhostkey.ErrNoFingerprint, and that TYPED error must survive the
+// loopback API so the CLI's errors.As check still treats the add as fatal. A
+// plain string would lose the type, so the op carries the host + fingerprint
+// as structured data and the client rebuilds the error.
+func TestCheckInstanceSSHAccessCarriesTheNoFingerprintCase(t *testing.T) {
+	// Require DNSSEC off is irrelevant here: 127.0.0.1 has no SSHFP record at
+	// all, so the lookup returns "none" regardless and the callback produces
+	// ErrNoFingerprint.
+	srv, err := testenv.NewMockSSHServer()
+	if err != nil {
+		t.Fatalf("starting the mock host: %v", err)
+	}
+	defer srv.Close()
+	t.Setenv(models.SSHKeyPathEnv, srv.KeyPath)
+
+	remote := newAdminSSHRepo(t)
+	inst := &models.ProxmoxInstance{
+		Name:             instPVE,
+		ConsoleTransport: models.ConsoleTransportSSH,
+		SSHHost:          srv.Host,
+		SSHPort:          srv.Port,
+		SSHUser:          srv.User,
+		// No SSHFingerprint and no InsecureSSH: force the unverifiable path.
+	}
+	err = remote.CheckInstanceSSHAccess(t.Context(), inst)
+	if err == nil {
+		t.Fatal("expected an unverifiable host key to be refused")
+	}
+	var noFP *sshhostkey.ErrNoFingerprint
+	if !errors.As(err, &noFP) {
+		t.Fatalf("expected a *sshhostkey.ErrNoFingerprint across the API, got %T: %v", err, err)
+	}
+	// The reconstructed error must still carry what the operator pins.
+	if noFP.Host != srv.Host {
+		t.Errorf("host not preserved: got %q, want %q", noFP.Host, srv.Host)
+	}
+	if !strings.HasPrefix(noFP.Fingerprint, "SHA256:") {
+		t.Errorf("expected a SHA256 fingerprint to pin, got %q", noFP.Fingerprint)
 	}
 }
 
@@ -136,6 +185,9 @@ func TestCheckInstanceSSHAccessReportsAnUninstalledKey(t *testing.T) {
 		SSHHost:          srv.Host,
 		SSHPort:          srv.Port,
 		SSHUser:          srv.User,
+		// Pin the host key so verification passes and the dial reaches the
+		// auth step -- the failure under test is the uninstalled client key.
+		SSHFingerprint: srv.HostKeyFingerprint(),
 	}
 	err = remote.CheckInstanceSSHAccess(t.Context(), inst)
 	if err == nil {

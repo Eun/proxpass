@@ -12,6 +12,7 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 
 	"proxpass/internal/models"
+	"proxpass/internal/sshhostkey"
 )
 
 // connectSSH attaches the terminal to a guest console by SSHing into the
@@ -105,7 +106,7 @@ func runSSHConsole(
 	remote, err := gossh.Dial("tcp", addr, &gossh.ClientConfig{
 		User:            inst.SSHUser,
 		Auth:            []gossh.AuthMethod{gossh.PublicKeys(signer)},
-		HostKeyCallback: gossh.InsecureIgnoreHostKey(), //nolint:gosec // Proxmox host verification is out of scope.
+		HostKeyCallback: sshhostkey.Callback(inst.SSHHost, inst.SSHFingerprint, inst.InsecureSSH),
 	})
 	if err != nil {
 		return fmt.Errorf("dialing proxmox %s: %w", addr, err)

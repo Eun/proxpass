@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 
 	"proxpass/internal/models"
+	"proxpass/internal/sshhostkey"
 )
 
 // The SSH key file surface.
@@ -59,19 +61,34 @@ func getSSHPublicKey(context.Context, json.RawMessage) (json.RawMessage, error) 
 // sshAccessResult reports whether the deployment key opens a session on an
 // instance's host. Err carries the reason when it does not, so the CLI can
 // print the same diagnostic it printed when it dialed the host itself.
+//
+// NoFingerprint is set, instead of Err, for the one failure the CLI treats as
+// FATAL rather than a warning: the host key could not be verified because the
+// instance has no pinned fingerprint and the host publishes no DNSSEC-validated
+// SSHFP record. It is carried as structured data so the session can rebuild a
+// *sshhostkey.ErrNoFingerprint on the far side and errors.As keeps working
+// across the loopback API -- the private key, and the dial, stay here in root.
 type sshAccessResult struct {
-	OK  bool   `json:"ok"`
-	Err string `json:"err,omitempty"`
+	OK            bool               `json:"ok"`
+	Err           string             `json:"err,omitempty"`
+	NoFingerprint *noFingerprintData `json:"no_fingerprint,omitempty"`
+}
+
+// noFingerprintData mirrors the fields of sshhostkey.ErrNoFingerprint so the
+// CLI can reconstruct that typed error from the JSON response.
+type noFingerprintData struct {
+	Host        string `json:"host"`
+	Fingerprint string `json:"fingerprint"`
 }
 
 // checkInstanceSSHAccess dials the instance's host with the deployment key, as
 // root, and reports whether a session opens.
 //
 // It runs here rather than in the session because only root can read the
-// private key the dial needs. The check itself is unchanged from what the CLI
-// used to do in-process (see cli.checkSSHAccess): authenticate and open a
-// session, host key deliberately unverified, because Proxmox publishes no SSH
-// host key to check against.
+// private key the dial needs. The check itself matches what the CLI used to do
+// in-process (see cli.checkSSHAccess before it moved here): authenticate and
+// open a session, with the host key verified against the instance's pinned
+// fingerprint or DNSSEC-validated SSHFP records (see internal/sshhostkey).
 func checkInstanceSSHAccess(ctx context.Context, p json.RawMessage) (json.RawMessage, error) {
 	var args struct {
 		Instance *models.ProxmoxInstance `json:"instance"`
@@ -98,6 +115,16 @@ func checkInstanceSSHAccess(ctx context.Context, p json.RawMessage) (json.RawMes
 	if err := dialSSHSession(ctx, args.Instance, pem); err != nil {
 		out.OK = false
 		out.Err = err.Error()
+		// Preserve the fatal/warning distinction: an unverifiable host key is
+		// carried structured so the CLI can rebuild the typed error and refuse
+		// the add, rather than treating it as a "not installed yet" warning.
+		var noFP *sshhostkey.ErrNoFingerprint
+		if errors.As(err, &noFP) {
+			out.NoFingerprint = &noFingerprintData{
+				Host:        noFP.Host,
+				Fingerprint: noFP.Fingerprint,
+			}
+		}
 	}
 	return encodeResult(out)
 }
@@ -116,9 +143,11 @@ const sshCheckTimeout = 10 * time.Second
 // disabled shell), and that should be reported here rather than at the first
 // console connection.
 //
-// The host key is deliberately NOT verified: Proxmox publishes no SSH host key
-// over its API, so there is nothing to check it against. Pinning it on first
-// contact would be its own change.
+// The host key is verified exactly as every other SSH path verifies it: via
+// sshhostkey.Callback against the instance's pinned fingerprint if it has one,
+// else DNSSEC-validated SSHFP records, unless the instance opts out with
+// --insecure-ssh. An unverifiable host key surfaces as *sshhostkey.ErrNoFingerprint,
+// which the caller turns into a fatal, actionable error.
 func dialSSHSession(ctx context.Context, inst *models.ProxmoxInstance, keyPEM string) error {
 	signer, err := gossh.ParsePrivateKey([]byte(keyPEM))
 	if err != nil {
@@ -140,7 +169,7 @@ func dialSSHSession(ctx context.Context, inst *models.ProxmoxInstance, keyPEM st
 	clientConn, chans, reqs, err := gossh.NewClientConn(conn, addr, &gossh.ClientConfig{
 		User:            inst.SSHUser,
 		Auth:            []gossh.AuthMethod{gossh.PublicKeys(signer)},
-		HostKeyCallback: gossh.InsecureIgnoreHostKey(), //nolint:gosec // Proxmox publishes no SSH host key to check against.
+		HostKeyCallback: sshhostkey.Callback(inst.SSHHost, inst.SSHFingerprint, inst.InsecureSSH),
 		Timeout:         sshCheckTimeout,
 	})
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 	"proxpass/internal/api"
 	"proxpass/internal/db"
 	"proxpass/internal/models"
+	"proxpass/internal/sshhostkey"
 )
 
 // AdminRepository is a db.Repository served by the loopback API.
@@ -310,19 +311,35 @@ func (r *AdminRepository) SSHPublicKey(ctx context.Context) (pub, path string, e
 // CheckInstanceSSHAccess reports whether the deployment key opens a session on
 // the instance's host. A non-nil error is the reason it does not, suitable for
 // printing; a nil error means the host is reachable.
+//
+// An unverifiable host key is rebuilt as a *sshhostkey.ErrNoFingerprint so the
+// CLI's errors.As check still recognizes the fatal case across the API: the
+// serve side carries the host and presented fingerprint as structured data
+// rather than as a plain string, because the message alone cannot be
+// re-typed.
 func (r *AdminRepository) CheckInstanceSSHAccess(ctx context.Context, inst *models.ProxmoxInstance) error {
 	var out struct {
-		OK  bool   `json:"ok"`
-		Err string `json:"err"`
+		OK            bool   `json:"ok"`
+		Err           string `json:"err"`
+		NoFingerprint *struct {
+			Host        string `json:"host"`
+			Fingerprint string `json:"fingerprint"`
+		} `json:"no_fingerprint"`
 	}
 	if err := r.call(ctx, "CheckInstanceSSHAccess",
 		map[string]any{keyInstance: inst}, &out); err != nil {
 		return err
 	}
-	if !out.OK {
-		return errors.New(out.Err)
+	if out.OK {
+		return nil
 	}
-	return nil
+	if out.NoFingerprint != nil {
+		return &sshhostkey.ErrNoFingerprint{
+			Host:        out.NoFingerprint.Host,
+			Fingerprint: out.NoFingerprint.Fingerprint,
+		}
+	}
+	return errors.New(out.Err)
 }
 
 // --- Admin keys ---

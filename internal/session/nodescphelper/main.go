@@ -33,8 +33,11 @@ func main() {
 }
 
 func run(args []string) error {
-	if len(args) != 4 {
-		return errors.New("usage: nodescphelper <host> <port> <user> <keyfile>")
+	// The 5th argument is the node's SSH host-key fingerprint (SHA256:...).
+	// It is required because DialNode now verifies the host key, and a test
+	// host publishes no SSHFP: the fixture pins the mock server's fingerprint.
+	if len(args) != 5 {
+		return errors.New("usage: nodescphelper <host> <port> <user> <keyfile> <ssh-fingerprint>")
 	}
 	port, err := strconv.Atoi(args[1])
 	if err != nil {
@@ -46,7 +49,7 @@ func run(args []string) error {
 	}
 
 	logger := log.New(io.Discard, "", 0)
-	runner, err := console.DialNode(nodeInstance(args[0], port, args[2]), key, logger)
+	runner, err := console.DialNode(nodeInstance(args[0], port, args[2], args[4]), key, logger)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
@@ -79,10 +82,12 @@ func readKey(path string) (string, error) {
 	return string(b), nil
 }
 
-// nodeInstance builds the minimal instance DialNode needs.
-func nodeInstance(host string, port int, user string) *models.ProxmoxInstance {
+// nodeInstance builds the minimal instance DialNode needs, including the
+// pinned host-key fingerprint so verification succeeds against the test host.
+func nodeInstance(host string, port int, user, fingerprint string) *models.ProxmoxInstance {
 	return &models.ProxmoxInstance{
 		Name: "test-node", Node: "test-node",
 		SSHHost: host, SSHPort: port, SSHUser: user,
+		SSHFingerprint: fingerprint,
 	}
 }

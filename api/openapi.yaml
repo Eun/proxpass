@@ -492,6 +492,17 @@ components:
         node:
           type: string
           description: The resolved Proxmox short node name.
+        insecureTls:
+          type: boolean
+          description: |
+            When true, TLS certificate verification is skipped for the API and
+            termproxy console. Off by default: connections are verified.
+        insecureSsh:
+          type: boolean
+          description: |
+            When true, SSH host-key verification is skipped for node
+            connections. Off by default: the host key is verified against a
+            pinned fingerprint or DNSSEC-validated SSHFP records.
         sshHost:
           type: string
           description: |
@@ -502,6 +513,12 @@ components:
           type: integer
         sshUser:
           type: string
+        sshFingerprint:
+          type: string
+          description: |
+            The pinned SSH host-key fingerprint ("SHA256:<base64>") the node
+            must present. When absent, the host key is verified against
+            DNSSEC-validated SSHFP records instead.
         sshKey:
           type: string
           description: |

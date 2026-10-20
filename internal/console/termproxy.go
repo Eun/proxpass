@@ -79,7 +79,7 @@ func connectTermProxy(
 				fmt.Sprintf("PVEAPIToken=%s=%s", inst.APITokenID, inst.APITokenSecret),
 			},
 		},
-		HTTPClient: proxmox.InsecureHTTPClient(),
+		HTTPClient: proxmox.HTTPClient(inst.InsecureTLS),
 	}
 	conn, wsResp, err := websocket.Dial(ctx, wsURL, dialOpts)
 	if wsResp != nil && wsResp.Body != nil {

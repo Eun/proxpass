@@ -35,6 +35,7 @@ func termProxyEnv(t *testing.T) (*testenv.MockAPIServer, *models.ProxmoxInstance
 	inst := &models.ProxmoxInstance{
 		Name:             nodePVE,
 		APIURL:           api.URL(),
+		InsecureTLS:      true,
 		APITokenID:       mockTokenID,
 		APITokenSecret:   mockTokenSecret,
 		ConsoleTransport: models.ConsoleTransportTermProxy,
@@ -188,7 +189,7 @@ func TestConnectTermProxyToVM(t *testing.T) {
 	api.SetTermProxyGreeting("login: ")
 
 	inst := &models.ProxmoxInstance{
-		Name: nodePVE, APIURL: api.URL(),
+		Name: nodePVE, APIURL: api.URL(), InsecureTLS: true,
 		APITokenID: mockTokenID, APITokenSecret: mockTokenSecret,
 		ConsoleTransport: models.ConsoleTransportTermProxy, Node: nodePVE,
 	}
@@ -218,7 +219,7 @@ func TestConnectTermProxyTicketFailure(t *testing.T) {
 	// Deliberately no AddTermProxy.
 
 	inst := &models.ProxmoxInstance{
-		Name: nodePVE, APIURL: api.URL(),
+		Name: nodePVE, APIURL: api.URL(), InsecureTLS: true,
 		APITokenID: mockTokenID, APITokenSecret: mockTokenSecret,
 		ConsoleTransport: models.ConsoleTransportTermProxy, Node: nodePVE,
 	}
