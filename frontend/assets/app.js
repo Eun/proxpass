@@ -94,7 +94,7 @@ function app() {
                                 { key: 'api_url', label: 'API URL', required: true, placeholder: 'https://pve:8006', help: 'The Proxmox API endpoint proxpass connects to.' },
                                 { key: 'api_token_id', label: 'API token ID', required: true, placeholder: 'user@pam!token', help: 'Create a token in Proxmox under Datacenter → Permissions → API Tokens.' },
                                 { key: 'api_token_secret', label: 'API token secret', type: 'password', required: true, help: 'The secret shown once when the token was created. Used to list guests and open consoles.' },
-                                { key: 'insecure_tls', label: 'Skip TLS verification', type: 'checkbox', help: 'Enable only if the API serves a self-signed certificate you cannot trust otherwise.' },
+                                { key: 'insecure_tls', label: 'Skip TLS verification', type: 'switch', help: 'Enable only if the API serves a self-signed certificate you cannot trust otherwise.' },
                             ],
                         },
                         {
@@ -109,7 +109,7 @@ function app() {
                                 { key: 'ssh_host', label: 'SSH host', placeholder: 'optional; enables node shell / SFTP', help: 'Optional. Enables the node shell, SFTP and file transfer (and is required for the "ssh" console transport). Leave blank to skip SSH entirely.' },
                                 { key: 'ssh_port', label: 'SSH port', type: 'number', help: 'The SSH port, typically 22.' },
                                 { key: 'ssh_user', label: 'SSH user', placeholder: 'root', help: 'The user proxpass logs in as, usually root.' },
-                                { key: 'insecure_ssh', label: 'Skip SSH host-key verification', type: 'checkbox', help: 'Enable only on a host whose key you cannot verify out of band.' },
+                                { key: 'insecure_ssh', label: 'Skip SSH host-key verification', type: 'switch', help: 'Enable only on a host whose key you cannot verify out of band.' },
                                 // Pinning a fingerprint only makes sense when SSH
                                 // host keys ARE verified; when insecure_ssh is on
                                 // it is ignored, so hide it and drop it from the

@@ -410,6 +410,26 @@
                                     <template x-if="field.type === 'checkbox'">
                                         <input type="checkbox" x-model="modal.data[field.key]" class="form-checkbox rounded border-gray-300 text-primary focus:ring-primary">
                                     </template>
+                                    <!-- Toggle switch, from the template's forms/switch component. -->
+                                    <template x-if="field.type === 'switch'">
+                                        <div
+                                            class="relative w-12 h-6 mt-1 rounded-full transition duration-200 ease-linear"
+                                            :class="modal.data[field.key] ? 'bg-primary' : 'bg-gray-400'"
+                                        >
+                                            <label
+                                                :for="'switch_' + field.key"
+                                                class="absolute left-0 w-6 h-6 bg-white border-2 rounded-full transition duration-100 ease-linear cursor-pointer"
+                                                :class="modal.data[field.key] ? 'translate-x-full border-primary' : 'translate-x-0 border-gray-400'"
+                                            ></label>
+                                            <input
+                                                type="checkbox"
+                                                :id="'switch_' + field.key"
+                                                class="focus:ring-0 hidden"
+                                                :checked="!!modal.data[field.key]"
+                                                @click="modal.data[field.key] = !modal.data[field.key]"
+                                            >
+                                        </div>
+                                    </template>
                                     <template x-if="field.type === 'textarea'">
                                         <textarea x-model="modal.data[field.key]" rows="3" class="form-textarea w-full rounded border-gray-300" :placeholder="field.placeholder || ''"></textarea>
                                     </template>
@@ -458,7 +478,7 @@
                                             </template>
                                         </div>
                                     </template>
-                                    <template x-if="!['select','checkbox','textarea','multiselect','fingerprint'].includes(field.type)">
+                                    <template x-if="!['select','checkbox','switch','textarea','multiselect','fingerprint'].includes(field.type)">
                                         <input :type="field.type || 'text'" x-model="modal.data[field.key]" class="form-input w-full rounded border-gray-300" :placeholder="field.placeholder || ''">
                                     </template>
                                     <template x-if="field.help">
