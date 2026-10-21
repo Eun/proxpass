@@ -150,7 +150,8 @@ func TestServerHonoursACustomLayout(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = repo.Close() })
 	client := seedClient(t, repo, "alice")
-	h := api.NewServerWithIDs(repo, log.New(io.Discard, "", 0), custom).Handler()
+	h := api.NewServerWithIDs(repo, log.New(io.Discard, "", 0), custom).
+		WithNSSToken(testNSSToken).Handler()
 
 	rec := get(t, h, "/user/name/alice")
 	if rec.Code != http.StatusOK {

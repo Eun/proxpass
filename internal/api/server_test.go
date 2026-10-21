@@ -18,6 +18,11 @@ import (
 	"proxpass/internal/session"
 )
 
+// testNSSToken is the NSS bearer token the test server requires on the NSS
+// directory routes. get() sends it, so the NSS tests exercise the real
+// (token-gated) routes rather than an open directory.
+const testNSSToken = "test-nss-token" //nolint:gosec // G101: a fake test token, not a real secret
+
 func newTestServer(t *testing.T) (http.Handler, db.Repository) {
 	t.Helper()
 	repo, err := db.NewSQLiteRepository(t.TempDir() + "/test.db")
@@ -26,7 +31,7 @@ func newTestServer(t *testing.T) (http.Handler, db.Repository) {
 	}
 	t.Cleanup(func() { _ = repo.Close() })
 	logger := log.New(io.Discard, "", 0)
-	return api.NewServer(repo, logger).Handler(), repo
+	return api.NewServer(repo, logger).WithNSSToken(testNSSToken).Handler(), repo
 }
 
 func seedClient(t *testing.T, repo db.Repository, name string, keys ...string) *models.Client {
@@ -42,11 +47,17 @@ func seedClient(t *testing.T, repo db.Repository, name string, keys ...string) *
 	return stored
 }
 
+// get issues a GET carrying the NSS bearer token, since the NSS directory
+// routes now require it. Tests for other routes that must reject this token
+// (e.g. /v1 admin) assert their own status and are unaffected -- the NSS token
+// is not a valid admin credential.
 func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
 	t.Helper()
+	req := httptest.NewRequestWithContext(
+		t.Context(), http.MethodGet, path, http.NoBody)
+	req.Header.Set("Authorization", "Bearer "+testNSSToken)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequestWithContext(
-		t.Context(), http.MethodGet, path, http.NoBody))
+	h.ServeHTTP(rec, req)
 	return rec
 }
 

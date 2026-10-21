@@ -45,27 +45,34 @@ which is why the image is Debian based.
 ## Quick Start
 
 **1. Run proxpass.** The admin key is your own public key: it is what lets you
-run the CLI in the steps below. The two `PROXPASS_REST_API_*` variables and the
-`-p 8081:8081` publish the [admin web UI](#admin-web-ui) — leave them out if you
-only want the SSH CLI.
+run the CLI in the steps below. The `PROXPASS_LISTEN=0.0.0.0:8080`,
+`PROXPASS_REST_API_TOKEN`, and `-p 8080:8080` bits publish the
+[admin web UI](#admin-web-ui) — leave them out if you only want the SSH CLI
+(the listener then stays on loopback).
 
 ```bash
 docker run -d --name proxpass \
   -p 2222:22 \
-  -p 8081:8081 \
+  -p 8080:8080 \
   -v proxpass-data:/var/lib/proxpass \
   -e PROXPASS_ADMIN_KEY="$(cat ~/.ssh/id_ed25519.pub)" \
-  -e PROXPASS_REST_API_LISTEN="0.0.0.0:8081" \
+  -e PROXPASS_LISTEN="0.0.0.0:8080" \
   -e PROXPASS_REST_API_TOKEN="change-me-to-a-long-random-token" \
   ghcr.io/eun/proxpass:latest
 ```
 
-The admin UI is now at **`http://localhost:8081/`**. Open it, and sign in with
+The admin UI is now at **`http://localhost:8080/`**. Open it, and sign in with
 the `PROXPASS_REST_API_TOKEN` value you set above — that token is the password.
 Pick a long random one (e.g. `openssl rand -hex 32`) and keep it secret: anyone
 with it has full admin access. See [Admin Web UI](#admin-web-ui) for details.
 The steps below use the SSH CLI, but everything they do can also be done in the
 UI.
+
+> **One socket, two tokens.** proxpass serves the NSS user/group directory, the
+> admin REST API, and the UI on a single listener. The directory is reachable
+> **only** with `PROXPASS_NSS_TOKEN` (which the container generates), and the
+> admin API **only** with `PROXPASS_REST_API_TOKEN` or an admin SSH session, so
+> exposing the socket exposes neither to the other.
 
 **2. Add a Proxmox instance.** Nothing is discovered until proxpass knows where
 to look, so this has to come before you connect.
@@ -448,58 +455,56 @@ server and the Go client are generated from it, so the spec cannot drift from
 the implementation. Admin operations live under `/v1`; one resource per
 operation rather than a generic exec endpoint.
 
-### Listeners
+### One listener, per-surface tokens
 
-A single listener (`--listen`, `127.0.0.1:8080` by default) serves everything:
-the NSS user/group directory, the session API, and the `/v1` admin API. This
-is the loopback socket the container uses internally.
+**Everything is served on a single listener** (`--listen`, `127.0.0.1:8080` by
+default): the NSS user/group directory, the session API, the `/v1` admin API,
+and the admin UI. There is no second socket. Each surface gates itself with its
+own token, so the one socket can be exposed without the directory and the admin
+API leaking into each other:
 
-To reach the admin API from outside the container, set `--rest-api-listen`
-(e.g. `0.0.0.0:8081`). That second listener serves **only** `/v1` — never the
-NSS directory — so exposing the admin API does not also expose the user/group
-directory. It requires `--rest-api-token`; serve refuses to start if the
-listener is set without it, so a misconfiguration is a loud error rather than
-an unauthenticated admin surface.
+- The **NSS directory routes** (`/users`, `/user/...`, `/groups`, `/group/...`)
+  are reachable **only** with `PROXPASS_NSS_TOKEN`. A request with no token, the
+  wrong token, or the admin token is a 401. The container entrypoint generates
+  this token at first start and hands it to `libnss_http` via the `Headers` map
+  in `/etc/nss_http.json`, so `libnss_http` presents it on every lookup. If no
+  NSS token is configured at all, the directory routes are **closed**, never
+  opened.
+- The **`/v1` admin API** is reachable **only** with an administrator credential:
+  `PROXPASS_REST_API_TOKEN` (a static token for external clients / the UI), or a
+  session credential minted by an admin SSH login (the token the CLI uses).
 
-### Authentication
-
-Every `/v1` request carries a bearer token in the `Authorization` header and
-must resolve to an administrator:
-
-- `PROXPASS_REST_API_TOKEN` — a static admin token for external clients. Honored
-  on both listeners when set.
-- A session credential minted by an admin SSH login — the token the CLI uses.
-
-The NSS directory routes are authenticated too, by `PROXPASS_NSS_TOKEN`. The
-container entrypoint generates this token at first start and hands it to
-`libnss_http` via the `Headers` map in `/etc/nss_http.json`, so the directory
-is not world-readable even on a shared socket. Leaving it empty keeps the
-routes open, which is only safe on a loopback-only listener.
+To reach the admin API and UI from outside the container, bind the listener
+off loopback — set `PROXPASS_LISTEN=0.0.0.0:8080` and publish the port. Because
+the two surfaces are independently token-gated, exposing the socket is safe: a
+caller with the admin token cannot read the directory, and `libnss_http`'s NSS
+token cannot reach `/v1`.
 
 ### Example
 
-Expose the admin API and call it directly, using a token in the compose file:
+Expose the one listener and call the admin API directly, using a token in the
+compose file:
 
 ```yaml
 environment:
-  PROXPASS_REST_API_LISTEN: "0.0.0.0:8081"
+  PROXPASS_LISTEN: "0.0.0.0:8080"
   PROXPASS_REST_API_TOKEN: "s3cr3t-admin-token"
 ports:
-  - "8081:8081"
+  - "8080:8080"
 ```
 
 ```bash
 # List instances. Single-quote the token in case it contains shell
 # metacharacters (a "!" triggers history expansion inside double quotes).
 curl -H 'Authorization: Bearer s3cr3t-admin-token' \
-  http://host:8081/v1/instances
+  http://host:8080/v1/instances
 
 # Add a client. Field names mirror the Go model: public_keys and group_ids
 # are arrays; id is server-assigned and ignored on create.
 curl -X POST -H 'Authorization: Bearer s3cr3t-admin-token' \
   -H 'Content-Type: application/json' \
   -d '{"id":0,"name":"alice","public_keys":["ssh-ed25519 AAAA... alice"],"group_ids":[]}' \
-  http://host:8081/v1/clients
+  http://host:8080/v1/clients
 ```
 
 ## Admin Web UI
@@ -511,27 +516,28 @@ server, no Node.js runtime, and no external files.
 
 ### Exposing it
 
-The container's HTTP listener is **loopback-only by default** (`PROXPASS_LISTEN`
-is `127.0.0.1:8080`), so nothing is reachable from outside the container until
-you ask for it. To reach the UI from your browser, enable the second, routable
-admin listener and publish its port:
+The container's one HTTP listener is **loopback-only by default**
+(`PROXPASS_LISTEN` is `127.0.0.1:8080`), so nothing is reachable from outside
+the container until you ask for it. To reach the UI from your browser, bind the
+listener off loopback and publish its port:
 
 ```bash
 docker run -d --name proxpass \
   -p 2222:22 \
-  -p 8081:8081 \
+  -p 8080:8080 \
   -v proxpass-data:/var/lib/proxpass \
   -e PROXPASS_ADMIN_KEY="$(cat ~/.ssh/id_ed25519.pub)" \
-  -e PROXPASS_REST_API_LISTEN="0.0.0.0:8081" \
+  -e PROXPASS_LISTEN="0.0.0.0:8080" \
   -e PROXPASS_REST_API_TOKEN="$(openssl rand -hex 32)" \
   ghcr.io/eun/proxpass:latest
 ```
 
-`PROXPASS_REST_API_LISTEN` turns on the second listener, and
-`PROXPASS_REST_API_TOKEN` is the token you will log in with — **required**
-whenever the listener is set, so proxpass refuses to start a routable admin
-listener with no token rather than exposing an unauthenticated one. That
-listener serves only the admin API and the UI — never the NSS directory.
+`PROXPASS_LISTEN=0.0.0.0:8080` binds the listener to all interfaces, and
+`PROXPASS_REST_API_TOKEN` is the token you will log in with. Exposing this one
+socket is safe because each surface is independently token-gated: the NSS
+directory requires `PROXPASS_NSS_TOKEN` (the container generates it), and the
+admin API and UI require the admin token above. Pick a long random admin token
+and serve the listener over TLS if it is reachable beyond localhost.
 
 The same works in a compose file:
 
@@ -541,24 +547,18 @@ services:
     image: ghcr.io/eun/proxpass:latest
     ports:
       - "2222:22"
-      - "8081:8081"
+      - "8080:8080"
     volumes:
       - proxpass-data:/var/lib/proxpass
     environment:
       PROXPASS_ADMIN_KEY: "ssh-ed25519 AAAA… you"
-      PROXPASS_REST_API_LISTEN: "0.0.0.0:8081"
+      PROXPASS_LISTEN: "0.0.0.0:8080"
       PROXPASS_REST_API_TOKEN: "a-long-random-secret"
 ```
 
-> On the loopback listener (`--listen`), the UI is also served, at
-> `http://127.0.0.1:8080/` — reachable only from inside the container (or
-> through an SSH tunnel). For browser access from your machine, use the
-> routable listener above.
-
 ### Logging in
 
-1. Open **`http://localhost:8081/`** (or wherever you published the admin
-   listener).
+1. Open **`http://localhost:8080/`** (or wherever you published the listener).
 2. You are asked for an **admin API token**. Paste the value of
    `PROXPASS_REST_API_TOKEN` — that token *is* the login. (An admin session
    token minted over SSH also works, but the static token is the simple path.)
@@ -606,11 +606,10 @@ All flags can also be set via environment variables.
 | `--log-level` | `PROXPASS_LOG_LEVEL` | `info` | Log level (debug, info, warn, error). `debug` adds per-session diagnostics; see [Diagnosing a failed transfer](#diagnosing-a-failed-transfer). |
 | `--admin-key` | `PROXPASS_ADMIN_KEY` | | Admin public key (see below) |
 | `--public-endpoint` | `PROXPASS_PUBLIC_ENDPOINT` | | Hostname clients connect to, shown in the status bar (see below) |
-| `--listen` | `PROXPASS_LISTEN` | `127.0.0.1:8080` | Address of the directory + session + admin REST API (`serve` only) |
+| `--listen` | `PROXPASS_LISTEN` | `127.0.0.1:8080` | Address of the one listener (NSS directory + session + `/v1` admin API + UI). Set to `0.0.0.0:8080` and publish the port to reach the admin API/UI from outside (`serve` only). |
 | `--discovery-interval` | `PROXPASS_DISCOVERY_INTERVAL` | `5m` | Guest discovery poll interval (`serve` only) |
-| `--nss-token` | `PROXPASS_NSS_TOKEN` | | Bearer token the NSS directory routes require. Generated by the container entrypoint; empty leaves them open (loopback only). See [REST API](#rest-api). |
-| `--rest-api-listen` | `PROXPASS_REST_API_LISTEN` | | Second listener serving **only** the typed `/v1` admin API (no NSS routes), e.g. `0.0.0.0:8081`. Empty disables it. |
-| `--rest-api-token` | `PROXPASS_REST_API_TOKEN` | | Static bearer token for the `/v1` admin API. **Required** when `--rest-api-listen` is set; serve refuses to start otherwise. |
+| `--nss-token` | `PROXPASS_NSS_TOKEN` | | Bearer token the NSS directory routes require. The directory is reachable **only** with this token; without it set, those routes are closed. Generated by the container entrypoint. See [REST API](#rest-api). |
+| `--rest-api-token` | `PROXPASS_REST_API_TOKEN` | | Static bearer token for the `/v1` admin API (and the UI), served on `--listen`. Empty leaves the admin API reachable only by a session credential minted over an admin SSH login. |
 
 The SSH port itself is sshd's, so it is published with `-p` on the container
 rather than configured in proxpass.
