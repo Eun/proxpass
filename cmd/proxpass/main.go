@@ -106,10 +106,12 @@ func serveCommand() *ucli.Command {
 			},
 			&ucli.StringFlag{
 				Name: "nss-token",
-				Usage: "bearer token the NSS directory routes require. The " +
-					"directory is reachable ONLY with this token (give " +
-					"libnss_http the same value); without it set, the NSS " +
-					"routes are closed. The container generates one.",
+				Usage: "bearer token the NSS directory routes require " +
+					"(required). The directory is reachable ONLY with this " +
+					"token (give libnss_http the same value); serve refuses " +
+					"to start without it, since an empty token closes the " +
+					"directory and no login could resolve. The container " +
+					"generates one.",
 				Sources: ucli.EnvVars("PROXPASS_NSS_TOKEN"),
 			},
 			&ucli.StringFlag{
@@ -184,7 +186,17 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 		return err
 	}
 
-	nssToken := cmd.String("nss-token")
+	// The NSS token gates the directory routes that sshd resolves logins
+	// through. An empty token leaves nssAuth fail-closed (every lookup is a
+	// 401), so the server would come up but no one could ever log in. That is
+	// a silent misconfiguration -- reject it at startup instead, the same way
+	// an invalid id layout or log level is. The container entrypoint always
+	// generates a token, so this only trips a hand-rolled deployment.
+	nssToken := strings.TrimSpace(cmd.String("nss-token"))
+	if nssToken == "" {
+		return errors.New("a non-empty PROXPASS_NSS_TOKEN (--nss-token) is required: " +
+			"without it the NSS directory is closed and no login can resolve")
+	}
 	restAPIToken := cmd.String("rest-api-token")
 
 	// Guest discovery runs in the background; the directory API blocks.

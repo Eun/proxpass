@@ -5,7 +5,11 @@ import (
 	"io"
 	"log"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
+
+	ucli "github.com/urfave/cli/v3"
 
 	"proxpass/internal/db"
 )
@@ -102,5 +106,52 @@ func TestStorePublicEndpointTrimsWhitespace(t *testing.T) {
 	}
 	if got != "proxpass.example.com" {
 		t.Errorf("endpoint = %q, want it trimmed", got)
+	}
+}
+
+// serve must refuse to start without a non-empty PROXPASS_NSS_TOKEN: an empty
+// token leaves the NSS directory fail-closed, so the process would come up but
+// every login lookup would 401. Failing fast turns that silent, login-breaking
+// misconfiguration into an obvious startup error. The guard runs before the
+// listener blocks, so a short timeout here only matters if it ever regresses.
+func TestServeRequiresAnNSSToken(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	data := filepath.Join(t.TempDir(), "proxpass.db")
+	cmd := rootCommandForTest()
+
+	for _, tok := range []string{"", "   "} {
+		err := cmd.Run(ctx, []string{
+			progName, "--data", data, "serve",
+			"--listen", "127.0.0.1:0", "--nss-token", tok,
+		})
+		if err == nil {
+			t.Fatalf("serve with nss-token %q: want a startup error, got nil", tok)
+		}
+		if !strings.Contains(err.Error(), "PROXPASS_NSS_TOKEN") {
+			t.Errorf("serve with nss-token %q: error = %v, want it to mention PROXPASS_NSS_TOKEN", tok, err)
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("serve with nss-token %q blocked past the guard (ctx: %v)", tok, ctx.Err())
+		}
+	}
+}
+
+const progName = "proxpass"
+
+// rootCommandForTest mirrors the command wiring in run(): runServe reads both
+// root flags (data, admin-key, log-level, public-endpoint) and serve flags, so
+// the guard can only be exercised through the assembled command tree.
+func rootCommandForTest() *ucli.Command {
+	return &ucli.Command{
+		Name: progName,
+		Flags: []ucli.Flag{
+			&ucli.StringFlag{Name: "data"},
+			&ucli.StringFlag{Name: "log-level", Value: "info"},
+			&ucli.StringFlag{Name: "admin-key"},
+			&ucli.StringFlag{Name: "public-endpoint"},
+		},
+		Commands: []*ucli.Command{serveCommand()},
 	}
 }
