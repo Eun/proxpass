@@ -505,6 +505,25 @@ type ProxmoxInstanceConsoleTransport string
 // models.RuleType.
 type RuleType string
 
+// SSHFingerprint One host key a scanned server presented.
+type SSHFingerprint struct {
+	// Fingerprint The "SHA256:<base64>" fingerprint, exactly what --ssh-fingerprint
+	// pins and what the UI stores in ssh_fingerprint.
+	Fingerprint string `json:"fingerprint"`
+
+	// KeyType The key's algorithm, e.g. "ssh-ed25519".
+	KeyType string `json:"key_type"`
+}
+
+// SSHFingerprintScan The host to scan for SSH host-key fingerprints.
+type SSHFingerprintScan struct {
+	// SSHHost The SSH host to connect to.
+	SSHHost string `json:"ssh_host"`
+
+	// SSHPort The SSH port, typically 22.
+	SSHPort int `json:"ssh_port"`
+}
+
 // SessionCredential A session credential and the identity it speaks for.
 type SessionCredential struct {
 	// ExpiresAt When it stops working regardless of use. A session outliving this
@@ -528,9 +547,25 @@ type Setting struct {
 	Value string `json:"value"`
 }
 
+// SettingEntry One effective setting in the listSettings view: the environment
+// variable that controls it (key) and its current value. Secret-bearing
+// values (tokens, the database password) are masked by the server and
+// never returned in cleartext.
+type SettingEntry struct {
+	// Key The environment variable, e.g. PROXPASS_DATA.
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
 // SettingValue The new value for a setting; mirrors SetSetting's value argument.
 type SettingValue struct {
 	Value string `json:"value"`
+}
+
+// Version The running proxpass build version.
+type Version struct {
+	// Version The release tag, module version, or "dev".
+	Version string `json:"version"`
 }
 
 // RowID defines model for RowId.
@@ -614,6 +649,9 @@ type SetDefaultPolicyJSONRequestBody = DefaultAccessPolicy
 
 // SetSettingJSONRequestBody defines body for SetSetting for application/json ContentType.
 type SetSettingJSONRequestBody = SettingValue
+
+// ScanSSHFingerprintsJSONRequestBody defines body for ScanSSHFingerprints for application/json ContentType.
+type ScanSSHFingerprintsJSONRequestBody = SSHFingerprintScan
 
 // RequestEditorFn is the function signature for the RequestEditor callback function
 type RequestEditorFn func(ctx context.Context, req *http.Request) error
@@ -1219,6 +1257,19 @@ type ClientInterface interface {
 	// Corresponds with PUT /v1/policy (the `SetDefaultPolicy` operationId).
 	SetDefaultPolicy(ctx context.Context, body SetDefaultPolicyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// ListSettings List the effective settings.
+	//
+	// Returns every operator-facing setting that governs this running serve
+	// process -- the configuration it was started with (flags/environment)
+	// plus the stored public endpoint -- each with its source. Secret values
+	// (tokens, the database password) are masked by the server and never
+	// returned in cleartext. These are read-only: they come from the
+	// environment/flags, so changing them means changing the configuration
+	// and restarting, not writing through this API.
+	//
+	// Corresponds with GET /v1/settings (the `ListSettings` operationId).
+	ListSettings(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetSetting Get a setting value.
 	//
 	// Mirrors `db.Repository.GetSetting`.
@@ -1245,6 +1296,49 @@ type ClientInterface interface {
 	//
 	// Corresponds with PUT /v1/settings/{key} (the `SetSetting` operationId).
 	SetSetting(ctx context.Context, key string, body SetSettingJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ScanSSHFingerprintsWithBody Scan a host's SSH fingerprints.
+	//
+	// Connects to the given SSH host and port and returns the host-key
+	// fingerprints it presents, one per key type -- the server-side
+	// equivalent of `ssh-keyscan`. No authentication is attempted; the
+	// handshake is aborted as soon as the host key is read.
+	//
+	// This lets the admin UI fetch the real fingerprints when adding a node,
+	// so the operator can pick one to pin instead of running ssh-keyscan by
+	// hand. A scan only reports what the host currently presents -- the
+	// operator must still confirm the chosen fingerprint out of band.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /v1/ssh-fingerprints (the `ScanSSHFingerprints` operationId).
+	ScanSSHFingerprintsWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ScanSSHFingerprints Scan a host's SSH fingerprints.
+	//
+	// Connects to the given SSH host and port and returns the host-key
+	// fingerprints it presents, one per key type -- the server-side
+	// equivalent of `ssh-keyscan`. No authentication is attempted; the
+	// handshake is aborted as soon as the host key is read.
+	//
+	// This lets the admin UI fetch the real fingerprints when adding a node,
+	// so the operator can pick one to pin instead of running ssh-keyscan by
+	// hand. A scan only reports what the host currently presents -- the
+	// operator must still confirm the chosen fingerprint out of band.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /v1/ssh-fingerprints (the `ScanSSHFingerprints` operationId).
+	ScanSSHFingerprints(ctx context.Context, body ScanSSHFingerprintsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetVersion The proxpass build version.
+	//
+	// Returns the running proxpass build version -- the release tag for a
+	// release build, otherwise the module version or "dev". The admin UI
+	// fetches this once on load to show it in the sidebar.
+	//
+	// Corresponds with GET /v1/version (the `GetVersion` operationId).
+	GetVersion(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 }
 
 // GetHealth Liveness probe.
@@ -2297,6 +2391,29 @@ func (c *Client) SetDefaultPolicy(ctx context.Context, body SetDefaultPolicyJSON
 	return c.Client.Do(req)
 }
 
+// ListSettings List the effective settings.
+//
+// Returns every operator-facing setting that governs this running serve
+// process -- the configuration it was started with (flags/environment)
+// plus the stored public endpoint -- each with its source. Secret values
+// (tokens, the database password) are masked by the server and never
+// returned in cleartext. These are read-only: they come from the
+// environment/flags, so changing them means changing the configuration
+// and restarting, not writing through this API.
+//
+// Corresponds with GET /v1/settings (the `ListSettings` operationId).
+func (c *Client) ListSettings(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListSettingsRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 // GetSetting Get a setting value.
 //
 // Mirrors `db.Repository.GetSetting`.
@@ -2344,6 +2461,79 @@ func (c *Client) SetSettingWithBody(ctx context.Context, key string, contentType
 // Corresponds with PUT /v1/settings/{key} (the `SetSetting` operationId).
 func (c *Client) SetSetting(ctx context.Context, key string, body SetSettingJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewSetSettingRequest(c.Server, key, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ScanSSHFingerprintsWithBody Scan a host's SSH fingerprints.
+//
+// Connects to the given SSH host and port and returns the host-key
+// fingerprints it presents, one per key type -- the server-side
+// equivalent of `ssh-keyscan`. No authentication is attempted; the
+// handshake is aborted as soon as the host key is read.
+//
+// This lets the admin UI fetch the real fingerprints when adding a node,
+// so the operator can pick one to pin instead of running ssh-keyscan by
+// hand. A scan only reports what the host currently presents -- the
+// operator must still confirm the chosen fingerprint out of band.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /v1/ssh-fingerprints (the `ScanSSHFingerprints` operationId).
+func (c *Client) ScanSSHFingerprintsWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewScanSSHFingerprintsRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// ScanSSHFingerprints Scan a host's SSH fingerprints.
+//
+// Connects to the given SSH host and port and returns the host-key
+// fingerprints it presents, one per key type -- the server-side
+// equivalent of `ssh-keyscan`. No authentication is attempted; the
+// handshake is aborted as soon as the host key is read.
+//
+// This lets the admin UI fetch the real fingerprints when adding a node,
+// so the operator can pick one to pin instead of running ssh-keyscan by
+// hand. A scan only reports what the host currently presents -- the
+// operator must still confirm the chosen fingerprint out of band.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /v1/ssh-fingerprints (the `ScanSSHFingerprints` operationId).
+func (c *Client) ScanSSHFingerprints(ctx context.Context, body ScanSSHFingerprintsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewScanSSHFingerprintsRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetVersion The proxpass build version.
+//
+// Returns the running proxpass build version -- the release tag for a
+// release build, otherwise the module version or "dev". The admin UI
+// fetches this once on load to show it in the sidebar.
+//
+// Corresponds with GET /v1/version (the `GetVersion` operationId).
+func (c *Client) GetVersion(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetVersionRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -3737,6 +3927,33 @@ func NewSetDefaultPolicyRequestWithBody(server string, contentType string, body 
 	return req, nil
 }
 
+// NewListSettingsRequest constructs an http.Request for the ListSettings method
+func NewListSettingsRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/settings")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewGetSettingRequest constructs an http.Request for the GetSetting method
 func NewGetSettingRequest(server string, key string) (*http.Request, error) {
 	var err error
@@ -3814,6 +4031,73 @@ func NewSetSettingRequestWithBody(server string, key string, contentType string,
 	}
 
 	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewScanSSHFingerprintsRequest calls the generic ScanSSHFingerprints builder with application/json body
+func NewScanSSHFingerprintsRequest(server string, body ScanSSHFingerprintsJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewScanSSHFingerprintsRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewScanSSHFingerprintsRequestWithBody constructs an http.Request for the ScanSSHFingerprints method, with any body, and a specified content type
+func NewScanSSHFingerprintsRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/ssh-fingerprints")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewGetVersionRequest constructs an http.Request for the GetVersion method
+func NewGetVersionRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/version")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
 
 	return req, nil
 }
@@ -4444,6 +4728,21 @@ type ClientWithResponsesInterface interface {
 	// Corresponds with PUT /v1/policy (the `SetDefaultPolicy` operationId).
 	SetDefaultPolicyWithResponse(ctx context.Context, body SetDefaultPolicyJSONRequestBody, reqEditors ...RequestEditorFn) (*SetDefaultPolicyResponse, error)
 
+	// ListSettingsWithResponse List the effective settings.
+	//
+	// Returns every operator-facing setting that governs this running serve
+	// process -- the configuration it was started with (flags/environment)
+	// plus the stored public endpoint -- each with its source. Secret values
+	// (tokens, the database password) are masked by the server and never
+	// returned in cleartext. These are read-only: they come from the
+	// environment/flags, so changing them means changing the configuration
+	// and restarting, not writing through this API.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /v1/settings (the `ListSettings` operationId).
+	ListSettingsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListSettingsResponse, error)
+
 	// GetSettingWithResponse Get a setting value.
 	//
 	// Mirrors `db.Repository.GetSetting`.
@@ -4472,6 +4771,51 @@ type ClientWithResponsesInterface interface {
 	//
 	// Corresponds with PUT /v1/settings/{key} (the `SetSetting` operationId).
 	SetSettingWithResponse(ctx context.Context, key string, body SetSettingJSONRequestBody, reqEditors ...RequestEditorFn) (*SetSettingResponse, error)
+
+	// ScanSSHFingerprintsWithBodyWithResponse Scan a host's SSH fingerprints.
+	//
+	// Connects to the given SSH host and port and returns the host-key
+	// fingerprints it presents, one per key type -- the server-side
+	// equivalent of `ssh-keyscan`. No authentication is attempted; the
+	// handshake is aborted as soon as the host key is read.
+	//
+	// This lets the admin UI fetch the real fingerprints when adding a node,
+	// so the operator can pick one to pin instead of running ssh-keyscan by
+	// hand. A scan only reports what the host currently presents -- the
+	// operator must still confirm the chosen fingerprint out of band.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /v1/ssh-fingerprints (the `ScanSSHFingerprints` operationId).
+	ScanSSHFingerprintsWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ScanSSHFingerprintsResponse, error)
+
+	// ScanSSHFingerprintsWithResponse Scan a host's SSH fingerprints.
+	//
+	// Connects to the given SSH host and port and returns the host-key
+	// fingerprints it presents, one per key type -- the server-side
+	// equivalent of `ssh-keyscan`. No authentication is attempted; the
+	// handshake is aborted as soon as the host key is read.
+	//
+	// This lets the admin UI fetch the real fingerprints when adding a node,
+	// so the operator can pick one to pin instead of running ssh-keyscan by
+	// hand. A scan only reports what the host currently presents -- the
+	// operator must still confirm the chosen fingerprint out of band.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /v1/ssh-fingerprints (the `ScanSSHFingerprints` operationId).
+	ScanSSHFingerprintsWithResponse(ctx context.Context, body ScanSSHFingerprintsJSONRequestBody, reqEditors ...RequestEditorFn) (*ScanSSHFingerprintsResponse, error)
+
+	// GetVersionWithResponse The proxpass build version.
+	//
+	// Returns the running proxpass build version -- the release tag for a
+	// release build, otherwise the module version or "dev". The admin UI
+	// fetches this once on load to show it in the sidebar.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /v1/version (the `GetVersion` operationId).
+	GetVersionWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetVersionResponse, error)
 }
 
 type GetHealthResponse struct {
@@ -5166,6 +5510,8 @@ type RemoveAdminKeyResponse struct {
 	JSON403 *Forbidden
 	// JSON404 the response for an HTTP 404 `application/json` response
 	JSON404 *NotFound
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Conflict
 	// JSON500 the response for an HTTP 500 `application/json` response
 	JSON500 *InternalError
 }
@@ -5188,6 +5534,11 @@ func (r RemoveAdminKeyResponse) GetJSON403() *Forbidden {
 // GetJSON404 returns the response for an HTTP 404 `application/json` response
 func (r RemoveAdminKeyResponse) GetJSON404() *NotFound {
 	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r RemoveAdminKeyResponse) GetJSON409() *Conflict {
+	return r.JSON409
 }
 
 // GetJSON500 returns the response for an HTTP 500 `application/json` response
@@ -6949,6 +7300,68 @@ func (r SetDefaultPolicyResponse) ContentType() string {
 	return ""
 }
 
+type ListSettingsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *[]SettingEntry
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Unauthorized
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Forbidden
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *InternalError
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r ListSettingsResponse) GetJSON200() *[]SettingEntry {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r ListSettingsResponse) GetJSON401() *Unauthorized {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r ListSettingsResponse) GetJSON403() *Forbidden {
+	return r.JSON403
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r ListSettingsResponse) GetJSON500() *InternalError {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r ListSettingsResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r ListSettingsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListSettingsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListSettingsResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type GetSettingResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -7081,6 +7494,144 @@ func (r SetSettingResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r SetSettingResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ScanSSHFingerprintsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *[]SSHFingerprint
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *BadRequest
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Unauthorized
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Forbidden
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *InternalError
+	// JSON502 the response for an HTTP 502 `application/json` response
+	JSON502 *Error
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r ScanSSHFingerprintsResponse) GetJSON200() *[]SSHFingerprint {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r ScanSSHFingerprintsResponse) GetJSON400() *BadRequest {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r ScanSSHFingerprintsResponse) GetJSON401() *Unauthorized {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r ScanSSHFingerprintsResponse) GetJSON403() *Forbidden {
+	return r.JSON403
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r ScanSSHFingerprintsResponse) GetJSON500() *InternalError {
+	return r.JSON500
+}
+
+// GetJSON502 returns the response for an HTTP 502 `application/json` response
+func (r ScanSSHFingerprintsResponse) GetJSON502() *Error {
+	return r.JSON502
+}
+
+// GetBody returns the raw response body bytes
+func (r ScanSSHFingerprintsResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r ScanSSHFingerprintsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ScanSSHFingerprintsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ScanSSHFingerprintsResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetVersionResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *Version
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Unauthorized
+	// JSON403 the response for an HTTP 403 `application/json` response
+	JSON403 *Forbidden
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *InternalError
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetVersionResponse) GetJSON200() *Version {
+	return r.JSON200
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetVersionResponse) GetJSON401() *Unauthorized {
+	return r.JSON401
+}
+
+// GetJSON403 returns the response for an HTTP 403 `application/json` response
+func (r GetVersionResponse) GetJSON403() *Forbidden {
+	return r.JSON403
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetVersionResponse) GetJSON500() *InternalError {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r GetVersionResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetVersionResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetVersionResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetVersionResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -7981,6 +8532,27 @@ func (c *ClientWithResponses) SetDefaultPolicyWithResponse(ctx context.Context, 
 	return ParseSetDefaultPolicyResponse(rsp)
 }
 
+// ListSettingsWithResponse List the effective settings.
+//
+// Returns every operator-facing setting that governs this running serve
+// process -- the configuration it was started with (flags/environment)
+// plus the stored public endpoint -- each with its source. Secret values
+// (tokens, the database password) are masked by the server and never
+// returned in cleartext. These are read-only: they come from the
+// environment/flags, so changing them means changing the configuration
+// and restarting, not writing through this API.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /v1/settings (the `ListSettings` operationId).
+func (c *ClientWithResponses) ListSettingsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListSettingsResponse, error) {
+	rsp, err := c.ListSettings(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListSettingsResponse(rsp)
+}
+
 // GetSettingWithResponse Get a setting value.
 //
 // Mirrors `db.Repository.GetSetting`.
@@ -8026,6 +8598,69 @@ func (c *ClientWithResponses) SetSettingWithResponse(ctx context.Context, key st
 		return nil, err
 	}
 	return ParseSetSettingResponse(rsp)
+}
+
+// ScanSSHFingerprintsWithBodyWithResponse Scan a host's SSH fingerprints.
+//
+// Connects to the given SSH host and port and returns the host-key
+// fingerprints it presents, one per key type -- the server-side
+// equivalent of `ssh-keyscan`. No authentication is attempted; the
+// handshake is aborted as soon as the host key is read.
+//
+// This lets the admin UI fetch the real fingerprints when adding a node,
+// so the operator can pick one to pin instead of running ssh-keyscan by
+// hand. A scan only reports what the host currently presents -- the
+// operator must still confirm the chosen fingerprint out of band.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /v1/ssh-fingerprints (the `ScanSSHFingerprints` operationId).
+func (c *ClientWithResponses) ScanSSHFingerprintsWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ScanSSHFingerprintsResponse, error) {
+	rsp, err := c.ScanSSHFingerprintsWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseScanSSHFingerprintsResponse(rsp)
+}
+
+// ScanSSHFingerprintsWithResponse Scan a host's SSH fingerprints.
+//
+// Connects to the given SSH host and port and returns the host-key
+// fingerprints it presents, one per key type -- the server-side
+// equivalent of `ssh-keyscan`. No authentication is attempted; the
+// handshake is aborted as soon as the host key is read.
+//
+// This lets the admin UI fetch the real fingerprints when adding a node,
+// so the operator can pick one to pin instead of running ssh-keyscan by
+// hand. A scan only reports what the host currently presents -- the
+// operator must still confirm the chosen fingerprint out of band.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /v1/ssh-fingerprints (the `ScanSSHFingerprints` operationId).
+func (c *ClientWithResponses) ScanSSHFingerprintsWithResponse(ctx context.Context, body ScanSSHFingerprintsJSONRequestBody, reqEditors ...RequestEditorFn) (*ScanSSHFingerprintsResponse, error) {
+	rsp, err := c.ScanSSHFingerprints(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseScanSSHFingerprintsResponse(rsp)
+}
+
+// GetVersionWithResponse The proxpass build version.
+//
+// Returns the running proxpass build version -- the release tag for a
+// release build, otherwise the module version or "dev". The admin UI
+// fetches this once on load to show it in the sidebar.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /v1/version (the `GetVersion` operationId).
+func (c *ClientWithResponses) GetVersionWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetVersionResponse, error) {
+	rsp, err := c.GetVersion(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetVersionResponse(rsp)
 }
 
 // ParseGetHealthResponse parses an HTTP response from a GetHealthWithResponse call
@@ -8560,6 +9195,13 @@ func ParseRemoveAdminKeyResponse(rsp *http.Response) (*RemoveAdminKeyResponse, e
 			return nil, err
 		}
 		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
 		var dest InternalError
@@ -9941,6 +10583,53 @@ func ParseSetDefaultPolicyResponse(rsp *http.Response) (*SetDefaultPolicyRespons
 	return response, nil
 }
 
+// ParseListSettingsResponse parses an HTTP response from a ListSettingsWithResponse call
+func ParseListSettingsResponse(rsp *http.Response) (*ListSettingsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListSettingsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest []SettingEntry
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseGetSettingResponse parses an HTTP response from a GetSettingWithResponse call
 func ParseGetSettingResponse(rsp *http.Response) (*GetSettingResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -10022,6 +10711,114 @@ func ParseSetSettingResponse(rsp *http.Response) (*SetSettingResponse, error) {
 			return nil, err
 		}
 		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseScanSSHFingerprintsResponse parses an HTTP response from a ScanSSHFingerprintsWithResponse call
+func ParseScanSSHFingerprintsResponse(rsp *http.Response) (*ScanSSHFingerprintsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ScanSSHFingerprintsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest []SSHFingerprint
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 502:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON502 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetVersionResponse parses an HTTP response from a GetVersionWithResponse call
+func ParseGetVersionResponse(rsp *http.Response) (*GetVersionResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetVersionResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Version
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
 		var dest Unauthorized
@@ -10168,12 +10965,21 @@ type ServerInterface interface {
 	// SetDefaultPolicy Set the default access policy.
 	// (PUT /v1/policy)
 	SetDefaultPolicy(w http.ResponseWriter, r *http.Request)
+	// ListSettings List the effective settings.
+	// (GET /v1/settings)
+	ListSettings(w http.ResponseWriter, r *http.Request)
 	// GetSetting Get a setting value.
 	// (GET /v1/settings/{key})
 	GetSetting(w http.ResponseWriter, r *http.Request, key string)
 	// SetSetting Set a setting value.
 	// (PUT /v1/settings/{key})
 	SetSetting(w http.ResponseWriter, r *http.Request, key string)
+	// ScanSSHFingerprints Scan a host's SSH fingerprints.
+	// (POST /v1/ssh-fingerprints)
+	ScanSSHFingerprints(w http.ResponseWriter, r *http.Request)
+	// GetVersion The proxpass build version.
+	// (GET /v1/version)
+	GetVersion(w http.ResponseWriter, r *http.Request)
 }
 
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
@@ -10414,6 +11220,12 @@ func (_ Unimplemented) SetDefaultPolicy(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// ListSettings List the effective settings.
+// (GET /v1/settings)
+func (_ Unimplemented) ListSettings(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // GetSetting Get a setting value.
 // (GET /v1/settings/{key})
 func (_ Unimplemented) GetSetting(w http.ResponseWriter, r *http.Request, key string) {
@@ -10423,6 +11235,18 @@ func (_ Unimplemented) GetSetting(w http.ResponseWriter, r *http.Request, key st
 // SetSetting Set a setting value.
 // (PUT /v1/settings/{key})
 func (_ Unimplemented) SetSetting(w http.ResponseWriter, r *http.Request, key string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ScanSSHFingerprints Scan a host's SSH fingerprints.
+// (POST /v1/ssh-fingerprints)
+func (_ Unimplemented) ScanSSHFingerprints(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetVersion The proxpass build version.
+// (GET /v1/version)
+func (_ Unimplemented) GetVersion(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -11182,6 +12006,20 @@ func (siw *ServerInterfaceWrapper) SetDefaultPolicy(w http.ResponseWriter, r *ht
 	handler.ServeHTTP(w, r)
 }
 
+// ListSettings operation middleware
+func (siw *ServerInterfaceWrapper) ListSettings(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListSettings(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetSetting operation middleware
 func (siw *ServerInterfaceWrapper) GetSetting(w http.ResponseWriter, r *http.Request) {
 
@@ -11225,6 +12063,34 @@ func (siw *ServerInterfaceWrapper) SetSetting(w http.ResponseWriter, r *http.Req
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.SetSetting(w, r, key)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ScanSSHFingerprints operation middleware
+func (siw *ServerInterfaceWrapper) ScanSSHFingerprints(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ScanSSHFingerprints(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetVersion operation middleware
+func (siw *ServerInterfaceWrapper) GetVersion(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetVersion(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -11462,6 +12328,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/v1/admin-keys", wrapper.AddAdminKey)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/settings", wrapper.ListSettings)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/settings/{key}", wrapper.GetSetting)
 	})
 	r.Group(func(r chi.Router) {
@@ -11469,6 +12338,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/discover", wrapper.RunDiscovery)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/version", wrapper.GetVersion)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/ssh-fingerprints", wrapper.ScanSSHFingerprints)
 	})
 
 	return r
@@ -12151,6 +13026,20 @@ func (response RemoveAdminKey404JSONResponse) VisitRemoveAdminKeyResponse(w http
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RemoveAdminKey409JSONResponse struct{ ConflictJSONResponse }
+
+func (response RemoveAdminKey409JSONResponse) VisitRemoveAdminKeyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -14164,6 +15053,69 @@ func (response SetDefaultPolicy500JSONResponse) VisitSetDefaultPolicyResponse(w 
 	return err
 }
 
+type ListSettingsRequestObject struct {
+}
+
+type ListSettingsResponseObject interface {
+	VisitListSettingsResponse(w http.ResponseWriter) error
+}
+
+type ListSettings200JSONResponse []SettingEntry
+
+func (response ListSettings200JSONResponse) VisitListSettingsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListSettings401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ListSettings401JSONResponse) VisitListSettingsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListSettings403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response ListSettings403JSONResponse) VisitListSettingsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListSettings500JSONResponse struct{ InternalErrorJSONResponse }
+
+func (response ListSettings500JSONResponse) VisitListSettingsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetSettingRequestObject struct {
 	Key string `json:"key"`
 }
@@ -14321,6 +15273,161 @@ func (response SetSetting500JSONResponse) VisitSetSettingResponse(w http.Respons
 	return err
 }
 
+type ScanSSHFingerprintsRequestObject struct {
+	Body *ScanSSHFingerprintsJSONRequestBody
+}
+
+type ScanSSHFingerprintsResponseObject interface {
+	VisitScanSSHFingerprintsResponse(w http.ResponseWriter) error
+}
+
+type ScanSSHFingerprints200JSONResponse []SSHFingerprint
+
+func (response ScanSSHFingerprints200JSONResponse) VisitScanSSHFingerprintsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ScanSSHFingerprints400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response ScanSSHFingerprints400JSONResponse) VisitScanSSHFingerprintsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ScanSSHFingerprints401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ScanSSHFingerprints401JSONResponse) VisitScanSSHFingerprintsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ScanSSHFingerprints403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response ScanSSHFingerprints403JSONResponse) VisitScanSSHFingerprintsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ScanSSHFingerprints500JSONResponse struct{ InternalErrorJSONResponse }
+
+func (response ScanSSHFingerprints500JSONResponse) VisitScanSSHFingerprintsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ScanSSHFingerprints502JSONResponse Error
+
+func (response ScanSSHFingerprints502JSONResponse) VisitScanSSHFingerprintsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(502)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetVersionRequestObject struct {
+}
+
+type GetVersionResponseObject interface {
+	VisitGetVersionResponse(w http.ResponseWriter) error
+}
+
+type GetVersion200JSONResponse Version
+
+func (response GetVersion200JSONResponse) VisitGetVersionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetVersion401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response GetVersion401JSONResponse) VisitGetVersionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetVersion403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response GetVersion403JSONResponse) VisitGetVersionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetVersion500JSONResponse struct{ InternalErrorJSONResponse }
+
+func (response GetVersion500JSONResponse) VisitGetVersionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// GetHealth Liveness probe.
@@ -14440,12 +15547,21 @@ type StrictServerInterface interface {
 	// SetDefaultPolicy Set the default access policy.
 	// (PUT /v1/policy)
 	SetDefaultPolicy(ctx context.Context, request SetDefaultPolicyRequestObject) (SetDefaultPolicyResponseObject, error)
+	// ListSettings List the effective settings.
+	// (GET /v1/settings)
+	ListSettings(ctx context.Context, request ListSettingsRequestObject) (ListSettingsResponseObject, error)
 	// GetSetting Get a setting value.
 	// (GET /v1/settings/{key})
 	GetSetting(ctx context.Context, request GetSettingRequestObject) (GetSettingResponseObject, error)
 	// SetSetting Set a setting value.
 	// (PUT /v1/settings/{key})
 	SetSetting(ctx context.Context, request SetSettingRequestObject) (SetSettingResponseObject, error)
+	// ScanSSHFingerprints Scan a host's SSH fingerprints.
+	// (POST /v1/ssh-fingerprints)
+	ScanSSHFingerprints(ctx context.Context, request ScanSSHFingerprintsRequestObject) (ScanSSHFingerprintsResponseObject, error)
+	// GetVersion The proxpass build version.
+	// (GET /v1/version)
+	GetVersion(ctx context.Context, request GetVersionRequestObject) (GetVersionResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -15544,6 +16660,30 @@ func (sh *strictHandler) SetDefaultPolicy(w http.ResponseWriter, r *http.Request
 	}
 }
 
+// ListSettings operation middleware
+func (sh *strictHandler) ListSettings(w http.ResponseWriter, r *http.Request) {
+	var request ListSettingsRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListSettings(ctx, request.(ListSettingsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListSettings")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListSettingsResponseObject); ok {
+		if err := validResponse.VisitListSettingsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // GetSetting operation middleware
 func (sh *strictHandler) GetSetting(w http.ResponseWriter, r *http.Request, key string) {
 	var request GetSettingRequestObject
@@ -15603,183 +16743,256 @@ func (sh *strictHandler) SetSetting(w http.ResponseWriter, r *http.Request, key 
 	}
 }
 
+// ScanSSHFingerprints operation middleware
+func (sh *strictHandler) ScanSSHFingerprints(w http.ResponseWriter, r *http.Request) {
+	var request ScanSSHFingerprintsRequestObject
+
+	var body ScanSSHFingerprintsJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ScanSSHFingerprints(ctx, request.(ScanSSHFingerprintsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ScanSSHFingerprints")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ScanSSHFingerprintsResponseObject); ok {
+		if err := validResponse.VisitScanSSHFingerprintsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetVersion operation middleware
+func (sh *strictHandler) GetVersion(w http.ResponseWriter, r *http.Request) {
+	var request GetVersionRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetVersion(ctx, request.(GetVersionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetVersion")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetVersionResponseObject); ok {
+		if err := validResponse.VisitGetVersionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // Base64 encoded, compressed with deflate, json marshaled OpenAPI spec.
 // Stored as a slice of fixed-width chunks rather than one concatenated
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
-	"4Q/hFuBPP3/67wAAAP//",
+	"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",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

@@ -41,6 +41,23 @@ type SessionHandler struct {
 	// a session credential. Empty disables the static token. Set with
 	// WithRESTAPIToken.
 	restAPITokenHash string
+
+	// protectedAdminKey, when non-empty, is the admin public key supplied via
+	// PROXPASS_ADMIN_KEY. RemoveAdminKey refuses to delete it: it is the key
+	// serve re-inserts on every start (see cmd/proxpass storeAdminKey), so
+	// deleting it from the UI would lock the configured administrator out until
+	// the next restart silently brought it back. Refusing is clearer than that
+	// surprise. Empty means no key is protected. Set with WithProtectedAdminKey.
+	protectedAdminKey string
+
+	// settings is the effective serve configuration the ListSettings handler
+	// reports (read-only, secrets masked). Nil (no WithSettings) still answers
+	// -- with blank config -- rather than failing. Set with WithSettings.
+	settings *SettingsSnapshot
+
+	// version is the build version GetVersion reports. Empty answers "dev".
+	// Set with WithVersion.
+	version string
 }
 
 // NewSessionHandler returns a handler reading identities from repo.
@@ -59,6 +76,29 @@ func (h *SessionHandler) WithRESTAPIToken(token string) *SessionHandler {
 		return h
 	}
 	h.restAPITokenHash = HashToken(token)
+	return h
+}
+
+// WithProtectedAdminKey marks one admin public key as undeletable through the
+// REST API: RemoveAdminKey refuses it with a 409. This is the configured
+// PROXPASS_ADMIN_KEY, which serve re-adds on every start. An empty key protects
+// nothing. The key is normalized the same way stored keys are (trimmed), so the
+// comparison is not defeated by surrounding whitespace.
+func (h *SessionHandler) WithProtectedAdminKey(key string) *SessionHandler {
+	h.protectedAdminKey = strings.TrimSpace(key)
+	return h
+}
+
+// WithSettings records the effective serve configuration the ListSettings
+// handler reports. Chainable.
+func (h *SessionHandler) WithSettings(s *SettingsSnapshot) *SessionHandler {
+	h.settings = s
+	return h
+}
+
+// WithVersion records the build version GetVersion reports. Chainable.
+func (h *SessionHandler) WithVersion(v string) *SessionHandler {
+	h.version = v
 	return h
 }
 

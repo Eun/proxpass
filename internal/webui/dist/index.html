@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ProxPass Admin</title>
+
+    <!-- Compiled Tailwind (built by the mise-pinned standalone CLI, no Node). -->
+    <link rel="stylesheet" href="./assets/app.css">
+
+    <!-- Vendored, committed, no CDN: works air-gapped. See assets/js/VENDORED.md. -->
+    <script defer src="./assets/js/alpine-collapse.min.js"></script>
+    <script defer src="./assets/js/alpine.min.js"></script>
+    <script src="./assets/js/chart.min.js"></script>
+
+    <script>
+        // ---------------------------------------------------------------------
+        // ProxPass admin SPA.
+        //
+        // One page, one origin: it is served by the same proxpass listener that
+        // serves /v1, so every API call is same-origin and needs no CORS. Auth
+        // is a bearer token (PROXPASS_REST_API_TOKEN or an admin session token)
+        // kept in sessionStorage -- never a cookie, so there is nothing for a
+        // CSRF attack to ride on, and the token is gone when the tab closes.
+        //
+        // The whole thing is plain Alpine.js: no build step, no framework, no
+        // generated client. Resource definitions below drive generic list and
+        // form rendering so each /v1 resource is a few lines of config rather
+        // than a bespoke page.
+        // ---------------------------------------------------------------------
+
+        const TOKEN_KEY = 'proxpass_admin_token';
+
+        function api() {
+            const stored = sessionStorage.getItem(TOKEN_KEY) || '';
+            return {
+                token: stored,
+                // authed is a plain reactive property, NOT a getter: app()
+                // builds its state with `...api()`, and the spread operator
+                // would copy a getter's *value* once (always false at startup)
+                // instead of the getter itself, so the view could never leave
+                // the sign-in screen. saveToken/clearToken keep it in step.
+                authed: !!stored,
+                saveToken(t) {
+                    this.token = t.trim();
+                    this.authed = !!this.token;
+                    sessionStorage.setItem(TOKEN_KEY, this.token);
+                },
+                clearToken() {
+                    this.token = '';
+                    this.authed = false;
+                    sessionStorage.removeItem(TOKEN_KEY);
+                },
+
+                // request performs one API call and normalizes errors. A 401/403
+                // bubbles up as a typed error so the UI can send the operator
+                // back to the token screen rather than showing a raw message.
+                async request(method, path, body) {
+                    const headers = { 'Authorization': 'Bearer ' + this.token };
+                    const opts = { method, headers };
+                    if (body !== undefined) {
+                        headers['Content-Type'] = 'application/json';
+                        opts.body = JSON.stringify(body);
+                    }
+                    let res;
+                    try {
+                        res = await fetch('./v1' + path, opts);
+                    } catch (e) {
+                        throw new ApiError(0, 'network error: ' + e.message);
+                    }
+                    if (res.status === 204) return null;
+                    let data = null;
+                    const text = await res.text();
+                    if (text) { try { data = JSON.parse(text); } catch (_) { data = text; } }
+                    if (!res.ok) {
+                        const msg = (data && data.error) ? data.error : ('HTTP ' + res.status);
+                        throw new ApiError(res.status, msg);
+                    }
+                    return data;
+                },
+            };
+        }
+
+        class ApiError extends Error {
+            constructor(status, message) { super(message); this.status = status; }
+            get isAuth() { return this.status === 401 || this.status === 403; }
+        }
+    </script>
+</head>
+<body class="bg-gray-100 text-gray-800">
+<div x-data="app()" x-cloak class="min-h-screen">
+
+    <!-- ===================== Token / sign-in screen ===================== -->
+    <template x-if="!authed">
+        <div class="min-h-screen flex items-center justify-center p-4">
+            <div class="w-full max-w-md bg-white rounded-lg shadow p-8">
+                <div class="flex items-center justify-center mb-6">
+                    <h1 class="text-secondary text-2xl font-bold uppercase tracking-widest">ProxPass</h1>
+                </div>
+                <p class="text-sm text-gray-600 mb-4">
+                    Enter an admin API token to manage this deployment. Use the value of
+                    <code class="bg-gray-100 px-1 rounded">PROXPASS_REST_API_TOKEN</code>,
+                    or an admin session token. The token is kept only in this tab's memory.
+                </p>
+                <form @submit.prevent="signIn()">
+                    <input
+                        type="password"
+                        x-model="tokenInput"
+                        placeholder="Bearer token"
+                        autofocus
+                        class="form-input w-full rounded border-gray-300 focus:border-primary focus:ring-primary"
+                    >
+                    <template x-if="authError">
+                        <p class="text-red-600 text-sm mt-2" x-text="authError"></p>
+                    </template>
+                    <button
+                        type="submit"
+                        :disabled="busy"
+                        class="mt-4 w-full bg-primary hover:bg-primary-dark text-white font-medium py-2 rounded transition disabled:opacity-50"
+                    >
+                        <span x-text="busy ? 'Checking…' : 'Sign in'"></span>
+                    </button>
+                </form>
+            </div>
+        </div>
+    </template>
+
+    <!-- ===================== Authenticated shell ===================== -->
+    <template x-if="authed">
+        <div x-data="{ menuOpen: false }" class="flex min-h-screen">
+            <!-- Mobile overlay -->
+            <div
+                :class="menuOpen ? 'block' : 'hidden'"
+                @click="menuOpen = false"
+                class="fixed z-20 inset-0 bg-black opacity-50 lg:hidden"
+            ></div>
+
+            <!-- Sidebar (template style) -->
+            <aside
+                :class="menuOpen ? 'translate-x-0 ease-out' : '-translate-x-full ease-in'"
+                class="fixed z-30 inset-y-0 left-0 w-64 flex flex-col transition duration-300 bg-secondary lg:translate-x-0 lg:inset-0"
+            >
+                <div class="flex items-center justify-center bg-black bg-opacity-30 h-16 flex-shrink-0">
+                    <h1 class="text-gray-100 text-lg font-bold uppercase tracking-widest">ProxPass</h1>
+                </div>
+                <nav class="py-6 flex-1 overflow-y-auto custom-scrollbar">
+                    <template x-for="item in nav" :key="item.id">
+                        <a
+                            href="#"
+                            @click.prevent="go(item.id); menuOpen = false"
+                            class="flex items-center px-6 py-3 cursor-pointer transition duration-200"
+                            :class="view === item.id ? 'bg-black bg-opacity-30 text-gray-100' : 'text-gray-400 hover:bg-black hover:bg-opacity-30 hover:text-gray-100'"
+                        >
+                            <span class="w-5 h-5 flex-shrink-0" x-html="item.icon"></span>
+                            <span class="ml-3" x-text="item.label"></span>
+                        </a>
+                    </template>
+                </nav>
+                <!-- Version, fetched once on load; pinned to the bottom. -->
+                <div class="flex-shrink-0 px-6 py-3 border-t border-white border-opacity-10 text-xs text-gray-500">
+                    <span x-text="'proxpass ' + (version || '…')"></span>
+                </div>
+            </aside>
+
+            <!-- Main column -->
+            <div class="flex-1 flex flex-col lg:ml-64 min-w-0">
+                <!-- Header -->
+                <header class="flex items-center justify-between h-16 bg-white border-b px-6">
+                    <div class="flex items-center">
+                        <button @click="menuOpen = true" class="text-gray-500 lg:hidden mr-3">
+                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+                        </button>
+                        <h2 class="text-xl font-semibold text-secondary" x-text="navLabel()"></h2>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <button @click="refresh()" title="Refresh" class="text-gray-500 hover:text-primary">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                        </button>
+                        <button @click="signOut()" class="text-sm text-gray-500 hover:text-red-600">Sign out</button>
+                    </div>
+                </header>
+
+                <!-- Flash messages -->
+                <div class="px-6 pt-4 space-y-2">
+                    <template x-if="error">
+                        <div class="bg-red-100 border border-red-300 text-red-700 px-4 py-2 rounded flex justify-between">
+                            <span x-text="error"></span>
+                            <button @click="error = ''" class="font-bold">&times;</button>
+                        </div>
+                    </template>
+                    <template x-if="notice">
+                        <div class="bg-green-100 border border-green-300 text-green-700 px-4 py-2 rounded flex justify-between">
+                            <span x-text="notice"></span>
+                            <button @click="notice = ''" class="font-bold">&times;</button>
+                        </div>
+                    </template>
+                </div>
+
+                <main class="flex-1 p-6 custom-scrollbar overflow-x-hidden">
+                    <!-- Dashboard -->
+                    <template x-if="view === 'dashboard'">
+                        <div>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-6">
+                                <template x-for="card in dashCards" :key="card.id">
+                                    <div @click="go(card.id)" class="bg-white rounded-lg shadow p-6 cursor-pointer hover:shadow-md transition">
+                                        <p class="text-sm text-gray-500" x-text="card.label"></p>
+                                        <p class="text-3xl font-bold text-secondary mt-2" x-text="card.count"></p>
+                                    </div>
+                                </template>
+                            </div>
+                            <div class="bg-white rounded-lg shadow p-6 mt-6">
+                                <h3 class="font-semibold text-secondary mb-4">Guests by status</h3>
+                                <canvas id="guestChart" height="90"></canvas>
+                            </div>
+                        </div>
+                    </template>
+
+                    <!-- Generic resource table -->
+                    <template x-if="view !== 'dashboard' && view !== 'discover' && view !== 'policy'">
+                        <div class="bg-white rounded-lg shadow">
+                            <div class="flex items-center justify-between p-4 border-b">
+                                <div class="relative w-64 max-w-full">
+                                    <input type="text" x-model="search" placeholder="Filter…" class="form-input w-full rounded border-gray-300 text-sm">
+                                </div>
+                                <template x-if="currentResource().create">
+                                    <button @click="openCreate()" class="bg-primary hover:bg-primary-dark text-white text-sm font-medium px-4 py-2 rounded transition">
+                                        + New
+                                    </button>
+                                </template>
+                            </div>
+                            <div class="overflow-x-auto custom-scrollbar">
+                                <table class="min-w-full text-sm">
+                                    <thead class="bg-gray-50 text-gray-500 uppercase text-xs">
+                                        <tr>
+                                            <template x-for="col in currentResource().columns" :key="col.key">
+                                                <th class="text-left font-medium px-4 py-3" x-text="col.label"></th>
+                                            </template>
+                                            <th class="px-4 py-3"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-gray-100">
+                                        <template x-for="row in filteredRows()" :key="row.id ?? JSON.stringify(row)">
+                                            <tr class="hover:bg-gray-50">
+                                                <template x-for="col in currentResource().columns" :key="col.key">
+                                                    <td class="px-4 py-3 align-top" x-html="renderCell(col, row)"></td>
+                                                </template>
+                                                <td class="px-4 py-3 text-right whitespace-nowrap">
+                                                    <template x-if="currentResource().edit">
+                                                        <button @click="openEdit(row)" class="text-primary hover:underline mr-3">Edit</button>
+                                                    </template>
+                                                    <template x-if="currentResource().remove">
+                                                        <button @click="removeRow(row)" class="text-red-600 hover:underline">Delete</button>
+                                                    </template>
+                                                    <template x-if="(currentResource().rowActions || []).length">
+                                                        <span>
+                                                            <template x-for="act in currentResource().rowActions" :key="act.label">
+                                                                <button @click="act.run(row)" class="text-primary hover:underline ml-3" x-text="act.label"></button>
+                                                            </template>
+                                                        </span>
+                                                    </template>
+                                                </td>
+                                            </tr>
+                                        </template>
+                                        <template x-if="!loading && filteredRows().length === 0">
+                                            <tr><td :colspan="currentResource().columns.length + 1" class="px-4 py-8 text-center text-gray-400">No rows.</td></tr>
+                                        </template>
+                                        <template x-if="loading">
+                                            <tr><td :colspan="currentResource().columns.length + 1" class="px-4 py-8 text-center text-gray-400">Loading…</td></tr>
+                                        </template>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </template>
+
+                    <!-- Default policy editor -->
+                    <template x-if="view === 'policy'">
+                        <div class="bg-white rounded-lg shadow p-6 max-w-2xl">
+                            <h3 class="font-semibold text-secondary mb-4">Default guest access policy</h3>
+                            <p class="text-sm text-gray-500 mb-4">Clients and groups selected here can reach every guest, in addition to any explicit access rules.</p>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Authorized clients</label>
+                                    <div class="border border-gray-300 rounded max-h-56 overflow-y-auto custom-scrollbar divide-y divide-gray-100">
+                                        <template x-if="(cache.clients || []).length === 0">
+                                            <p class="px-3 py-2 text-sm text-gray-400">No clients.</p>
+                                        </template>
+                                        <template x-for="c in (cache.clients || [])" :key="c.id">
+                                            <label class="flex items-center px-3 py-2 cursor-pointer hover:bg-gray-50">
+                                                <input type="checkbox" class="form-checkbox rounded border-gray-300 text-primary focus:ring-primary mr-3"
+                                                    :checked="policyForm.clients.includes(c.id)"
+                                                    @change="togglePolicy('clients', c.id)">
+                                                <span class="text-sm" x-text="c.name"></span>
+                                                <span class="text-xs text-gray-400 ml-2" x-text="'#' + c.id"></span>
+                                            </label>
+                                        </template>
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Authorized groups</label>
+                                    <div class="border border-gray-300 rounded max-h-56 overflow-y-auto custom-scrollbar divide-y divide-gray-100">
+                                        <template x-if="(cache.groups || []).length === 0">
+                                            <p class="px-3 py-2 text-sm text-gray-400">No groups.</p>
+                                        </template>
+                                        <template x-for="g in (cache.groups || [])" :key="g.id">
+                                            <label class="flex items-center px-3 py-2 cursor-pointer hover:bg-gray-50">
+                                                <input type="checkbox" class="form-checkbox rounded border-gray-300 text-primary focus:ring-primary mr-3"
+                                                    :checked="policyForm.groups.includes(g.id)"
+                                                    @change="togglePolicy('groups', g.id)">
+                                                <span class="text-sm" x-text="g.name"></span>
+                                                <span class="text-xs text-gray-400 ml-2" x-text="'#' + g.id"></span>
+                                            </label>
+                                        </template>
+                                    </div>
+                                </div>
+                            </div>
+                            <button @click="savePolicy()" :disabled="busy" class="mt-6 bg-primary hover:bg-primary-dark text-white font-medium px-4 py-2 rounded transition disabled:opacity-50">
+                                <span x-text="busy ? 'Saving…' : 'Save policy'"></span>
+                            </button>
+                        </div>
+                    </template>
+
+                    <!-- Discovery -->
+                    <template x-if="view === 'discover'">
+                        <div class="bg-white rounded-lg shadow p-6 max-w-3xl">
+                            <h3 class="font-semibold text-secondary mb-4">Run discovery</h3>
+                            <p class="text-sm text-gray-500 mb-4">Poll Proxmox for the current guest list. Leave the instance blank to discover across all instances.</p>
+                            <div class="flex gap-3 items-end">
+                                <div class="flex-1">
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Instance (optional)</label>
+                                    <select x-model="discoverInstance" class="form-select w-full rounded border-gray-300">
+                                        <option value="">All instances</option>
+                                        <template x-for="inst in cache.instances || []" :key="inst.id">
+                                            <option :value="inst.id" x-text="inst.name + ' (#' + inst.id + ')'"></option>
+                                        </template>
+                                    </select>
+                                </div>
+                                <button @click="runDiscover()" :disabled="busy" class="bg-primary hover:bg-primary-dark text-white font-medium px-4 py-2 rounded transition disabled:opacity-50">
+                                    <span x-text="busy ? 'Discovering…' : 'Discover'"></span>
+                                </button>
+                            </div>
+                            <template x-if="discoverResult">
+                                <div class="mt-6">
+                                    <p class="text-sm text-gray-600 mb-2">Total guests seen: <span class="font-semibold" x-text="discoverResult.total"></span></p>
+                                    <table class="min-w-full text-sm border">
+                                        <thead class="bg-gray-50 text-gray-500 uppercase text-xs">
+                                            <tr>
+                                                <th class="text-left px-3 py-2">Instance</th>
+                                                <th class="text-left px-3 py-2">Discovered</th>
+                                                <th class="text-left px-3 py-2">Stored</th>
+                                                <th class="text-left px-3 py-2">Removed</th>
+                                                <th class="text-left px-3 py-2">Error</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody class="divide-y">
+                                            <template x-for="r in discoverResult.instances" :key="r.instance_id">
+                                                <tr>
+                                                    <td class="px-3 py-2" x-text="r.name"></td>
+                                                    <td class="px-3 py-2" x-text="r.discovered"></td>
+                                                    <td class="px-3 py-2" x-text="r.stored"></td>
+                                                    <td class="px-3 py-2" x-text="r.removed"></td>
+                                                    <td class="px-3 py-2 text-red-600" x-text="r.error || ''"></td>
+                                                </tr>
+                                            </template>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </template>
+                        </div>
+                    </template>
+                </main>
+            </div>
+
+            <!-- ===================== Create / edit modal ===================== -->
+            <template x-if="modal.open">
+                <div class="fixed inset-0 z-40 flex items-center justify-center p-4">
+                    <div class="fixed inset-0 bg-black opacity-50" @click="closeModal()"></div>
+                    <div class="relative bg-white rounded-lg shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto custom-scrollbar">
+                        <div class="flex items-center justify-between p-4 border-b">
+                            <h3 class="font-semibold text-secondary" x-text="(modal.mode === 'create' ? 'New ' : 'Edit ') + currentResource().singular"></h3>
+                            <button @click="closeModal()" class="text-gray-400 hover:text-gray-700 text-xl">&times;</button>
+                        </div>
+                        <!-- Wizard step indicator. Field explanations live under
+                             each input, not here, so guidance is in one place. -->
+                        <template x-if="isWizard()">
+                            <div class="px-6 pt-4">
+                                <div class="flex items-center gap-2">
+                                    <template x-for="(s, i) in wizardSteps()" :key="s.title">
+                                        <div class="flex items-center gap-2">
+                                            <span class="flex items-center justify-center w-6 h-6 rounded-full text-xs font-semibold"
+                                                :class="i === modal.step ? 'bg-primary text-white' : (i < modal.step ? 'bg-primary/30 text-primary' : 'bg-gray-200 text-gray-500')"
+                                                x-text="i + 1"></span>
+                                            <span class="text-sm" :class="i === modal.step ? 'text-secondary font-medium' : 'text-gray-400'" x-text="s.title"></span>
+                                            <span x-show="i < wizardSteps().length - 1" class="text-gray-300">›</span>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </template>
+                        <div class="p-6 space-y-4">
+                            <template x-for="field in visibleFields()" :key="field.key">
+                                <div x-show="!fieldHidden(field)">
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">
+                                        <span x-text="field.label"></span>
+                                        <template x-if="field.required"><span class="text-red-500">*</span></template>
+                                    </label>
+                                    <template x-if="field.type === 'select'">
+                                        <select x-model="modal.data[field.key]" class="form-select w-full rounded border-gray-300">
+                                            <template x-for="opt in field.options" :key="opt">
+                                                <option :value="opt" x-text="opt"></option>
+                                            </template>
+                                        </select>
+                                    </template>
+                                    <template x-if="field.type === 'checkbox'">
+                                        <input type="checkbox" x-model="modal.data[field.key]" class="form-checkbox rounded border-gray-300 text-primary focus:ring-primary">
+                                    </template>
+                                    <!-- Toggle switch, from the template's forms/switch component. -->
+                                    <template x-if="field.type === 'switch'">
+                                        <div
+                                            class="relative w-12 h-6 mt-1 rounded-full transition duration-200 ease-linear"
+                                            :class="modal.data[field.key] ? 'bg-primary' : 'bg-gray-400'"
+                                        >
+                                            <label
+                                                :for="'switch_' + field.key"
+                                                class="absolute left-0 w-6 h-6 bg-white border-2 rounded-full transition duration-100 ease-linear cursor-pointer"
+                                                :class="modal.data[field.key] ? 'translate-x-full border-primary' : 'translate-x-0 border-gray-400'"
+                                            ></label>
+                                            <input
+                                                type="checkbox"
+                                                :id="'switch_' + field.key"
+                                                class="focus:ring-0 hidden"
+                                                :checked="!!modal.data[field.key]"
+                                                @click="modal.data[field.key] = !modal.data[field.key]"
+                                            >
+                                        </div>
+                                    </template>
+                                    <template x-if="field.type === 'textarea'">
+                                        <textarea x-model="modal.data[field.key]" rows="3" class="form-textarea w-full rounded border-gray-300" :placeholder="field.placeholder || ''"></textarea>
+                                    </template>
+                                    <template x-if="field.type === 'multiselect'">
+                                        <div class="border border-gray-300 rounded max-h-40 overflow-y-auto custom-scrollbar divide-y divide-gray-100">
+                                            <template x-if="(modalOptions[field.optionsFrom] || []).length === 0">
+                                                <p class="px-3 py-2 text-sm text-gray-400">None available.</p>
+                                            </template>
+                                            <template x-for="opt in (modalOptions[field.optionsFrom] || [])" :key="opt.id">
+                                                <label class="flex items-center px-3 py-2 cursor-pointer hover:bg-gray-50">
+                                                    <input
+                                                        type="checkbox"
+                                                        class="form-checkbox rounded border-gray-300 text-primary focus:ring-primary mr-3"
+                                                        :checked="isMultiSelected(field.key, opt.id)"
+                                                        @change="toggleMulti(field.key, opt.id)"
+                                                    >
+                                                    <span class="text-sm" x-text="opt.name"></span>
+                                                    <span class="text-xs text-gray-400 ml-2" x-text="'#' + opt.id"></span>
+                                                </label>
+                                            </template>
+                                        </div>
+                                    </template>
+                                    <template x-if="field.type === 'fingerprint'">
+                                        <div>
+                                            <div class="flex gap-2">
+                                                <input type="text" x-model="modal.data[field.key]" class="form-input flex-1 rounded border-gray-300" placeholder="SHA256:… (or Fetch to scan the host)">
+                                                <button type="button" @click="fetchFingerprints()" :disabled="scanning || !modal.data.ssh_host"
+                                                    class="whitespace-nowrap px-3 py-2 text-sm bg-secondary hover:bg-secondary-dark text-white rounded transition disabled:opacity-50">
+                                                    <span x-text="scanning ? 'Scanning…' : 'Fetch'"></span>
+                                                </button>
+                                            </div>
+                                            <template x-if="scannedFingerprints.length">
+                                                <div class="mt-2 border border-gray-300 rounded divide-y divide-gray-100">
+                                                    <template x-for="fp in scannedFingerprints" :key="fp.fingerprint">
+                                                        <label class="flex items-center px-3 py-2 cursor-pointer hover:bg-gray-50">
+                                                            <input type="radio" name="scanned_fp" class="form-radio text-primary focus:ring-primary mr-3"
+                                                                :checked="modal.data[field.key] === fp.fingerprint"
+                                                                @change="modal.data[field.key] = fp.fingerprint">
+                                                            <span class="min-w-0">
+                                                                <span class="text-xs text-gray-400" x-text="fp.key_type"></span>
+                                                                <span class="block text-sm font-mono break-all" x-text="fp.fingerprint"></span>
+                                                            </span>
+                                                        </label>
+                                                    </template>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </template>
+                                    <template x-if="!['select','checkbox','switch','textarea','multiselect','fingerprint'].includes(field.type)">
+                                        <input :type="field.type || 'text'" x-model="modal.data[field.key]" class="form-input w-full rounded border-gray-300" :placeholder="field.placeholder || ''">
+                                    </template>
+                                    <template x-if="field.help">
+                                        <p class="text-xs text-gray-400 mt-1" x-text="field.help"></p>
+                                    </template>
+                                </div>
+                            </template>
+                        </div>
+                        <div class="flex justify-between gap-3 p-4 border-t">
+                            <div>
+                                <!-- Back is only shown mid-wizard. -->
+                                <button x-show="isWizard() && modal.step > 0" @click="prevStep()" class="px-4 py-2 text-gray-600 hover:text-gray-900">Back</button>
+                            </div>
+                            <div class="flex gap-3">
+                                <button @click="closeModal()" class="px-4 py-2 text-gray-600 hover:text-gray-900">Cancel</button>
+                                <!-- Mid-wizard: Next advances; otherwise Save submits. -->
+                                <template x-if="isWizard() && !isLastStep()">
+                                    <button @click="nextStep()" :disabled="!stepValid()" class="bg-primary hover:bg-primary-dark text-white font-medium px-4 py-2 rounded transition disabled:opacity-50">Next</button>
+                                </template>
+                                <template x-if="!isWizard() || isLastStep()">
+                                    <button @click="submitModal()" :disabled="busy" class="bg-primary hover:bg-primary-dark text-white font-medium px-4 py-2 rounded transition disabled:opacity-50">
+                                        <span x-text="busy ? 'Saving…' : 'Save'"></span>
+                                    </button>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </template>
+
+            <!-- ===================== Confirmation dialog ===================== -->
+            <template x-if="confirmState.open">
+                <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
+                    <div class="fixed inset-0 bg-black opacity-50" @click="resolveConfirm(false)"></div>
+                    <div class="relative bg-white rounded-lg shadow-xl w-full max-w-sm">
+                        <div class="p-6">
+                            <div class="flex items-start gap-3">
+                                <span class="flex-shrink-0 flex items-center justify-center w-10 h-10 rounded-full bg-red-100 text-red-600">
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M5 19h14a2 2 0 001.84-2.75L13.74 4a2 2 0 00-3.48 0L3.16 16.25A2 2 0 005 19z"/></svg>
+                                </span>
+                                <div>
+                                    <h3 class="font-semibold text-secondary">Please confirm</h3>
+                                    <p class="text-sm text-gray-600 mt-1" x-text="confirmState.message"></p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="flex justify-end gap-3 p-4 border-t">
+                            <button @click="resolveConfirm(false)" class="px-4 py-2 text-gray-600 hover:text-gray-900">Cancel</button>
+                            <button @click="resolveConfirm(true)" class="bg-red-600 hover:bg-red-700 text-white font-medium px-4 py-2 rounded transition">Confirm</button>
+                        </div>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </template>
+</div>
+
+<script src="./assets/app.js"></script>
+</body>
+</html>

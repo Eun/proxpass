@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 
 	"proxpass/internal/db"
 	"proxpass/internal/models"
 	"proxpass/internal/proxmox"
+	"proxpass/internal/sshhostkey"
 )
 
 // Admin handlers for the typed /v1 API.
@@ -128,9 +130,7 @@ func (h *SessionHandler) ListInstances(
 	return ListInstances200JSONResponse(out), nil
 }
 
-// AddInstance creates a Proxmox instance.
-//
-//nolint:dupl // parallel REST CRUD across entity types; the symmetry is the point
+// AddInstance creates a Proxmox instance and discovers its guests immediately.
 func (h *SessionHandler) AddInstance(
 	ctx context.Context, request AddInstanceRequestObject,
 ) (AddInstanceResponseObject, error) {
@@ -154,6 +154,21 @@ func (h *SessionHandler) AddInstance(
 		}
 		return nil, err
 	}
+
+	// Discover the new node's guests right away so the guest list is populated
+	// without waiting for the next poll. AddProxmoxInstance set inst.ID via
+	// RETURNING, which discoverInstance needs to store guests against it. This
+	// is best-effort: the node is already stored, so a discovery failure (an
+	// unreachable node, a bad token) must not fail the add -- it is logged and
+	// the next scheduled pass retries, exactly as the CLI's `instance add'
+	// behaves. Skipped when no discoverer is wired (e.g. in tests).
+	if h.discoverer != nil {
+		if row := h.discoverInstance(ctx, inst); row.Error != nil {
+			h.logger.Printf("instance %q added but initial discovery failed: %s",
+				inst.Name, *row.Error)
+		}
+	}
+
 	return AddInstance201JSONResponse(toAPIInstance(inst)), nil
 }
 
@@ -162,6 +177,8 @@ func (h *SessionHandler) AddInstance(
 // There is no GetByID repo method for instances, so the row is found by
 // listing and filtering -- the same way ConnectSessionNode's findInstance
 // does. A missing row is a 404.
+//
+//nolint:dupl // parallel REST reads across entity types; the symmetry is the point
 func (h *SessionHandler) GetInstance(
 	ctx context.Context, request GetInstanceRequestObject,
 ) (GetInstanceResponseObject, error) {
@@ -289,8 +306,6 @@ func (h *SessionHandler) ListClients(
 }
 
 // AddClient creates a client.
-//
-//nolint:dupl // parallel REST CRUD across entity types; the symmetry is the point
 func (h *SessionHandler) AddClient(
 	ctx context.Context, request AddClientRequestObject,
 ) (AddClientResponseObject, error) {
@@ -321,6 +336,8 @@ func (h *SessionHandler) AddClient(
 //
 // There is no GetByID repo method for clients, so the row is found by
 // listing and filtering. GetClientByName exists but keys on name, not id.
+//
+//nolint:dupl // parallel REST reads across entity types; the symmetry is the point
 func (h *SessionHandler) GetClient(
 	ctx context.Context, request GetClientRequestObject,
 ) (GetClientResponseObject, error) {
@@ -450,8 +467,6 @@ func (h *SessionHandler) ListGroups(
 }
 
 // AddGroup creates a group.
-//
-//nolint:dupl // parallel REST CRUD across entity types; the symmetry is the point
 func (h *SessionHandler) AddGroup(
 	ctx context.Context, request AddGroupRequestObject,
 ) (AddGroupResponseObject, error) {
@@ -482,6 +497,8 @@ func (h *SessionHandler) AddGroup(
 //
 // There is no GetByID repo method for groups, so the row is found by listing
 // and filtering.
+//
+//nolint:dupl // parallel REST reads across entity types; the symmetry is the point
 func (h *SessionHandler) GetGroup(
 	ctx context.Context, request GetGroupRequestObject,
 ) (GetGroupResponseObject, error) {
@@ -896,7 +913,61 @@ func (h *SessionHandler) SetDefaultPolicy(
 	return SetDefaultPolicy200JSONResponse(toAPIDefaultPolicy(policy)), nil
 }
 
+// --- Version ---
+
+// GetVersion returns the running proxpass build version. Admin-gated like the
+// rest of /v1; the admin UI (already authenticated) fetches it once on load.
+func (h *SessionHandler) GetVersion(
+	ctx context.Context, _ GetVersionRequestObject,
+) (GetVersionResponseObject, error) {
+	if denied, ok, err := gateAdmin(ctx, h,
+		func(reason string) GetVersionResponseObject {
+			return GetVersion401JSONResponse{UnauthorizedJSONResponse{Error: reason}}
+		},
+		func() GetVersionResponseObject {
+			return GetVersion403JSONResponse{ForbiddenJSONResponse{Error: errNotAdminAPI.Error()}}
+		},
+	); !ok {
+		return denied, err
+	}
+	v := h.version
+	if v == "" {
+		v = "dev"
+	}
+	return GetVersion200JSONResponse(Version{Version: v}), nil
+}
+
 // --- Settings ---
+
+// ListSettings returns the effective serve configuration, read-only, with
+// secrets masked by buildSettings. The stored public endpoint is read from the
+// repo (it can change without a restart); everything else comes from the
+// snapshot captured at startup.
+func (h *SessionHandler) ListSettings(
+	ctx context.Context, _ ListSettingsRequestObject,
+) (ListSettingsResponseObject, error) {
+	if denied, ok, err := gateAdmin(ctx, h,
+		func(reason string) ListSettingsResponseObject {
+			return ListSettings401JSONResponse{UnauthorizedJSONResponse{Error: reason}}
+		},
+		func() ListSettingsResponseObject {
+			return ListSettings403JSONResponse{ForbiddenJSONResponse{Error: errNotAdminAPI.Error()}}
+		},
+	); !ok {
+		return denied, err
+	}
+	// public_endpoint is the one stored setting; a missing row is just an
+	// empty value, not an error (the deployment may not have one).
+	endpoint, err := h.repo.GetSetting(ctx, db.SettingPublicEndpoint)
+	if err != nil {
+		endpoint = ""
+	}
+	snap := h.settings
+	if snap == nil {
+		snap = &SettingsSnapshot{}
+	}
+	return ListSettings200JSONResponse(buildSettings(snap, endpoint)), nil
+}
 
 // GetSetting returns one setting by key.
 //
@@ -1013,6 +1084,18 @@ func (h *SessionHandler) RemoveAdminKey(
 	if request.Body == nil {
 		return RemoveAdminKey400JSONResponse{BadRequestJSONResponse{Error: errMissingBody}}, nil
 	}
+	// The configured admin key (PROXPASS_ADMIN_KEY) cannot be removed here:
+	// serve re-adds it on the next start, so "deleting" it would only lock the
+	// configured administrator out until a restart quietly restored it. Refuse
+	// with a 409 and a message the UI can show, rather than accept a delete
+	// that does not stick.
+	if h.protectedAdminKey != "" &&
+		strings.TrimSpace(request.Body.PublicKey) == h.protectedAdminKey {
+		return RemoveAdminKey409JSONResponse{ConflictJSONResponse{
+			Error: "this key is set by PROXPASS_ADMIN_KEY and cannot be removed " +
+				"here; change the configuration and restart instead",
+		}}, nil
+	}
 	if err := h.repo.RemoveAdminKey(ctx, request.Body.PublicKey); err != nil {
 		return nil, err
 	}
@@ -1072,6 +1155,44 @@ func (h *SessionHandler) RunDiscovery(
 		result.Instances = append(result.Instances, row)
 	}
 	return RunDiscovery200JSONResponse(result), nil
+}
+
+// ScanSSHFingerprints scans an SSH host for its host-key fingerprints so the
+// admin UI can offer them when adding a node. It does not store anything and
+// opens no session -- it reports what the host currently presents, which the
+// operator still has to confirm out of band before pinning.
+//
+// A host that cannot be reached is a 502 (a bad upstream), not a 500: the
+// server is fine, the scanned host is not.
+func (h *SessionHandler) ScanSSHFingerprints(
+	ctx context.Context, request ScanSSHFingerprintsRequestObject,
+) (ScanSSHFingerprintsResponseObject, error) {
+	if denied, ok, err := gateAdmin(ctx, h,
+		func(reason string) ScanSSHFingerprintsResponseObject {
+			return ScanSSHFingerprints401JSONResponse{UnauthorizedJSONResponse{Error: reason}}
+		},
+		func() ScanSSHFingerprintsResponseObject {
+			return ScanSSHFingerprints403JSONResponse{ForbiddenJSONResponse{Error: errNotAdminAPI.Error()}}
+		},
+	); !ok {
+		return denied, err
+	}
+	if request.Body == nil {
+		return ScanSSHFingerprints400JSONResponse{BadRequestJSONResponse{Error: errMissingBody}}, nil
+	}
+
+	keys, err := sshhostkey.ScanFingerprints(ctx, request.Body.SSHHost, request.Body.SSHPort)
+	if err != nil {
+		// The host, not the server, is the problem: surface it as a 502 with
+		// the reason so the UI can tell the operator what went wrong.
+		return ScanSSHFingerprints502JSONResponse{Error: err.Error()}, nil
+	}
+
+	out := make([]SSHFingerprint, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, SSHFingerprint{KeyType: k.KeyType, Fingerprint: k.Fingerprint})
+	}
+	return ScanSSHFingerprints200JSONResponse(out), nil
 }
 
 // discoverInstance runs one instance's discovery pass and reports its counts.

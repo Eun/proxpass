@@ -12,6 +12,7 @@ protocol, and proxpass supplies the users, the keys and the session.
 - **Public Key Authentication** — The only supported method; password authentication is disabled
 - **Auto-Discovery** — Periodically reconciles the guest list against the configured Proxmox hosts via the REST API: guests that start are added, and guests that stop or are destroyed are removed
 - **Admin CLI over SSH** — Full command-line interface for managing instances, clients, groups, access rules, and admin keys
+- **Admin REST API & Web UI** — A typed `/v1` REST API, with a static browser admin UI (TailwindCSS + Alpine.js) compiled into the binary — no Node.js, no external web server
 - **Run Commands In Guests** — `ssh ct100@host whoami` runs it inside the container, with the exit status, streams and PTY behaving as any other ssh
 - **Flexible Guest Resolution** — Connect by VMID (`100`), type+VMID (`ct100`), name (`webserver`), or instance-qualified (`ct101@rome`) — as the login name (`ssh ct100@host`) or via `guest connect`
 - **Access Control** — Per-client and per-group access rules with a global default policy fallback
@@ -44,15 +45,27 @@ which is why the image is Debian based.
 ## Quick Start
 
 **1. Run proxpass.** The admin key is your own public key: it is what lets you
-run the CLI in the steps below.
+run the CLI in the steps below. The two `PROXPASS_REST_API_*` variables and the
+`-p 8081:8081` publish the [admin web UI](#admin-web-ui) — leave them out if you
+only want the SSH CLI.
 
 ```bash
 docker run -d --name proxpass \
   -p 2222:22 \
+  -p 8081:8081 \
   -v proxpass-data:/var/lib/proxpass \
   -e PROXPASS_ADMIN_KEY="$(cat ~/.ssh/id_ed25519.pub)" \
+  -e PROXPASS_REST_API_LISTEN="0.0.0.0:8081" \
+  -e PROXPASS_REST_API_TOKEN="change-me-to-a-long-random-token" \
   ghcr.io/eun/proxpass:latest
 ```
+
+The admin UI is now at **`http://localhost:8081/`**. Open it, and sign in with
+the `PROXPASS_REST_API_TOKEN` value you set above — that token is the password.
+Pick a long random one (e.g. `openssl rand -hex 32`) and keep it secret: anyone
+with it has full admin access. See [Admin Web UI](#admin-web-ui) for details.
+The steps below use the SSH CLI, but everything they do can also be done in the
+UI.
 
 **2. Add a Proxmox instance.** Nothing is discovered until proxpass knows where
 to look, so this has to come before you connect.
@@ -488,6 +501,100 @@ curl -X POST -H 'Authorization: Bearer s3cr3t-admin-token' \
   -d '{"id":0,"name":"alice","public_keys":["ssh-ed25519 AAAA... alice"],"group_ids":[]}' \
   http://host:8081/v1/clients
 ```
+
+## Admin Web UI
+
+proxpass ships a browser admin UI for the REST API. It is a static
+single-page app — TailwindCSS and Alpine.js — compiled into the binary, so the
+same proxpass process that serves `/v1` serves the UI with no separate web
+server, no Node.js runtime, and no external files.
+
+### Exposing it
+
+The container's HTTP listener is **loopback-only by default** (`PROXPASS_LISTEN`
+is `127.0.0.1:8080`), so nothing is reachable from outside the container until
+you ask for it. To reach the UI from your browser, enable the second, routable
+admin listener and publish its port:
+
+```bash
+docker run -d --name proxpass \
+  -p 2222:22 \
+  -p 8081:8081 \
+  -v proxpass-data:/var/lib/proxpass \
+  -e PROXPASS_ADMIN_KEY="$(cat ~/.ssh/id_ed25519.pub)" \
+  -e PROXPASS_REST_API_LISTEN="0.0.0.0:8081" \
+  -e PROXPASS_REST_API_TOKEN="$(openssl rand -hex 32)" \
+  ghcr.io/eun/proxpass:latest
+```
+
+`PROXPASS_REST_API_LISTEN` turns on the second listener, and
+`PROXPASS_REST_API_TOKEN` is the token you will log in with — **required**
+whenever the listener is set, so proxpass refuses to start a routable admin
+listener with no token rather than exposing an unauthenticated one. That
+listener serves only the admin API and the UI — never the NSS directory.
+
+The same works in a compose file:
+
+```yaml
+services:
+  proxpass:
+    image: ghcr.io/eun/proxpass:latest
+    ports:
+      - "2222:22"
+      - "8081:8081"
+    volumes:
+      - proxpass-data:/var/lib/proxpass
+    environment:
+      PROXPASS_ADMIN_KEY: "ssh-ed25519 AAAA… you"
+      PROXPASS_REST_API_LISTEN: "0.0.0.0:8081"
+      PROXPASS_REST_API_TOKEN: "a-long-random-secret"
+```
+
+> On the loopback listener (`--listen`), the UI is also served, at
+> `http://127.0.0.1:8080/` — reachable only from inside the container (or
+> through an SSH tunnel). For browser access from your machine, use the
+> routable listener above.
+
+### Logging in
+
+1. Open **`http://localhost:8081/`** (or wherever you published the admin
+   listener).
+2. You are asked for an **admin API token**. Paste the value of
+   `PROXPASS_REST_API_TOKEN` — that token *is* the login. (An admin session
+   token minted over SSH also works, but the static token is the simple path.)
+3. Click **Sign in**. The token is checked against the API and, if valid, the
+   dashboard loads.
+
+The UI keeps the token only in the browser tab's memory — never a cookie — so
+it is not exposed to CSRF, is forgotten when the tab closes, and signing out
+clears it immediately. Because the token grants full admin access, pick a long
+random value (`openssl rand -hex 32`), serve the listener over TLS if it is
+reachable beyond localhost, and rotate it by restarting with a new value.
+
+The UI covers every admin resource: instances, guests, clients, groups, guest
+and node access rules, the default policy, admin keys, settings, and running
+discovery — the same operations as the [Admin CLI](#admin-cli). The OpenAPI
+spec the UI is built against is also served, at `/openapi.json`, for generating
+clients or exploring the API.
+
+### Building the UI
+
+The UI is built into the binary at compile time and the built assets are
+committed, so a plain `go build` or the container image already includes it —
+there is nothing extra to run for a normal build or deployment.
+
+To rebuild it after changing `frontend/`, run:
+
+```bash
+mise run frontend   # or `mise run build`, which depends on it
+```
+
+This uses the mise-pinned Tailwind **standalone** CLI (a single binary; no
+`npm install`, no `node_modules`) to compile `frontend/` into
+`internal/webui/dist/`. Alpine.js and Chart.js are vendored under
+`frontend/assets/js/` rather than loaded from a CDN, so the UI works with no
+outbound network. The pinned toolchain is in `mise.toml`, so local builds, CI,
+and the release all compile the UI the same way.
 
 ## Configuration
 

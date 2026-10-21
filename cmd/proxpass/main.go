@@ -31,6 +31,8 @@ import (
 	"proxpass/internal/loglevel"
 	"proxpass/internal/proxmox"
 	"proxpass/internal/session"
+	"proxpass/internal/version"
+	"proxpass/internal/webui"
 )
 
 func main() {
@@ -146,6 +148,14 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	logger.Printf("config: listen=%s data=%s discovery-interval=%s log-level=%s",
 		listenAddr, dataPath, interval, level)
 
+	// The admin UI is embedded. If this binary was built without running
+	// the frontend task, it carries the placeholder stub instead -- warn
+	// rather than silently serve a broken page.
+	if webui.IsPlaceholder() {
+		logger.Printf("warning: admin web UI is a build placeholder " +
+			"(build with `mise run build' to embed the real UI)")
+	}
+
 	// Resolve the uid/gid layout before anything else: an invalid one must
 	// fail at startup rather than after sshd has accepted a key, where it
 	// surfaces as "setresuid ...: Invalid argument".
@@ -198,10 +208,27 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 		repo, interval, logger, proxmox.DefaultDiscovererFactory)
 	go discovery.Run(ctx)
 
+	// A read-only snapshot of the effective configuration for the admin
+	// Settings view. Only set/unset is recorded for the secrets, never their
+	// values; the handler masks them further before they leave the process.
+	settingsSnapshot := &api.SettingsSnapshot{
+		Data:              dataPath,
+		LogLevel:          level.String(),
+		DiscoveryInterval: interval.String(),
+		Listen:            listenAddr,
+		RESTAPIListen:     restAPIListen,
+		AdminKey:          strings.TrimSpace(cmd.String("admin-key")),
+		NSSTokenSet:       nssToken != "",
+		RESTAPITokenSet:   restAPIToken != "",
+	}
+
 	server := api.NewServerWithIDs(repo, logger, ids).
 		WithNSSToken(nssToken).
 		WithRESTAPIToken(restAPIToken).
-		WithDiscoverer(proxmox.DefaultDiscovererFactory)
+		WithDiscoverer(proxmox.DefaultDiscovererFactory).
+		WithProtectedAdminKey(cmd.String("admin-key")).
+		WithSettings(settingsSnapshot).
+		WithVersion(version.String())
 
 	// The admin REST API on its own routable listener (no NSS routes), when
 	// configured. It runs alongside the loopback listener and shares ctx for
