@@ -1171,7 +1171,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/Setting"
+                  $ref: "#/components/schemas/SettingEntry"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -1895,25 +1895,28 @@ components:
       type: object
       description: |
         A setting's key and value, as returned by GetSetting (the key echoes
-        the path parameter) and listSettings. For listSettings each entry also
-        carries where it comes from and whether it is a secret; a secret's
-        value is masked by the server and never returned in cleartext.
+        the path parameter).
       required: [key, value]
       properties:
         key:
           type: string
         value:
           type: string
-        source:
+
+    SettingEntry:
+      type: object
+      description: |
+        One effective setting in the listSettings view: the environment
+        variable that controls it (key) and its current value. Secret-bearing
+        values (tokens, the database password) are masked by the server and
+        never returned in cleartext.
+      required: [key, value]
+      properties:
+        key:
           type: string
-          description: |
-            Where the setting comes from, e.g. an environment variable name.
-            Present on listSettings entries; omitted by getSetting.
-        secret:
-          type: boolean
-          description: |
-            True when the value is sensitive (a token, a password). The server
-            masks such values, so `value` is a placeholder, not the real one.
+          description: The environment variable, e.g. PROXPASS_DATA.
+        value:
+          type: string
 
     DiscoverResult:
       type: object

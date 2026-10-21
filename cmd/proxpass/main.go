@@ -216,7 +216,7 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 		DiscoveryInterval: interval.String(),
 		Listen:            listenAddr,
 		RESTAPIListen:     restAPIListen,
-		AdminKeySet:       strings.TrimSpace(cmd.String("admin-key")) != "",
+		AdminKey:          strings.TrimSpace(cmd.String("admin-key")),
 		NSSTokenSet:       nssToken != "",
 		RESTAPITokenSet:   restAPIToken != "",
 	}

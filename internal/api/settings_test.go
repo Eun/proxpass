@@ -8,40 +8,41 @@ import (
 // testListenAddr is the loopback listener used across the settings tests.
 const testListenAddr = "127.0.0.1:8080"
 
-// buildSettings masks the secret-bearing fields and never emits a real token
-// or password; non-secret config is reported as-is.
-func TestBuildSettingsMasksSecrets(t *testing.T) {
+// buildSettings keys entries by environment variable, masks the two tokens,
+// and shows the admin key (a public key) in cleartext.
+func TestBuildSettings(t *testing.T) {
 	snap := SettingsSnapshot{
 		Data:              "/var/lib/proxpass/proxpass.db",
 		LogLevel:          "info",
 		DiscoveryInterval: "5m0s",
 		Listen:            testListenAddr,
 		RESTAPIListen:     "0.0.0.0:8081",
-		AdminKeySet:       true,
+		AdminKey:          "ssh-ed25519 AAAA admin",
 		NSSTokenSet:       true,
 		RESTAPITokenSet:   true,
 	}
-	got := map[string]Setting{}
+	got := map[string]string{}
 	for _, s := range buildSettings(&snap, "proxpass.example") {
-		got[s.Key] = s
+		got[s.Key] = s.Value
 	}
 
-	// Non-secret values are reported verbatim.
-	if got["listen"].Value != testListenAddr {
-		t.Errorf("listen = %q, want the configured address", got["listen"].Value)
+	// Keyed by env var; non-secret values reported verbatim.
+	if got["PROXPASS_LISTEN"] != testListenAddr {
+		t.Errorf("PROXPASS_LISTEN = %q, want the configured address", got["PROXPASS_LISTEN"])
 	}
-	if got["public_endpoint"].Value != "proxpass.example" {
-		t.Errorf("public_endpoint = %q, want the stored value", got["public_endpoint"].Value)
+	if got["PROXPASS_PUBLIC_ENDPOINT"] != "proxpass.example" {
+		t.Errorf("PROXPASS_PUBLIC_ENDPOINT = %q, want the stored value", got["PROXPASS_PUBLIC_ENDPOINT"])
+	}
+	// The admin key is PUBLIC: shown as given, not masked.
+	if got["PROXPASS_ADMIN_KEY"] != "ssh-ed25519 AAAA admin" {
+		t.Errorf("PROXPASS_ADMIN_KEY = %q, want the key in cleartext", got["PROXPASS_ADMIN_KEY"])
 	}
 
-	// Secret entries are flagged and masked: no plaintext, just a set marker.
-	for _, key := range []string{"nss_token", "rest_api_token"} {
-		s := got[key]
-		if s.Secret == nil || !*s.Secret {
-			t.Errorf("%s: Secret flag not set", key)
-		}
-		if !strings.Contains(s.Value, "set") || strings.Contains(s.Value, "token") {
-			t.Errorf("%s value = %q, want a masked set-marker", key, s.Value)
+	// The two tokens are masked: a set marker, never the token itself.
+	for _, key := range []string{"PROXPASS_NSS_TOKEN", "PROXPASS_REST_API_TOKEN"} {
+		v := got[key]
+		if !strings.Contains(v, "set") || strings.Contains(v, "token") {
+			t.Errorf("%s value = %q, want a masked set-marker", key, v)
 		}
 	}
 }
@@ -91,14 +92,14 @@ func TestListSettingsHandler(t *testing.T) {
 	}
 	var sawToken bool
 	for _, s := range list {
-		if s.Key == "rest_api_token" {
+		if s.Key == "PROXPASS_REST_API_TOKEN" {
 			sawToken = true
-			if s.Secret == nil || !*s.Secret {
-				t.Error("rest_api_token not flagged secret")
+			if strings.Contains(s.Value, "token") || s.Value == "" {
+				t.Errorf("PROXPASS_REST_API_TOKEN value = %q, want it masked", s.Value)
 			}
 		}
 	}
 	if !sawToken {
-		t.Fatal("ListSettings did not include rest_api_token")
+		t.Fatal("ListSettings did not include PROXPASS_REST_API_TOKEN")
 	}
 }

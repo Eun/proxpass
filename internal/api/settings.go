@@ -9,9 +9,9 @@ import (
 //
 // It is a plain value, built by cmd/proxpass from the parsed flags and handed
 // to the SessionHandler (WithSettings). The handler turns it into the read-only
-// Setting list, masking the secret-bearing fields so a token or a database
-// password never leaves the process in cleartext -- masking is done HERE, in
-// the backend, not in the browser.
+// list keyed by environment variable, masking the secret-bearing fields so a
+// token or a database password never leaves the process in cleartext --
+// masking is done HERE, in the backend, not in the browser.
 //
 // PublicEndpoint is intentionally NOT a field: it is a stored setting, read
 // from the database at request time (it can change without a restart, unlike
@@ -22,7 +22,7 @@ type SettingsSnapshot struct {
 	DiscoveryInterval string // --discovery-interval
 	Listen            string // --listen (loopback API listener)
 	RESTAPIListen     string // --rest-api-listen (second listener; may be empty)
-	AdminKeySet       bool   // whether --admin-key was supplied
+	AdminKey          string // --admin-key: a PUBLIC key, so shown in cleartext
 	NSSTokenSet       bool   // whether --nss-token was supplied (secret)
 	RESTAPITokenSet   bool   // whether --rest-api-token was supplied (secret)
 }
@@ -58,30 +58,25 @@ func maskDataSource(data string) string {
 	return scheme + creds + tail
 }
 
-func strPtrSettings(s string) *string { return &s }
-func boolPtrSettings(b bool) *bool    { return &b }
-
 // buildSettings turns the snapshot (plus the stored public endpoint) into the
-// read-only Setting list the Settings view shows. Secrets are masked here.
-func buildSettings(s *SettingsSnapshot, publicEndpoint string) []Setting {
-	entry := func(key, value, source string, secret bool) Setting {
-		return Setting{
-			Key:    key,
-			Value:  value,
-			Source: strPtrSettings(source),
-			Secret: boolPtrSettings(secret),
-		}
+// read-only list the Settings view shows. Each entry is keyed by the
+// environment variable that controls it. The two tokens and the database
+// password are masked here; the admin key is a PUBLIC key, so it is shown as
+// given.
+func buildSettings(s *SettingsSnapshot, publicEndpoint string) []SettingEntry {
+	entry := func(envVar, value string) SettingEntry {
+		return SettingEntry{Key: envVar, Value: value}
 	}
-	return []Setting{
-		entry("public_endpoint", publicEndpoint, "PROXPASS_PUBLIC_ENDPOINT", false),
-		entry("data", maskDataSource(s.Data), "PROXPASS_DATA", false),
-		entry("log_level", s.LogLevel, "PROXPASS_LOG_LEVEL", false),
-		entry("discovery_interval", s.DiscoveryInterval, "PROXPASS_DISCOVERY_INTERVAL", false),
-		entry("listen", s.Listen, "PROXPASS_LISTEN", false),
-		entry("rest_api_listen", valueOrUnset(s.RESTAPIListen), "PROXPASS_REST_API_LISTEN", false),
-		entry("admin_key", maskSecretSet(s.AdminKeySet), "PROXPASS_ADMIN_KEY", false),
-		entry("nss_token", maskSecretSet(s.NSSTokenSet), "PROXPASS_NSS_TOKEN", true),
-		entry("rest_api_token", maskSecretSet(s.RESTAPITokenSet), "PROXPASS_REST_API_TOKEN", true),
+	return []SettingEntry{
+		entry("PROXPASS_PUBLIC_ENDPOINT", valueOrUnset(publicEndpoint)),
+		entry("PROXPASS_DATA", maskDataSource(s.Data)),
+		entry("PROXPASS_LOG_LEVEL", s.LogLevel),
+		entry("PROXPASS_DISCOVERY_INTERVAL", s.DiscoveryInterval),
+		entry("PROXPASS_LISTEN", s.Listen),
+		entry("PROXPASS_REST_API_LISTEN", valueOrUnset(s.RESTAPIListen)),
+		entry("PROXPASS_ADMIN_KEY", valueOrUnset(s.AdminKey)),
+		entry("PROXPASS_NSS_TOKEN", maskSecretSet(s.NSSTokenSet)),
+		entry("PROXPASS_REST_API_TOKEN", maskSecretSet(s.RESTAPITokenSet)),
 	}
 }
 

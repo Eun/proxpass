@@ -199,16 +199,12 @@ function app() {
                     readOnly: true,
                     // Give each row a stable id (its key) for list rendering.
                     unwrap: (data) => (data || []).map((s) => ({ ...s, id: s.key })),
-                    // Two columns: the environment variable (under the "Key"
-                    // header) and its value, e.g. PROXPASS_DATA | /var/lib/...
+                    // Two columns: the environment variable (Key) and its value,
+                    // e.g. PROXPASS_DATA | /var/lib/proxpass/proxpass.db. Secret
+                    // values arrive already masked from the server.
                     columns: [
-                        { key: 'source', label: 'Key', render: (v, row) => '<code class="text-xs text-gray-600">' + esc(v || row.key) + '</code>' },
-                        {
-                            key: 'value', label: 'Value',
-                            render: (v, row) => row.secret
-                                ? '<span class="text-gray-500 font-mono">' + esc(v) + '</span>'
-                                : (v ? esc(v) : '<span class="text-gray-300">(unset)</span>'),
-                        },
+                        { key: 'key', label: 'Key', render: (v) => '<code class="text-xs text-gray-600">' + esc(v) + '</code>' },
+                        { key: 'value', label: 'Value', render: (v) => v ? '<span class="font-mono break-all">' + esc(v) + '</span>' : '<span class="text-gray-300">(unset)</span>' },
                     ],
                 },
             };
