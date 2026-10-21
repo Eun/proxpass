@@ -83,32 +83,32 @@ function app() {
                     // fields for one concern and explains why they are needed.
                     // `node' is NOT a field -- proxpass learns it from the API at
                     // add time, so there is nothing for the operator to enter.
+                    // Every field carries its own help text, shown under the
+                    // input -- there is no separate per-step description, so all
+                    // explanation lives in one consistent place.
                     steps: [
                         {
                             title: 'Connection',
-                            description: 'How proxpass reaches the Proxmox API. The API token is used to list guests and open consoles; create a token in Proxmox under Datacenter → Permissions → API Tokens.',
                             fields: [
                                 { key: 'name', label: 'Name', required: true, help: 'A label for this node, e.g. its hostname.' },
-                                { key: 'api_url', label: 'API URL', required: true, placeholder: 'https://pve:8006' },
-                                { key: 'api_token_id', label: 'API token ID', required: true, placeholder: 'user@pam!token' },
-                                { key: 'api_token_secret', label: 'API token secret', type: 'password', required: true },
+                                { key: 'api_url', label: 'API URL', required: true, placeholder: 'https://pve:8006', help: 'The Proxmox API endpoint proxpass connects to.' },
+                                { key: 'api_token_id', label: 'API token ID', required: true, placeholder: 'user@pam!token', help: 'Create a token in Proxmox under Datacenter → Permissions → API Tokens.' },
+                                { key: 'api_token_secret', label: 'API token secret', type: 'password', required: true, help: 'The secret shown once when the token was created. Used to list guests and open consoles.' },
                                 { key: 'insecure_tls', label: 'Skip TLS verification', type: 'checkbox', help: 'Enable only if the API serves a self-signed certificate you cannot trust otherwise.' },
                             ],
                         },
                         {
                             title: 'Console',
-                            description: 'How consoles attach to guests. "termproxy" uses the Proxmox WebSocket and needs nothing more. "ssh" runs pct enter / qm terminal over SSH, which needs the SSH details on the next step.',
                             fields: [
-                                { key: 'console_transport', label: 'Console transport', type: 'select', options: ['termproxy', 'ssh'] },
+                                { key: 'console_transport', label: 'Console transport', type: 'select', options: ['termproxy', 'ssh'], help: '"termproxy" uses the Proxmox WebSocket and needs nothing more. "ssh" runs pct enter / qm terminal over SSH, which needs the SSH details on the next step.' },
                             ],
                         },
                         {
                             title: 'SSH',
-                            description: 'Optional. An SSH host enables the node shell, SFTP and file transfer (and is required for the "ssh" console transport). Leave the host blank to skip SSH entirely.',
                             fields: [
-                                { key: 'ssh_host', label: 'SSH host', placeholder: 'optional; enables node shell / SFTP' },
-                                { key: 'ssh_port', label: 'SSH port', type: 'number' },
-                                { key: 'ssh_user', label: 'SSH user', placeholder: 'root' },
+                                { key: 'ssh_host', label: 'SSH host', placeholder: 'optional; enables node shell / SFTP', help: 'Optional. Enables the node shell, SFTP and file transfer (and is required for the "ssh" console transport). Leave blank to skip SSH entirely.' },
+                                { key: 'ssh_port', label: 'SSH port', type: 'number', help: 'The SSH port, typically 22.' },
+                                { key: 'ssh_user', label: 'SSH user', placeholder: 'root', help: 'The user proxpass logs in as, usually root.' },
                                 { key: 'insecure_ssh', label: 'Skip SSH host-key verification', type: 'checkbox', help: 'Enable only on a host whose key you cannot verify out of band.' },
                                 // Pinning a fingerprint only makes sense when SSH
                                 // host keys ARE verified; when insecure_ssh is on
@@ -428,11 +428,6 @@ function app() {
             const r = this.currentResource();
             if (this.isWizard()) return (this.wizardSteps()[this.modal.step].fields || []);
             return this.modalFields(r);
-        },
-        // stepDescription: the explanation for the current wizard step.
-        stepDescription() {
-            const s = this.wizardSteps()[this.modal.step];
-            return s ? s.description : '';
         },
 
         // loadModalOptions fetches the option lists any multiselect field in

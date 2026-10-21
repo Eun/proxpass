@@ -376,10 +376,11 @@
                             <h3 class="font-semibold text-secondary" x-text="(modal.mode === 'create' ? 'New ' : 'Edit ') + currentResource().singular"></h3>
                             <button @click="closeModal()" class="text-gray-400 hover:text-gray-700 text-xl">&times;</button>
                         </div>
-                        <!-- Wizard step indicator + explanation (create of a stepped resource) -->
+                        <!-- Wizard step indicator. Field explanations live under
+                             each input, not here, so guidance is in one place. -->
                         <template x-if="isWizard()">
                             <div class="px-6 pt-4">
-                                <div class="flex items-center gap-2 mb-2">
+                                <div class="flex items-center gap-2">
                                     <template x-for="(s, i) in wizardSteps()" :key="s.title">
                                         <div class="flex items-center gap-2">
                                             <span class="flex items-center justify-center w-6 h-6 rounded-full text-xs font-semibold"
@@ -390,7 +391,6 @@
                                         </div>
                                     </template>
                                 </div>
-                                <p class="text-xs text-gray-500" x-text="stepDescription()"></p>
                             </div>
                         </template>
                         <div class="p-6 space-y-4">
