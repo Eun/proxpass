@@ -157,10 +157,13 @@ type Server struct {
 	logger *log.Logger
 	ids    IDLayout
 
-	// nssTokenHash, when non-empty, is the SHA-256 hash of the bearer token
-	// the NSS routes require (PROXPASS_NSS_TOKEN). libnss_http presents it via
-	// the Headers map in /etc/nss_http.json. Empty leaves the NSS routes open,
-	// which is only safe on a loopback-only listener. Set with WithNSSToken.
+	// nssTokenHash is the SHA-256 hash of the bearer token the NSS routes
+	// require (PROXPASS_NSS_TOKEN). libnss_http presents it via the Headers map
+	// in /etc/nss_http.json. Empty closes the NSS routes entirely (every
+	// request is a 401) rather than opening them, so an unset token can never
+	// leak the directory on the single shared listener. `serve` refuses to
+	// start with an empty token; this fail-closed branch is the library-level
+	// backstop for any other caller. Set with WithNSSToken.
 	nssTokenHash string
 
 	// restAPIToken is the static admin bearer token for the /v1 admin API,
@@ -196,7 +199,8 @@ func NewServerWithIDs(repo db.Repository, logger *log.Logger, ids IDLayout) *Ser
 }
 
 // WithNSSToken requires the given bearer token on the NSS directory routes.
-// An empty token leaves them open (loopback-only deployments). Chainable.
+// An empty token closes those routes entirely (nssAuth returns 401 for every
+// request) rather than opening them, so the directory never leaks. Chainable.
 func (s *Server) WithNSSToken(token string) *Server {
 	if token == "" {
 		s.nssTokenHash = ""
@@ -260,11 +264,13 @@ func (s *Server) IDs() IDLayout { return s.ids }
 // description of them. The NSS routes above are hand-written for the reason
 // given in that spec: their shape is fixed by an external consumer.
 //
-// Only the session routes are behind the bearer token. The NSS routes must
-// stay open: nss_http sends no Authorization header, and sshd resolves the
-// login through NSS before any session -- and therefore any token -- exists.
-// The entrypoint also polls /users to decide when the directory is ready, so
-// requiring a token there would deadlock container startup.
+// The NSS routes are gated by their own bearer token (PROXPASS_NSS_TOKEN) via
+// nssAuth, distinct from the /v1 session/admin token. On this single shared
+// listener the directory must never be world-readable, so a missing, empty,
+// wrong, or admin token is a 401; if no NSS token is configured the routes are
+// closed entirely. libnss_http presents the token through the Headers map in
+// /etc/nss_http.json, and the entrypoint always generates one, so the in-image
+// NSS lookups and the /users readiness probe authenticate normally.
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 	nss := s.nssAuth
