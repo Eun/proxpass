@@ -112,18 +112,29 @@ func TestSessionIdentityWithAnUnknownTokenIs401(t *testing.T) {
 	}
 }
 
-// nss_http sends no Authorization header, and sshd resolves the login
-// through NSS before any session exists. Requiring a token on these would
-// break every login.
-func TestNSSRoutesNeedNoToken(t *testing.T) {
+// The NSS directory routes are reachable ONLY with PROXPASS_NSS_TOKEN -- the
+// token libnss_http presents. On the single shared listener the directory must
+// not be world-readable, so a missing, wrong, or non-NSS token is a 401.
+func TestNSSRoutesRequireTheNSSToken(t *testing.T) {
 	h, repo := newTestServer(t)
 	seedClient(t, repo, userAliceName, "ssh-ed25519 AAAAalice alice")
 
-	for _, path := range []string{
+	paths := []string{
 		"/user/name/" + userAliceName, "/users", "/groups", "/group/name/proxpass",
-	} {
-		if rec := getWithToken(t, h, path, ""); rec.Code != http.StatusOK {
-			t.Errorf("%s without a token: status = %d, want 200", path, rec.Code)
+	}
+
+	// With the NSS token: 200. Without it, or with the wrong token: 401. The
+	// directory is reachable ONLY with PROXPASS_NSS_TOKEN -- not open, and not
+	// with some other bearer token.
+	for _, path := range paths {
+		if rec := getWithToken(t, h, path, testNSSToken); rec.Code != http.StatusOK {
+			t.Errorf("%s with the NSS token: status = %d, want 200", path, rec.Code)
+		}
+		if rec := getWithToken(t, h, path, ""); rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s without a token: status = %d, want 401", path, rec.Code)
+		}
+		if rec := getWithToken(t, h, path, "not-the-nss-token"); rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s with a wrong token: status = %d, want 401", path, rec.Code)
 		}
 	}
 }

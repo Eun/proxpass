@@ -79,31 +79,26 @@ else
 	log "warning: ${PROXPASS_NSS_CONFIG} not found; NSS lookups will fail"
 fi
 
-# --- admin REST API passthrough --------------------------------------------
+# --- admin REST API token passthrough --------------------------------------
 #
-# `proxpass serve' also owns an opt-in admin REST API, configured via these
-# env vars (read through ucli EnvVars on the serve command). They are passed
-# through unchanged: exporting them is all the child process needs.
+# `proxpass serve' also owns the typed /v1 admin REST API (and the admin web
+# UI), served on the one listener (PROXPASS_LISTEN). Its static token is
+# configured via this env var, read through ucli EnvVars on the serve command
+# and passed through unchanged -- exporting it is all the child needs.
 #
-#   PROXPASS_REST_API_TOKEN  : static bearer token for the admin REST API.
+#   PROXPASS_REST_API_TOKEN  : static bearer token for the /v1 admin REST API.
 #       Operator-supplied and OPTIONAL -- unlike the NSS token it is NOT
 #       generated, because the admin REST API is opt-in and a generated token
-#       nobody is told would be useless.
-#   PROXPASS_REST_API_LISTEN : optional second listen address for the admin
-#       REST API (e.g. 0.0.0.0:8081).
+#       nobody is told would be useless. Without it, the admin API is reachable
+#       only by a session credential minted over an admin SSH login.
 #
-# These are secrets/listen addresses for the ROOT serve process only. They are
-# deliberately NOT added to the sshd session environment (see
-# docker/sshd_config.d/proxpass.conf): sshd scrubs the environment and only
-# admits PROXPASS_DISABLE_STATUSBAR and PROXPASS_SESSION_TOKEN, so a session
-# never sees them.
+# This is a secret for the ROOT serve process only. It is deliberately NOT
+# added to the sshd session environment (see docker/sshd_config.d/proxpass.conf):
+# sshd scrubs the environment and only admits PROXPASS_DISABLE_STATUSBAR and
+# PROXPASS_SESSION_TOKEN, so a session never sees it.
 if [ -n "${PROXPASS_REST_API_TOKEN:-}" ]; then
 	export PROXPASS_REST_API_TOKEN
 	log "admin REST API token supplied; passing it through to serve"
-fi
-if [ -n "${PROXPASS_REST_API_LISTEN:-}" ]; then
-	export PROXPASS_REST_API_LISTEN
-	log "admin REST API listen address: ${PROXPASS_REST_API_LISTEN}"
 fi
 
 serve_pid=""

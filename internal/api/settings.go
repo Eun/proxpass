@@ -20,8 +20,7 @@ type SettingsSnapshot struct {
 	Data              string // --data (PROXPASS_DATA): sqlite path or postgres DSN
 	LogLevel          string // --log-level
 	DiscoveryInterval string // --discovery-interval
-	Listen            string // --listen (loopback API listener)
-	RESTAPIListen     string // --rest-api-listen (second listener; may be empty)
+	Listen            string // --listen (the one API listener)
 	AdminKey          string // --admin-key: a PUBLIC key, so shown in cleartext
 	NSSTokenSet       bool   // whether --nss-token was supplied (secret)
 	RESTAPITokenSet   bool   // whether --rest-api-token was supplied (secret)
@@ -73,7 +72,6 @@ func buildSettings(s *SettingsSnapshot, publicEndpoint string) []SettingEntry {
 		entry("PROXPASS_LOG_LEVEL", s.LogLevel),
 		entry("PROXPASS_DISCOVERY_INTERVAL", s.DiscoveryInterval),
 		entry("PROXPASS_LISTEN", s.Listen),
-		entry("PROXPASS_REST_API_LISTEN", valueOrUnset(s.RESTAPIListen)),
 		entry("PROXPASS_ADMIN_KEY", valueOrUnset(s.AdminKey)),
 		entry("PROXPASS_NSS_TOKEN", maskSecretSet(s.NSSTokenSet)),
 		entry("PROXPASS_REST_API_TOKEN", maskSecretSet(s.RESTAPITokenSet)),

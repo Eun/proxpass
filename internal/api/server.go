@@ -284,11 +284,11 @@ func (s *Server) Handler() http.Handler {
 	// The SSH-key operations are the one remaining /admin/rpc endpoint: they
 	// read a root-owned key file on an admin session's behalf and have no /v1
 	// resource (see adminrpc.go). They authorize themselves against an admin
-	// identity. Loopback only -- the session asks the local `serve' process --
-	// so this is registered on the loopback Handler, not on AdminHandler.
+	// session identity (not the static REST token) -- a session asks the local
+	// `serve' process over this endpoint.
 	r.HandleFunc("/admin/rpc", s.ServeAdminRPC)
 
-	// The admin web UI and /openapi.json are served from this listener too.
+	// The admin web UI and /openapi.json are served from this one listener too.
 	s.mountWebUI(r)
 
 	// The session API and the typed /v1 admin REST API are both served by the
@@ -341,28 +341,6 @@ func (s *Server) mountWebUI(r chi.Router) {
 	r.NotFound(ui.ServeHTTP)
 }
 
-// AdminHandler returns a handler that serves ONLY the session + /v1 admin API,
-// WITHOUT the NSS directory routes. It is used for a second, routable listener
-// (PROXPASS_REST_API_LISTEN) so the admin REST API can be exposed off-loopback
-// without also exposing the user/group directory. Every /v1 operation still
-// requires an admin credential.
-func (s *Server) AdminHandler() http.Handler {
-	r := chi.NewRouter()
-
-	// The admin UI is served here too: this is the listener a remote admin
-	// reaches, so it is exactly where the UI needs to be available. It serves
-	// no NSS routes, so the UI does not expose the directory.
-	s.mountWebUI(r)
-
-	return HandlerWithOptions(
-		NewStrictHandler(s.sessionHandler(), nil),
-		ChiServerOptions{
-			BaseRouter:  r,
-			Middlewares: []MiddlewareFunc{bearerTokenMiddleware},
-		},
-	)
-}
-
 // sessionHandler builds the generated-API handler with the server's optional
 // admin wiring (static REST token, discoverer, protected admin key).
 func (s *Server) sessionHandler() *SessionHandler {
@@ -374,18 +352,25 @@ func (s *Server) sessionHandler() *SessionHandler {
 		WithVersion(s.version)
 }
 
-// nssAuth wraps an NSS handler with the optional NSS bearer-token check. When
-// no NSS token is configured the handler is returned unchanged, so a
-// loopback-only deployment keeps the open directory it had.
+// nssAuth wraps an NSS handler with the NSS bearer-token check. The NSS
+// directory routes are reachable ONLY with PROXPASS_NSS_TOKEN -- the token
+// libnss_http presents via the Headers map in /etc/nss_http.json.
 //
-// The token is verified in constant time. A missing or wrong token is a 401;
-// libnss_http turns that into "user not found", so a misconfigured token
-// fails closed rather than leaking the directory.
+// This is a single shared listener, so the directory must never be world
+// readable: a request with no token, the wrong token, or the admin token (the
+// /v1 REST token, which is NOT the NSS token) is a 401. If no NSS token is
+// configured at all, the routes are closed entirely rather than opened, so an
+// unset token can never leak the directory. The entrypoint always generates a
+// token, so this does not affect the container.
+//
+// The token is verified in constant time. libnss_http turns a 401 into "user
+// not found", so a misconfigured or missing token fails closed.
 func (s *Server) nssAuth(next http.HandlerFunc) http.HandlerFunc {
-	if s.nssTokenHash == "" {
-		return next
-	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		if s.nssTokenHash == "" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 		token, ok := BearerToken(withBearerToken(r).Context())
 		if !ok || subtle.ConstantTimeCompare(
 			[]byte(HashToken(token)), []byte(s.nssTokenHash)) != 1 {
@@ -409,17 +394,14 @@ func bearerTokenMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// ListenAndServe runs the full directory + session + admin server (NSS routes
-// included) until ctx is canceled. This is the loopback listener.
+// ListenAndServe runs the one HTTP listener -- the NSS directory, the session
+// API, the typed /v1 admin API, /admin/rpc, and the admin UI, all on a single
+// socket -- until ctx is canceled. Each surface gates itself: the NSS routes
+// require PROXPASS_NSS_TOKEN, and /v1 requires an admin credential
+// (PROXPASS_REST_API_TOKEN or an admin session), so the one socket can be
+// exposed without the directory and the admin API bleeding into each other.
 func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 	return serveHTTP(ctx, addr, s.Handler(), "directory server")
-}
-
-// ListenAndServeAdmin runs a second listener serving ONLY the session + /v1
-// admin API (no NSS routes), for exposing the admin REST API off-loopback.
-// Runs until ctx is canceled.
-func (s *Server) ListenAndServeAdmin(ctx context.Context, addr string) error {
-	return serveHTTP(ctx, addr, s.AdminHandler(), "admin REST server")
 }
 
 // serveHTTP runs one http.Server until ctx is canceled, then drains it.

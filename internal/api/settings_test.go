@@ -16,7 +16,6 @@ func TestBuildSettings(t *testing.T) {
 		LogLevel:          "info",
 		DiscoveryInterval: "5m0s",
 		Listen:            testListenAddr,
-		RESTAPIListen:     "0.0.0.0:8081",
 		AdminKey:          "ssh-ed25519 AAAA admin",
 		NSSTokenSet:       true,
 		RESTAPITokenSet:   true,
