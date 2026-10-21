@@ -1278,6 +1278,55 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/ssh-fingerprints:
+    post:
+      tags: [admin]
+      summary: Scan a host's SSH fingerprints.
+      description: |
+        Connects to the given SSH host and port and returns the host-key
+        fingerprints it presents, one per key type -- the server-side
+        equivalent of `ssh-keyscan`. No authentication is attempted; the
+        handshake is aborted as soon as the host key is read.
+
+        This lets the admin UI fetch the real fingerprints when adding a node,
+        so the operator can pick one to pin instead of running ssh-keyscan by
+        hand. A scan only reports what the host currently presents -- the
+        operator must still confirm the chosen fingerprint out of band.
+      operationId: scanSSHFingerprints
+      security:
+        - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SSHFingerprintScan"
+      responses:
+        "200":
+          description: The host keys the server presented.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SSHFingerprint"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "502":
+          description: |
+            The host could not be scanned (unreachable, timed out, or presented
+            no host key).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
 components:
   securitySchemes:
     sessionToken:
@@ -1905,6 +1954,32 @@ components:
           description: |
             Set when this instance failed; the pass continues with the others,
             so a failure here does not fail the whole call.
+
+    SSHFingerprintScan:
+      type: object
+      description: The host to scan for SSH host-key fingerprints.
+      required: [ssh_host, ssh_port]
+      properties:
+        ssh_host:
+          type: string
+          description: The SSH host to connect to.
+        ssh_port:
+          type: integer
+          description: The SSH port, typically 22.
+
+    SSHFingerprint:
+      type: object
+      description: One host key a scanned server presented.
+      required: [key_type, fingerprint]
+      properties:
+        key_type:
+          type: string
+          description: The key's algorithm, e.g. "ssh-ed25519".
+        fingerprint:
+          type: string
+          description: |
+            The "SHA256:<base64>" fingerprint, exactly what --ssh-fingerprint
+            pins and what the UI stores in ssh_fingerprint.
 
     Error:
       type: object

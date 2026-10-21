@@ -432,7 +432,33 @@
                                             </template>
                                         </div>
                                     </template>
-                                    <template x-if="!['select','checkbox','textarea','multiselect'].includes(field.type)">
+                                    <template x-if="field.type === 'fingerprint'">
+                                        <div>
+                                            <div class="flex gap-2">
+                                                <input type="text" x-model="modal.data[field.key]" class="form-input flex-1 rounded border-gray-300" placeholder="SHA256:… (or Fetch to scan the host)">
+                                                <button type="button" @click="fetchFingerprints()" :disabled="scanning || !modal.data.ssh_host"
+                                                    class="whitespace-nowrap px-3 py-2 text-sm bg-secondary hover:bg-secondary-dark text-white rounded transition disabled:opacity-50">
+                                                    <span x-text="scanning ? 'Scanning…' : 'Fetch'"></span>
+                                                </button>
+                                            </div>
+                                            <template x-if="scannedFingerprints.length">
+                                                <div class="mt-2 border border-gray-300 rounded divide-y divide-gray-100">
+                                                    <template x-for="fp in scannedFingerprints" :key="fp.fingerprint">
+                                                        <label class="flex items-center px-3 py-2 cursor-pointer hover:bg-gray-50">
+                                                            <input type="radio" name="scanned_fp" class="form-radio text-primary focus:ring-primary mr-3"
+                                                                :checked="modal.data[field.key] === fp.fingerprint"
+                                                                @change="modal.data[field.key] = fp.fingerprint">
+                                                            <span class="min-w-0">
+                                                                <span class="text-xs text-gray-400" x-text="fp.key_type"></span>
+                                                                <span class="block text-sm font-mono break-all" x-text="fp.fingerprint"></span>
+                                                            </span>
+                                                        </label>
+                                                    </template>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </template>
+                                    <template x-if="!['select','checkbox','textarea','multiselect','fingerprint'].includes(field.type)">
                                         <input :type="field.type || 'text'" x-model="modal.data[field.key]" class="form-input w-full rounded border-gray-300" :placeholder="field.placeholder || ''">
                                     </template>
                                     <template x-if="field.help">

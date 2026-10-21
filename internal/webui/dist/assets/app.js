@@ -113,10 +113,12 @@ function app() {
                                 // Pinning a fingerprint only makes sense when SSH
                                 // host keys ARE verified; when insecure_ssh is on
                                 // it is ignored, so hide it and drop it from the
-                                // request.
+                                // request. The `fingerprint' type adds a Fetch
+                                // button that scans the host (ssh_host:ssh_port)
+                                // and lets the operator pick a presented key.
                                 {
-                                    key: 'ssh_fingerprint', label: 'SSH fingerprint',
-                                    help: 'Pin a host key that has no DNSSEC SSHFP.',
+                                    key: 'ssh_fingerprint', label: 'SSH fingerprint', type: 'fingerprint',
+                                    help: 'Pin a host key that has no DNSSEC SSHFP. Fetch scans the host above; confirm the value out of band before saving.',
                                     hideWhen: (d) => !!d.insecure_ssh,
                                 },
                             ],
@@ -359,6 +361,7 @@ function app() {
         async openCreate() {
             const r = this.currentResource();
             await this.loadModalOptions(r);
+            this.scannedFingerprints = [];
             this.modal = { open: true, mode: 'create', step: 0, data: { ...(r.defaults || {}) } };
         },
         async openEdit(row) {
@@ -445,6 +448,36 @@ function app() {
                     const data = await this.request('GET', '/' + src);
                     this.modalOptions[src] = (data || []).map((o) => ({ id: o.id, name: o.name }));
                 } catch (e) { this.fail(e); this.modalOptions[src] = []; }
+            }
+        },
+
+        // Scanned SSH host-key fingerprints for the add-node form, and whether
+        // a scan is in flight. fetchFingerprints populates this from the host
+        // the operator entered.
+        scannedFingerprints: [],
+        scanning: false,
+
+        // fetchFingerprints scans the SSH host/port in the form and offers the
+        // presented host keys for the operator to pick from. It does not pick
+        // for them: the operator must still confirm out of band.
+        async fetchFingerprints() {
+            const host = (this.modal.data.ssh_host || '').trim();
+            if (!host) { this.error = 'Enter the SSH host first.'; return; }
+            const port = Number(this.modal.data.ssh_port) || 22;
+            this.scanning = true; this.error = ''; this.scannedFingerprints = [];
+            try {
+                const keys = await this.request('POST', '/ssh-fingerprints', { ssh_host: host, ssh_port: port });
+                this.scannedFingerprints = keys || [];
+                if (this.scannedFingerprints.length === 0) {
+                    this.error = 'The host presented no SSH host keys.';
+                } else {
+                    this.ok('Fetched ' + this.scannedFingerprints.length + ' host key(s). Pick one and confirm it out of band.');
+                }
+            } catch (e) {
+                // A 502 carries the reason (unreachable, timeout); show it.
+                this.error = 'Could not scan ' + host + ': ' + e.message;
+            } finally {
+                this.scanning = false;
             }
         },
 

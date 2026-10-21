@@ -9,6 +9,7 @@ import (
 	"proxpass/internal/db"
 	"proxpass/internal/models"
 	"proxpass/internal/proxmox"
+	"proxpass/internal/sshhostkey"
 )
 
 // Admin handlers for the typed /v1 API.
@@ -1115,6 +1116,44 @@ func (h *SessionHandler) RunDiscovery(
 		result.Instances = append(result.Instances, row)
 	}
 	return RunDiscovery200JSONResponse(result), nil
+}
+
+// ScanSSHFingerprints scans an SSH host for its host-key fingerprints so the
+// admin UI can offer them when adding a node. It does not store anything and
+// opens no session -- it reports what the host currently presents, which the
+// operator still has to confirm out of band before pinning.
+//
+// A host that cannot be reached is a 502 (a bad upstream), not a 500: the
+// server is fine, the scanned host is not.
+func (h *SessionHandler) ScanSSHFingerprints(
+	ctx context.Context, request ScanSSHFingerprintsRequestObject,
+) (ScanSSHFingerprintsResponseObject, error) {
+	if denied, ok, err := gateAdmin(ctx, h,
+		func(reason string) ScanSSHFingerprintsResponseObject {
+			return ScanSSHFingerprints401JSONResponse{UnauthorizedJSONResponse{Error: reason}}
+		},
+		func() ScanSSHFingerprintsResponseObject {
+			return ScanSSHFingerprints403JSONResponse{ForbiddenJSONResponse{Error: errNotAdminAPI.Error()}}
+		},
+	); !ok {
+		return denied, err
+	}
+	if request.Body == nil {
+		return ScanSSHFingerprints400JSONResponse{BadRequestJSONResponse{Error: errMissingBody}}, nil
+	}
+
+	keys, err := sshhostkey.ScanFingerprints(ctx, request.Body.SSHHost, request.Body.SSHPort)
+	if err != nil {
+		// The host, not the server, is the problem: surface it as a 502 with
+		// the reason so the UI can tell the operator what went wrong.
+		return ScanSSHFingerprints502JSONResponse{Error: err.Error()}, nil
+	}
+
+	out := make([]SSHFingerprint, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, SSHFingerprint{KeyType: k.KeyType, Fingerprint: k.Fingerprint})
+	}
+	return ScanSSHFingerprints200JSONResponse(out), nil
 }
 
 // discoverInstance runs one instance's discovery pass and reports its counts.
