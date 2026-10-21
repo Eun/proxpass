@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"proxpass/internal/db"
 	"proxpass/internal/models"
 	"proxpass/internal/proxmox"
@@ -228,32 +230,39 @@ func (s *Server) IDs() IDLayout { return s.ids }
 // The entrypoint also polls /users to decide when the directory is ready, so
 // requiring a token there would deadlock container startup.
 func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
+	r := chi.NewRouter()
 	nss := s.nssAuth
-	mux.HandleFunc("/user/name/", nss(s.handleUserByName))
-	mux.HandleFunc("/user/uid/", nss(s.handleUserByUID))
-	mux.HandleFunc("/users", nss(s.handleUsers))
-	mux.HandleFunc("/group/name/", nss(s.handleGroupByName))
-	mux.HandleFunc("/group/gid/", nss(s.handleGroupByGID))
-	mux.HandleFunc("/groups", nss(s.handleGroups))
+
+	// The NSS directory routes are hand-written -- their JSON is the nss_http
+	// wire format, not a resource proxpass designed -- so they are registered
+	// directly on the chi router the generated handler also mounts onto. The
+	// trailing "/*" matches the subtree ServeMux's trailing-slash patterns did;
+	// each handler reads the full r.URL.Path, so no chi URL param is involved.
+	r.HandleFunc("/user/name/*", nss(s.handleUserByName))
+	r.HandleFunc("/user/uid/*", nss(s.handleUserByUID))
+	r.HandleFunc("/users", nss(s.handleUsers))
+	r.HandleFunc("/group/name/*", nss(s.handleGroupByName))
+	r.HandleFunc("/group/gid/*", nss(s.handleGroupByGID))
+	r.HandleFunc("/groups", nss(s.handleGroups))
 
 	// The SSH-key operations are the one remaining /admin/rpc endpoint: they
 	// read a root-owned key file on an admin session's behalf and have no /v1
 	// resource (see adminrpc.go). They authorize themselves against an admin
 	// identity. Loopback only -- the session asks the local `serve' process --
 	// so this is registered on the loopback Handler, not on AdminHandler.
-	mux.HandleFunc("/admin/rpc", s.ServeAdminRPC)
+	r.HandleFunc("/admin/rpc", s.ServeAdminRPC)
 
 	// The session API and the typed /v1 admin REST API are both served by the
-	// generated strict handler (one SessionHandler implements both). Admin
+	// generated strict handler (one SessionHandler implements both), mounted
+	// onto the same chi router via the generated HandlerFromMux. Admin
 	// operations authorize themselves against an admin identity -- a session
 	// credential whose stored identity is the administrator's, or the static
 	// PROXPASS_REST_API_TOKEN. The old /admin/rpc tagged-union endpoint is gone;
 	// its operations are now the typed /v1 resources.
 	return HandlerWithOptions(
 		NewStrictHandler(s.sessionHandler(), nil),
-		StdHTTPServerOptions{
-			BaseRouter:  mux,
+		ChiServerOptions{
+			BaseRouter:  r,
 			Middlewares: []MiddlewareFunc{bearerTokenMiddleware},
 		},
 	)
@@ -267,8 +276,8 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) AdminHandler() http.Handler {
 	return HandlerWithOptions(
 		NewStrictHandler(s.sessionHandler(), nil),
-		StdHTTPServerOptions{
-			BaseRouter:  http.NewServeMux(),
+		ChiServerOptions{
+			BaseRouter:  chi.NewRouter(),
 			Middlewares: []MiddlewareFunc{bearerTokenMiddleware},
 		},
 	)

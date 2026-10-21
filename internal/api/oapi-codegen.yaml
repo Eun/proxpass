@@ -1,18 +1,21 @@
 # oapi-codegen configuration.
 #
-# Types, the server interface, and the HTTP client are generated: the handlers
-# stay hand-written. The point of generating is that the spec and the Go types
-# cannot drift -- not to hand request routing to a framework proxpass does not
-# otherwise use. The client is generated so the admin CLI (and external
-# callers) speak the same typed API the server implements.
+# oapi-codegen generates the models, the strict server interface, the chi
+# router that dispatches to it, and the HTTP client. Only the handler bodies
+# are hand-written. Generating the router (not just the types) is the point:
+# the routing table, parameter binding, and request/response plumbing come
+# from the spec, so they cannot drift from it -- the same approach ziam uses.
 #
-# std-http-server matches what the server already is (net/http + ServeMux),
-# so nothing new is pulled into the dependency tree.
+# chi-server is the generated server: HandlerFromMux mounts the strict handler
+# onto a chi.Router, onto which the hand-written NSS directory and /admin/rpc
+# routes are also registered (see server.go). The client is generated so the
+# admin CLI (and external callers) speak the same typed API the server
+# implements.
 package: api
 output: openapi_gen.go
 generate:
   models: true
-  std-http-server: true
+  chi-server: true
   strict-server: true
   client: true
   embedded-spec: true
