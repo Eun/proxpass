@@ -54,6 +54,10 @@ type SessionHandler struct {
 	// reports (read-only, secrets masked). Nil (no WithSettings) still answers
 	// -- with blank config -- rather than failing. Set with WithSettings.
 	settings *SettingsSnapshot
+
+	// version is the build version GetVersion reports. Empty answers "dev".
+	// Set with WithVersion.
+	version string
 }
 
 // NewSessionHandler returns a handler reading identities from repo.
@@ -89,6 +93,12 @@ func (h *SessionHandler) WithProtectedAdminKey(key string) *SessionHandler {
 // handler reports. Chainable.
 func (h *SessionHandler) WithSettings(s *SettingsSnapshot) *SessionHandler {
 	h.settings = s
+	return h
+}
+
+// WithVersion records the build version GetVersion reports. Chainable.
+func (h *SessionHandler) WithVersion(v string) *SessionHandler {
+	h.version = v
 	return h
 }
 

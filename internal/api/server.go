@@ -179,6 +179,10 @@ type Server struct {
 	// SessionHandler for the read-only ListSettings view. Nil until set with
 	// WithSettings.
 	settings *SettingsSnapshot
+
+	// version is the build version, passed through to the SessionHandler for
+	// GetVersion. Empty answers "dev". Set with WithVersion.
+	version string
 }
 
 // NewServer builds the directory server with the default id layout.
@@ -227,6 +231,13 @@ func (s *Server) WithProtectedAdminKey(key string) *Server {
 // handler for the read-only ListSettings view. Chainable.
 func (s *Server) WithSettings(snap *SettingsSnapshot) *Server {
 	s.settings = snap
+	return s
+}
+
+// WithVersion passes the build version through to the session handler for
+// GetVersion. Chainable.
+func (s *Server) WithVersion(v string) *Server {
+	s.version = v
 	return s
 }
 
@@ -359,7 +370,8 @@ func (s *Server) sessionHandler() *SessionHandler {
 		WithRESTAPIToken(s.restAPIToken).
 		WithDiscoverer(s.discoverer).
 		WithProtectedAdminKey(s.protectedAdminKey).
-		WithSettings(s.settings)
+		WithSettings(s.settings).
+		WithVersion(s.version)
 }
 
 // nssAuth wraps an NSS handler with the optional NSS bearer-token check. When

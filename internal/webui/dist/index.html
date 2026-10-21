@@ -138,12 +138,12 @@
             <!-- Sidebar (template style) -->
             <aside
                 :class="menuOpen ? 'translate-x-0 ease-out' : '-translate-x-full ease-in'"
-                class="fixed z-30 inset-y-0 left-0 w-64 transition duration-300 bg-secondary overflow-y-auto lg:translate-x-0 lg:inset-0 custom-scrollbar"
+                class="fixed z-30 inset-y-0 left-0 w-64 flex flex-col transition duration-300 bg-secondary lg:translate-x-0 lg:inset-0"
             >
-                <div class="flex items-center justify-center bg-black bg-opacity-30 h-16">
+                <div class="flex items-center justify-center bg-black bg-opacity-30 h-16 flex-shrink-0">
                     <h1 class="text-gray-100 text-lg font-bold uppercase tracking-widest">ProxPass</h1>
                 </div>
-                <nav class="py-6">
+                <nav class="py-6 flex-1 overflow-y-auto custom-scrollbar">
                     <template x-for="item in nav" :key="item.id">
                         <a
                             href="#"
@@ -156,6 +156,10 @@
                         </a>
                     </template>
                 </nav>
+                <!-- Version, fetched once on load; pinned to the bottom. -->
+                <div class="flex-shrink-0 px-6 py-3 border-t border-white border-opacity-10 text-xs text-gray-500">
+                    <span x-text="'proxpass ' + (version || '…')"></span>
+                </div>
             </aside>
 
             <!-- Main column -->

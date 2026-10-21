@@ -31,6 +31,7 @@ import (
 	"proxpass/internal/loglevel"
 	"proxpass/internal/proxmox"
 	"proxpass/internal/session"
+	"proxpass/internal/version"
 	"proxpass/internal/webui"
 )
 
@@ -226,7 +227,8 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 		WithRESTAPIToken(restAPIToken).
 		WithDiscoverer(proxmox.DefaultDiscovererFactory).
 		WithProtectedAdminKey(cmd.String("admin-key")).
-		WithSettings(settingsSnapshot)
+		WithSettings(settingsSnapshot).
+		WithVersion(version.String())
 
 	// The admin REST API on its own routable listener (no NSS routes), when
 	// configured. It runs alongside the loopback listener and shares ctx for

@@ -1278,6 +1278,31 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/version:
+    get:
+      tags: [admin]
+      summary: The proxpass build version.
+      description: |
+        Returns the running proxpass build version -- the release tag for a
+        release build, otherwise the module version or "dev". The admin UI
+        fetches this once on load to show it in the sidebar.
+      operationId: getVersion
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: The version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Version"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /v1/ssh-fingerprints:
     post:
       tags: [admin]
@@ -1957,6 +1982,15 @@ components:
           description: |
             Set when this instance failed; the pass continues with the others,
             so a failure here does not fail the whole call.
+
+    Version:
+      type: object
+      description: The running proxpass build version.
+      required: [version]
+      properties:
+        version:
+          type: string
+          description: The release tag, module version, or "dev".
 
     SSHFingerprintScan:
       type: object

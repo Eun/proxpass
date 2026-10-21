@@ -39,6 +39,10 @@ builds:
     ldflags:
       - -s
       - -w
+      # Inject the release tag so `GET /v1/version' and the admin UI report it.
+      # Without this -X the custom ldflags above would override goreleaser's
+      # default version injection, leaving the binary at its build-info fallback.
+      - -X proxpass/internal/version.value={{.Version}}
 archives:
   # the image is the only artifact; `binary' means goreleaser does not wrap the
   # binary in a tar.gz it would otherwise have to upload somewhere.

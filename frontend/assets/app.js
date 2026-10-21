@@ -16,6 +16,7 @@ function app() {
 
         // ---- shell state ----
         view: 'dashboard',
+        version: '',
         tokenInput: '',
         authError: '',
         error: '',
@@ -216,7 +217,16 @@ function app() {
 
         // ---- lifecycle ----
         init() {
-            if (this.authed) this.go('dashboard');
+            if (this.authed) { this.loadVersion(); this.go('dashboard'); }
+        },
+
+        // loadVersion fetches the build version once, for the sidebar footer.
+        // A failure is non-fatal -- the footer just shows nothing extra.
+        async loadVersion() {
+            try {
+                const v = await this.request('GET', '/version');
+                this.version = (v && v.version) || '';
+            } catch (_) { /* version is cosmetic; ignore */ }
         },
 
         async signIn() {
@@ -228,6 +238,7 @@ function app() {
                 // Validate by hitting a cheap admin endpoint.
                 await this.request('GET', '/instances');
                 this.tokenInput = '';
+                this.loadVersion();
                 this.go('dashboard');
             } catch (e) {
                 this.clearToken();

@@ -913,6 +913,30 @@ func (h *SessionHandler) SetDefaultPolicy(
 	return SetDefaultPolicy200JSONResponse(toAPIDefaultPolicy(policy)), nil
 }
 
+// --- Version ---
+
+// GetVersion returns the running proxpass build version. Admin-gated like the
+// rest of /v1; the admin UI (already authenticated) fetches it once on load.
+func (h *SessionHandler) GetVersion(
+	ctx context.Context, _ GetVersionRequestObject,
+) (GetVersionResponseObject, error) {
+	if denied, ok, err := gateAdmin(ctx, h,
+		func(reason string) GetVersionResponseObject {
+			return GetVersion401JSONResponse{UnauthorizedJSONResponse{Error: reason}}
+		},
+		func() GetVersionResponseObject {
+			return GetVersion403JSONResponse{ForbiddenJSONResponse{Error: errNotAdminAPI.Error()}}
+		},
+	); !ok {
+		return denied, err
+	}
+	v := h.version
+	if v == "" {
+		v = "dev"
+	}
+	return GetVersion200JSONResponse(Version{Version: v}), nil
+}
+
 // --- Settings ---
 
 // ListSettings returns the effective serve configuration, read-only, with
