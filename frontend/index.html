@@ -376,8 +376,25 @@
                             <h3 class="font-semibold text-secondary" x-text="(modal.mode === 'create' ? 'New ' : 'Edit ') + currentResource().singular"></h3>
                             <button @click="closeModal()" class="text-gray-400 hover:text-gray-700 text-xl">&times;</button>
                         </div>
+                        <!-- Wizard step indicator + explanation (create of a stepped resource) -->
+                        <template x-if="isWizard()">
+                            <div class="px-6 pt-4">
+                                <div class="flex items-center gap-2 mb-2">
+                                    <template x-for="(s, i) in wizardSteps()" :key="s.title">
+                                        <div class="flex items-center gap-2">
+                                            <span class="flex items-center justify-center w-6 h-6 rounded-full text-xs font-semibold"
+                                                :class="i === modal.step ? 'bg-primary text-white' : (i < modal.step ? 'bg-primary/30 text-primary' : 'bg-gray-200 text-gray-500')"
+                                                x-text="i + 1"></span>
+                                            <span class="text-sm" :class="i === modal.step ? 'text-secondary font-medium' : 'text-gray-400'" x-text="s.title"></span>
+                                            <span x-show="i < wizardSteps().length - 1" class="text-gray-300">›</span>
+                                        </div>
+                                    </template>
+                                </div>
+                                <p class="text-xs text-gray-500" x-text="stepDescription()"></p>
+                            </div>
+                        </template>
                         <div class="p-6 space-y-4">
-                            <template x-for="field in currentResource().fields" :key="field.key">
+                            <template x-for="field in visibleFields()" :key="field.key">
                                 <div x-show="!fieldHidden(field)">
                                     <label class="block text-sm font-medium text-gray-700 mb-1">
                                         <span x-text="field.label"></span>
@@ -424,11 +441,47 @@
                                 </div>
                             </template>
                         </div>
+                        <div class="flex justify-between gap-3 p-4 border-t">
+                            <div>
+                                <!-- Back is only shown mid-wizard. -->
+                                <button x-show="isWizard() && modal.step > 0" @click="prevStep()" class="px-4 py-2 text-gray-600 hover:text-gray-900">Back</button>
+                            </div>
+                            <div class="flex gap-3">
+                                <button @click="closeModal()" class="px-4 py-2 text-gray-600 hover:text-gray-900">Cancel</button>
+                                <!-- Mid-wizard: Next advances; otherwise Save submits. -->
+                                <template x-if="isWizard() && !isLastStep()">
+                                    <button @click="nextStep()" :disabled="!stepValid()" class="bg-primary hover:bg-primary-dark text-white font-medium px-4 py-2 rounded transition disabled:opacity-50">Next</button>
+                                </template>
+                                <template x-if="!isWizard() || isLastStep()">
+                                    <button @click="submitModal()" :disabled="busy" class="bg-primary hover:bg-primary-dark text-white font-medium px-4 py-2 rounded transition disabled:opacity-50">
+                                        <span x-text="busy ? 'Saving…' : 'Save'"></span>
+                                    </button>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </template>
+
+            <!-- ===================== Confirmation dialog ===================== -->
+            <template x-if="confirmState.open">
+                <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
+                    <div class="fixed inset-0 bg-black opacity-50" @click="resolveConfirm(false)"></div>
+                    <div class="relative bg-white rounded-lg shadow-xl w-full max-w-sm">
+                        <div class="p-6">
+                            <div class="flex items-start gap-3">
+                                <span class="flex-shrink-0 flex items-center justify-center w-10 h-10 rounded-full bg-red-100 text-red-600">
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M5 19h14a2 2 0 001.84-2.75L13.74 4a2 2 0 00-3.48 0L3.16 16.25A2 2 0 005 19z"/></svg>
+                                </span>
+                                <div>
+                                    <h3 class="font-semibold text-secondary">Please confirm</h3>
+                                    <p class="text-sm text-gray-600 mt-1" x-text="confirmState.message"></p>
+                                </div>
+                            </div>
+                        </div>
                         <div class="flex justify-end gap-3 p-4 border-t">
-                            <button @click="closeModal()" class="px-4 py-2 text-gray-600 hover:text-gray-900">Cancel</button>
-                            <button @click="submitModal()" :disabled="busy" class="bg-primary hover:bg-primary-dark text-white font-medium px-4 py-2 rounded transition disabled:opacity-50">
-                                <span x-text="busy ? 'Saving…' : 'Save'"></span>
-                            </button>
+                            <button @click="resolveConfirm(false)" class="px-4 py-2 text-gray-600 hover:text-gray-900">Cancel</button>
+                            <button @click="resolveConfirm(true)" class="bg-red-600 hover:bg-red-700 text-white font-medium px-4 py-2 rounded transition">Confirm</button>
                         </div>
                     </div>
                 </div>

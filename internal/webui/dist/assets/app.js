@@ -30,7 +30,12 @@ function app() {
         rows: [],
         cache: {},
 
-        modal: { open: false, mode: 'create', data: {} },
+        modal: { open: false, mode: 'create', step: 0, data: {} },
+
+        // In-app confirmation dialog (replaces the browser's native confirm()).
+        // confirmState.resolve is the pending promise's resolver; ask() opens
+        // the dialog and resolves true/false when the user chooses.
+        confirmState: { open: false, message: '', resolve: null },
 
         // policy + discovery view state. policyForm holds arrays of selected
         // client/group IDs; the clients/groups lists to pick from come from
@@ -63,7 +68,8 @@ function app() {
             const self = this;
             return {
                 instances: {
-                    singular: 'instance', path: '/instances',
+                    // "Proxmox Node" in the UI; the API resource is still an instance.
+                    singular: 'Proxmox Node', path: '/instances',
                     create: true, edit: true, remove: true,
                     columns: [
                         { key: 'id', label: 'ID' },
@@ -73,25 +79,47 @@ function app() {
                         { key: 'console_transport', label: 'Console' },
                         { key: 'ssh_host', label: 'SSH host' },
                     ],
-                    fields: [
-                        { key: 'name', label: 'Name', required: true },
-                        { key: 'api_url', label: 'API URL', required: true, placeholder: 'https://pve:8006' },
-                        { key: 'api_token_id', label: 'API token ID', required: true, placeholder: 'user@pam!token' },
-                        { key: 'api_token_secret', label: 'API token secret', type: 'password', required: true },
-                        { key: 'node', label: 'Node', help: 'Learned from the API if left blank on add.' },
-                        { key: 'console_transport', label: 'Console transport', type: 'select', options: ['termproxy', 'ssh'] },
-                        { key: 'ssh_host', label: 'SSH host', placeholder: 'optional; enables node shell / SFTP' },
-                        { key: 'ssh_port', label: 'SSH port', type: 'number' },
-                        { key: 'ssh_user', label: 'SSH user', placeholder: 'root' },
-                        { key: 'insecure_tls', label: 'Skip TLS verification', type: 'checkbox' },
-                        { key: 'insecure_ssh', label: 'Skip SSH host-key verification', type: 'checkbox' },
-                        // Pinning a fingerprint only makes sense when SSH host
-                        // keys ARE verified; when insecure_ssh is on it is
-                        // ignored, so hide it and drop it from the request.
+                    // Adding a node is a multi-step wizard: each step groups the
+                    // fields for one concern and explains why they are needed.
+                    // `node' is NOT a field -- proxpass learns it from the API at
+                    // add time, so there is nothing for the operator to enter.
+                    steps: [
                         {
-                            key: 'ssh_fingerprint', label: 'SSH fingerprint',
-                            help: 'Pin a host key that has no DNSSEC SSHFP.',
-                            hideWhen: (d) => !!d.insecure_ssh,
+                            title: 'Connection',
+                            description: 'How proxpass reaches the Proxmox API. The API token is used to list guests and open consoles; create a token in Proxmox under Datacenter → Permissions → API Tokens.',
+                            fields: [
+                                { key: 'name', label: 'Name', required: true, help: 'A label for this node, e.g. its hostname.' },
+                                { key: 'api_url', label: 'API URL', required: true, placeholder: 'https://pve:8006' },
+                                { key: 'api_token_id', label: 'API token ID', required: true, placeholder: 'user@pam!token' },
+                                { key: 'api_token_secret', label: 'API token secret', type: 'password', required: true },
+                                { key: 'insecure_tls', label: 'Skip TLS verification', type: 'checkbox', help: 'Enable only if the API serves a self-signed certificate you cannot trust otherwise.' },
+                            ],
+                        },
+                        {
+                            title: 'Console',
+                            description: 'How consoles attach to guests. "termproxy" uses the Proxmox WebSocket and needs nothing more. "ssh" runs pct enter / qm terminal over SSH, which needs the SSH details on the next step.',
+                            fields: [
+                                { key: 'console_transport', label: 'Console transport', type: 'select', options: ['termproxy', 'ssh'] },
+                            ],
+                        },
+                        {
+                            title: 'SSH',
+                            description: 'Optional. An SSH host enables the node shell, SFTP and file transfer (and is required for the "ssh" console transport). Leave the host blank to skip SSH entirely.',
+                            fields: [
+                                { key: 'ssh_host', label: 'SSH host', placeholder: 'optional; enables node shell / SFTP' },
+                                { key: 'ssh_port', label: 'SSH port', type: 'number' },
+                                { key: 'ssh_user', label: 'SSH user', placeholder: 'root' },
+                                { key: 'insecure_ssh', label: 'Skip SSH host-key verification', type: 'checkbox', help: 'Enable only on a host whose key you cannot verify out of band.' },
+                                // Pinning a fingerprint only makes sense when SSH
+                                // host keys ARE verified; when insecure_ssh is on
+                                // it is ignored, so hide it and drop it from the
+                                // request.
+                                {
+                                    key: 'ssh_fingerprint', label: 'SSH fingerprint',
+                                    help: 'Pin a host key that has no DNSSEC SSHFP.',
+                                    hideWhen: (d) => !!d.insecure_ssh,
+                                },
+                            ],
                         },
                     ],
                     defaults: { console_transport: 'termproxy', ssh_port: 22, insecure_tls: false, insecure_ssh: false },
@@ -330,7 +358,7 @@ function app() {
         async openCreate() {
             const r = this.currentResource();
             await this.loadModalOptions(r);
-            this.modal = { open: true, mode: 'create', data: { ...(r.defaults || {}) } };
+            this.modal = { open: true, mode: 'create', step: 0, data: { ...(r.defaults || {}) } };
         },
         async openEdit(row) {
             const r = this.currentResource();
@@ -343,17 +371,72 @@ function app() {
                     data[k] = (row[k] || []).join(kind === 'lines' ? '\n' : ', ');
                 }
             }
-            (r.fields || []).forEach((f) => {
+            this.modalFields(r).forEach((f) => {
                 if (f.type === 'multiselect') data[f.key] = [...(row[f.key] || [])];
             });
-            this.modal = { open: true, mode: 'edit', data };
+            this.modal = { open: true, mode: 'edit', step: 0, data };
         },
         closeModal() { this.modal.open = false; },
+
+        // askConfirm opens the in-app confirmation dialog and returns a promise
+        // that resolves to true (confirmed) or false (cancelled). It replaces
+        // window.confirm so the prompt matches the rest of the UI.
+        askConfirm(message) {
+            return new Promise((resolve) => {
+                this.confirmState = { open: true, message, resolve };
+            });
+        },
+        resolveConfirm(ok) {
+            const r = this.confirmState.resolve;
+            this.confirmState = { open: false, message: '', resolve: null };
+            if (r) r(ok);
+        },
+
+        // modalFields returns every field of a resource, whether it defines a
+        // flat `fields' list or a stepped wizard (`steps'). Used by submit,
+        // edit, and option loading, which do not care about step boundaries.
+        modalFields(r) {
+            r = r || this.currentResource();
+            if (r.steps) return r.steps.flatMap((s) => s.fields || []);
+            return r.fields || [];
+        },
+
+        // ---- wizard navigation (only for resources with `steps') ----
+        isWizard() { return !!(this.currentResource().steps && this.modal.mode === 'create'); },
+        wizardSteps() { return this.currentResource().steps || []; },
+        isLastStep() { return this.modal.step >= this.wizardSteps().length - 1; },
+        // The visible fields of the current step (hidden ones excluded), used to
+        // decide whether Next can proceed.
+        stepFields(i) {
+            const s = this.wizardSteps()[i];
+            return (s && s.fields || []).filter((f) => !this.fieldHidden(f));
+        },
+        stepValid() {
+            return this.stepFields(this.modal.step).every((f) => {
+                if (!f.required) return true;
+                const v = this.modal.data[f.key];
+                return v !== undefined && v !== null && String(v).trim() !== '';
+            });
+        },
+        nextStep() { if (this.stepValid() && !this.isLastStep()) this.modal.step++; },
+        prevStep() { if (this.modal.step > 0) this.modal.step--; },
+        // visibleFields: the fields to render right now -- the current step's
+        // for a wizard, otherwise all of them (edit, or a non-stepped resource).
+        visibleFields() {
+            const r = this.currentResource();
+            if (this.isWizard()) return (this.wizardSteps()[this.modal.step].fields || []);
+            return this.modalFields(r);
+        },
+        // stepDescription: the explanation for the current wizard step.
+        stepDescription() {
+            const s = this.wizardSteps()[this.modal.step];
+            return s ? s.description : '';
+        },
 
         // loadModalOptions fetches the option lists any multiselect field in
         // this resource needs, so the user picks by name instead of typing IDs.
         async loadModalOptions(r) {
-            const sources = new Set((r.fields || [])
+            const sources = new Set(this.modalFields(r)
                 .filter((f) => f.type === 'multiselect')
                 .map((f) => f.optionsFrom));
             for (const src of sources) {
@@ -449,7 +532,7 @@ function app() {
 
         async removeRow(row) {
             const r = this.currentResource();
-            if (!confirm('Delete this ' + r.singular + '?')) return;
+            if (!await this.askConfirm('Delete this ' + r.singular + '?')) return;
             try {
                 if (r.removeBody) {
                     await this.request('DELETE', r.path, r.removeBody(row));
@@ -510,7 +593,7 @@ function app() {
 
         // revokeAccess removes one subject→target rule via the revoke sub-path.
         async revokeAccess(row) {
-            if (!confirm('Revoke this access rule?')) return;
+            if (!await this.askConfirm('Revoke this access rule?')) return;
             const targetIds = this.accessKind === 'guest'
                 ? { guest_ids: [row.guest_id] }
                 : { instance_ids: [row.instance_id] };
