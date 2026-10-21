@@ -32,11 +32,25 @@
         const TOKEN_KEY = 'proxpass_admin_token';
 
         function api() {
+            const stored = sessionStorage.getItem(TOKEN_KEY) || '';
             return {
-                token: sessionStorage.getItem(TOKEN_KEY) || '',
-                get authed() { return !!this.token; },
-                saveToken(t) { this.token = t.trim(); sessionStorage.setItem(TOKEN_KEY, this.token); },
-                clearToken() { this.token = ''; sessionStorage.removeItem(TOKEN_KEY); },
+                token: stored,
+                // authed is a plain reactive property, NOT a getter: app()
+                // builds its state with `...api()`, and the spread operator
+                // would copy a getter's *value* once (always false at startup)
+                // instead of the getter itself, so the view could never leave
+                // the sign-in screen. saveToken/clearToken keep it in step.
+                authed: !!stored,
+                saveToken(t) {
+                    this.token = t.trim();
+                    this.authed = !!this.token;
+                    sessionStorage.setItem(TOKEN_KEY, this.token);
+                },
+                clearToken() {
+                    this.token = '';
+                    this.authed = false;
+                    sessionStorage.removeItem(TOKEN_KEY);
+                },
 
                 // request performs one API call and normalizes errors. A 401/403
                 // bubbles up as a typed error so the UI can send the operator
