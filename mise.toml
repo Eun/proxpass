@@ -45,12 +45,13 @@ run = [
 description = "Build the admin web UI (Tailwind CSS, no Node runtime)"
 dir = "frontend"
 # The dist/ tree is rebuilt from scratch each run so a stale asset (or the
-# committed placeholder) can never linger. index.html + the vendored JS are
-# copied verbatim; only the CSS is compiled.
+# committed placeholder) can never linger. index.html, the app's own app.js,
+# and the vendored JS are copied verbatim; only the CSS is compiled.
 run = [
   "rm -rf ../internal/webui/dist",
   "mkdir -p ../internal/webui/dist/assets",
   "cp index.html ../internal/webui/dist/index.html",
+  "cp assets/app.js ../internal/webui/dist/assets/app.js",
   "cp -r assets/js ../internal/webui/dist/assets/js",
   "tailwindcss -c tailwind.config.js -i assets/app.css -o ../internal/webui/dist/assets/app.css --minify",
 ]

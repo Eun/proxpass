@@ -34,13 +34,19 @@ func TestWebUIServedAtRoot(t *testing.T) {
 func TestWebUIAssetsServed(t *testing.T) {
 	h, _ := newTestServer(t)
 
+	const js = "javascript"
 	for _, tc := range []struct {
 		path  string
 		ctHas string
 	}{
 		{"/assets/app.css", "text/css"},
-		{"/assets/js/alpine.min.js", "javascript"},
-		{"/assets/js/chart.min.js", "javascript"},
+		// app.js is the SPA itself; it must be served as JavaScript or the
+		// browser blocks it under X-Content-Type-Options: nosniff and nothing
+		// runs. It is the app's own code, not a vendored lib, so it is easy to
+		// forget to copy into dist -- this guards that.
+		{"/assets/app.js", js},
+		{"/assets/js/alpine.min.js", js},
+		{"/assets/js/chart.min.js", js},
 	} {
 		rec := get(t, h, tc.path)
 		if rec.Code != http.StatusOK {
