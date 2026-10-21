@@ -11,7 +11,9 @@
         "GroupName": "http://127.0.0.1:8080/group/name/"
       },
       "RequestTimeout": "5s",
-      "Headers": {}
+      "Headers": {
+        "Authorization": "Bearer __PROXPASS_NSS_TOKEN__"
+      }
     }
   ],
   "Cache": {

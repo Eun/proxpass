@@ -30,6 +30,82 @@ log() {
 	echo "entrypoint: $*" >&2
 }
 
+# --- NSS bearer token ------------------------------------------------------
+#
+# `proxpass serve' now requires a bearer token on the NSS directory routes
+# (/user/*, /group/*, /users, /groups) so the single HTTP listener can be
+# bound to a routable interface without exposing the user/group directory
+# unauthenticated. The NSS module (github.com/Eun/nss_http-go) presents this
+# token on EVERY request via the "Headers" map in /etc/nss_http.json.
+#
+# CRITICAL ORDERING: the token must be generated, exported (so the child
+# `proxpass serve' inherits it), AND written into /etc/nss_http.json BEFORE
+# `proxpass serve' starts and BEFORE sshd resolves the first user. If the
+# token the NSS module sends does not match the one `proxpass serve' expects,
+# every lookup is refused and NOBODY can log in. This block therefore runs
+# ahead of all serve/sshd logic below.
+#
+# Generated when unset with pure coreutils (base64 of 32 random bytes, with
+# the base64 non-alphanumerics stripped so the value is a clean header token):
+# the runtime image ships neither openssl nor jq/python, only the Debian base
+# plus curl and openssh-server.
+if [ -z "${PROXPASS_NSS_TOKEN:-}" ]; then
+	PROXPASS_NSS_TOKEN="$(head -c32 /dev/urandom | base64 | tr -d '/+=')"
+	log "generated a PROXPASS_NSS_TOKEN for the NSS directory"
+else
+	log "using the supplied PROXPASS_NSS_TOKEN for the NSS directory"
+fi
+export PROXPASS_NSS_TOKEN
+
+# Inject the token into /etc/nss_http.json's Headers.Authorization. The file
+# is COPYed from docker/nss_http.json at build time with a placeholder; this
+# rewrites the placeholder to the real "Bearer <token>" value at startup.
+#
+# A placeholder + sed is used rather than jq/python/envsubst because none of
+# those are in the runtime image. The token is restricted to base64 alphanum
+# above, so it contains no sed metacharacters and no '/' (the sed delimiter),
+# which keeps this substitution safe. The edit is written to a temp file and
+# moved into place so a login never sees a half-written config.
+PROXPASS_NSS_CONFIG="${PROXPASS_NSS_CONFIG:-/etc/nss_http.json}"
+if [ -f "${PROXPASS_NSS_CONFIG}" ]; then
+	nss_tmp="$(mktemp)"
+	sed "s/__PROXPASS_NSS_TOKEN__/${PROXPASS_NSS_TOKEN}/g" \
+		"${PROXPASS_NSS_CONFIG}" > "${nss_tmp}"
+	# Preserve the 0644 root:root mode the Dockerfile set.
+	cat "${nss_tmp}" > "${PROXPASS_NSS_CONFIG}"
+	rm -f "${nss_tmp}"
+	log "injected the NSS bearer token into ${PROXPASS_NSS_CONFIG}"
+else
+	log "warning: ${PROXPASS_NSS_CONFIG} not found; NSS lookups will fail"
+fi
+
+# --- admin REST API passthrough --------------------------------------------
+#
+# `proxpass serve' also owns an opt-in admin REST API, configured via these
+# env vars (read through ucli EnvVars on the serve command). They are passed
+# through unchanged: exporting them is all the child process needs.
+#
+#   PROXPASS_REST_API_TOKEN  : static bearer token for the admin REST API.
+#       Operator-supplied and OPTIONAL -- unlike the NSS token it is NOT
+#       generated, because the admin REST API is opt-in and a generated token
+#       nobody is told would be useless.
+#   PROXPASS_REST_API_LISTEN : optional second listen address for the admin
+#       REST API (e.g. 0.0.0.0:8081).
+#
+# These are secrets/listen addresses for the ROOT serve process only. They are
+# deliberately NOT added to the sshd session environment (see
+# docker/sshd_config.d/proxpass.conf): sshd scrubs the environment and only
+# admits PROXPASS_DISABLE_STATUSBAR and PROXPASS_SESSION_TOKEN, so a session
+# never sees them.
+if [ -n "${PROXPASS_REST_API_TOKEN:-}" ]; then
+	export PROXPASS_REST_API_TOKEN
+	log "admin REST API token supplied; passing it through to serve"
+fi
+if [ -n "${PROXPASS_REST_API_LISTEN:-}" ]; then
+	export PROXPASS_REST_API_LISTEN
+	log "admin REST API listen address: ${PROXPASS_REST_API_LISTEN}"
+fi
+
 serve_pid=""
 
 # Forward SIGTERM/SIGINT to both children so `docker stop' is a clean shutdown
@@ -213,8 +289,15 @@ export PROXPASS_SSH_KEY_FILE
 
 # A 200 on the user list endpoint means `proxpass serve' is far enough along
 # that NSS lookups will succeed. --fail turns any non-2xx into a non-zero exit.
+#
+# The /users route now requires the NSS bearer token, exactly like the NSS
+# module's own requests: without the Authorization header this probe would get
+# a 401, --fail would never succeed, and the entrypoint would hang until the
+# readiness timeout and then exit. The header must carry the same token that
+# was injected into /etc/nss_http.json above.
 nss_api_ready() {
 	curl --silent --show-error --fail --max-time 2 \
+		-H "Authorization: Bearer ${PROXPASS_NSS_TOKEN}" \
 		--output /dev/null "http://${PROXPASS_LISTEN}/users"
 }
 
