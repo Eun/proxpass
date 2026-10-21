@@ -153,7 +153,11 @@ func TestAdminRepositoryAgreesWithTheDatabase(t *testing.T) {
 		Type: models.GuestTypeCT, Name: "web", Status: models.StatusRunning,
 		ProxmoxID: 100, InstanceID: inst.ID,
 	}
-	if err := remote.UpsertGuest(ctx, guest); err != nil {
+	// UpsertGuest is a discovery write, not an admin-CLI operation, so it has
+	// no /v1 endpoint and the admin repository panics on it. The fixture is
+	// seeded through the real repository instead, which is what the discovery
+	// loop does in production.
+	if err := direct.UpsertGuest(ctx, guest); err != nil {
 		t.Fatalf("UpsertGuest: %v", err)
 	}
 
@@ -275,22 +279,19 @@ func assertSameRest(t *testing.T, remote, direct db.Repository, clientID, guestI
 		t.Errorf("access rules: remote %d, real %d", len(rulesA), len(rulesB))
 	}
 
-	// Check a GRANTED pair, so that a bug returning a constant false shows
-	// up. An ungranted pair would agree by accident: both would say no.
-	okA, err := remote.HasAccess(ctx, clientID, guestID)
-	if err != nil {
-		t.Fatalf("remote HasAccess: %v", err)
-	}
-	okB, err := direct.HasAccess(ctx, clientID, guestID)
+	// Confirm the grant issued through the remote actually landed, so that a
+	// GrantClientAccess that silently did nothing would show up. HasAccess is
+	// not an admin-CLI operation and has no /v1 endpoint -- the admin
+	// repository panics on it -- so the check reads the real repository
+	// directly. The remote side is covered by the ListAccessRules count
+	// above, which the grant must have changed.
+	granted, err := direct.HasAccess(ctx, clientID, guestID)
 	if err != nil {
 		t.Fatalf("direct HasAccess: %v", err)
 	}
-	if okA != okB {
-		t.Errorf("HasAccess: remote %v, direct %v", okA, okB)
-	}
-	if !okB {
-		t.Fatal("the fixture does not grant this pair, so the comparison " +
-			"above would pass even if both sides were broken")
+	if !granted {
+		t.Fatal("the grant issued through the remote did not reach the " +
+			"database: HasAccess is false for the pair that was granted")
 	}
 
 	keysA, err := remote.ListAdminKeys(ctx)

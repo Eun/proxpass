@@ -102,6 +102,27 @@ func serveCommand() *ucli.Command {
 				Value:   5 * time.Minute,
 				Sources: ucli.EnvVars("PROXPASS_DISCOVERY_INTERVAL"),
 			},
+			&ucli.StringFlag{
+				Name: "nss-token",
+				Usage: "bearer token the NSS directory routes require. " +
+					"Set it (and give libnss_http the same value) to bind the " +
+					"listener off loopback. Empty leaves the NSS routes open, " +
+					"which is only safe on a loopback-only listener.",
+				Sources: ucli.EnvVars("PROXPASS_NSS_TOKEN"),
+			},
+			&ucli.StringFlag{
+				Name: "rest-api-listen",
+				Usage: "address for a second listener serving ONLY the typed /v1 " +
+					"admin REST API (no NSS routes), e.g. 0.0.0.0:8081. Empty " +
+					"disables it; the admin API is still reachable on --listen.",
+				Sources: ucli.EnvVars("PROXPASS_REST_API_LISTEN"),
+			},
+			&ucli.StringFlag{
+				Name: "rest-api-token",
+				Usage: "static bearer token for the /v1 admin REST API, for " +
+					"external clients. Required when --rest-api-listen is set.",
+				Sources: ucli.EnvVars("PROXPASS_REST_API_TOKEN"),
+			},
 		},
 		Action: runServe,
 	}
@@ -158,13 +179,46 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 		return err
 	}
 
+	nssToken := cmd.String("nss-token")
+	restAPIListen := cmd.String("rest-api-listen")
+	restAPIToken := cmd.String("rest-api-token")
+
+	// Fail closed: a routable admin listener without a token would expose every
+	// write in the system unauthenticated. Refuse at startup rather than serve
+	// it, so a misconfiguration is a loud error, not a silent exposure.
+	if restAPIListen != "" && restAPIToken == "" {
+		return fmt.Errorf(
+			"--rest-api-listen is set (%s) but --rest-api-token is empty: refusing "+
+				"to expose the admin REST API without authentication; set "+
+				"PROXPASS_REST_API_TOKEN", restAPIListen)
+	}
+
 	// Guest discovery runs in the background; the directory API blocks.
 	discovery := proxmox.NewDiscovery(
 		repo, interval, logger, proxmox.DefaultDiscovererFactory)
 	go discovery.Run(ctx)
 
-	logger.Printf("serving directory API on %s", listenAddr)
-	if err := api.NewServerWithIDs(repo, logger, ids).ListenAndServe(ctx, listenAddr); err != nil {
+	server := api.NewServerWithIDs(repo, logger, ids).
+		WithNSSToken(nssToken).
+		WithRESTAPIToken(restAPIToken).
+		WithDiscoverer(proxmox.DefaultDiscovererFactory)
+
+	// The admin REST API on its own routable listener (no NSS routes), when
+	// configured. It runs alongside the loopback listener and shares ctx for
+	// graceful shutdown. A failure here brings the process down, same as the
+	// main listener, because an operator who asked for it needs to know.
+	if restAPIListen != "" {
+		logger.Printf("serving admin REST API on %s", restAPIListen)
+		go func() {
+			if err := server.ListenAndServeAdmin(ctx, restAPIListen); err != nil {
+				logger.Printf("admin REST API server: %v", err)
+			}
+		}()
+	}
+
+	logger.Printf("serving directory + session + admin API on %s (nss auth: %t)",
+		listenAddr, nssToken != "")
+	if err := server.ListenAndServe(ctx, listenAddr); err != nil {
 		return err
 	}
 	logger.Println("shutting down")

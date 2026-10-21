@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -12,8 +13,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"proxpass/internal/db"
 	"proxpass/internal/models"
+	"proxpass/internal/proxmox"
 )
 
 const (
@@ -145,12 +149,25 @@ func (l IDLayout) adminUserAs(name string) User {
 // inside a user-namespaced container.
 var errIDOutOfRange = errors.New("id out of range")
 
-// Server serves the nss_http user/group directory backed by the proxpass
-// database.
+// Server serves the nss_http user/group directory, the session API, and the
+// typed /v1 admin REST API, all backed by the proxpass database.
 type Server struct {
 	repo   db.Repository
 	logger *log.Logger
 	ids    IDLayout
+
+	// nssTokenHash, when non-empty, is the SHA-256 hash of the bearer token
+	// the NSS routes require (PROXPASS_NSS_TOKEN). libnss_http presents it via
+	// the Headers map in /etc/nss_http.json. Empty leaves the NSS routes open,
+	// which is only safe on a loopback-only listener. Set with WithNSSToken.
+	nssTokenHash string
+
+	// restAPIToken is the static admin bearer token for the /v1 admin API,
+	// passed through to the SessionHandler. Empty disables the static path.
+	restAPIToken string
+
+	// discoverer backs the admin RunDiscovery handler; nil disables it.
+	discoverer proxmox.DiscovererFactory
 }
 
 // NewServer builds the directory server with the default id layout.
@@ -161,6 +178,31 @@ func NewServer(repo db.Repository, logger *log.Logger) *Server {
 // NewServerWithIDs builds the directory server with an explicit id layout.
 func NewServerWithIDs(repo db.Repository, logger *log.Logger, ids IDLayout) *Server {
 	return &Server{repo: repo, logger: logger, ids: ids}
+}
+
+// WithNSSToken requires the given bearer token on the NSS directory routes.
+// An empty token leaves them open (loopback-only deployments). Chainable.
+func (s *Server) WithNSSToken(token string) *Server {
+	if token == "" {
+		s.nssTokenHash = ""
+		return s
+	}
+	s.nssTokenHash = HashToken(token)
+	return s
+}
+
+// WithRESTAPIToken sets the static admin bearer token for the /v1 admin API.
+// Chainable.
+func (s *Server) WithRESTAPIToken(token string) *Server {
+	s.restAPIToken = token
+	return s
+}
+
+// WithDiscoverer wires the guest discoverer the admin RunDiscovery handler
+// uses. Chainable.
+func (s *Server) WithDiscoverer(factory proxmox.DiscovererFactory) *Server {
+	s.discoverer = factory
+	return s
 }
 
 // IDs returns the layout the server serves.
@@ -188,26 +230,87 @@ func (s *Server) IDs() IDLayout { return s.ids }
 // The entrypoint also polls /users to decide when the directory is ready, so
 // requiring a token there would deadlock container startup.
 func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/user/name/", s.handleUserByName)
-	mux.HandleFunc("/user/uid/", s.handleUserByUID)
-	mux.HandleFunc("/users", s.handleUsers)
-	mux.HandleFunc("/group/name/", s.handleGroupByName)
-	mux.HandleFunc("/group/gid/", s.handleGroupByGID)
-	mux.HandleFunc("/groups", s.handleGroups)
+	r := chi.NewRouter()
+	nss := s.nssAuth
 
-	// The admin API. Hand-written rather than generated: its body is a
-	// tagged union, which OpenAPI describes poorly. Authentication is the
-	// same session credential, with an additional administrator check.
-	mux.HandleFunc("/admin/rpc", s.ServeAdminRPC)
+	// The NSS directory routes are hand-written -- their JSON is the nss_http
+	// wire format, not a resource proxpass designed -- so they are registered
+	// directly on the chi router the generated handler also mounts onto. The
+	// trailing "/*" matches the subtree ServeMux's trailing-slash patterns did;
+	// each handler reads the full r.URL.Path, so no chi URL param is involved.
+	r.HandleFunc("/user/name/*", nss(s.handleUserByName))
+	r.HandleFunc("/user/uid/*", nss(s.handleUserByUID))
+	r.HandleFunc("/users", nss(s.handleUsers))
+	r.HandleFunc("/group/name/*", nss(s.handleGroupByName))
+	r.HandleFunc("/group/gid/*", nss(s.handleGroupByGID))
+	r.HandleFunc("/groups", nss(s.handleGroups))
 
+	// The SSH-key operations are the one remaining /admin/rpc endpoint: they
+	// read a root-owned key file on an admin session's behalf and have no /v1
+	// resource (see adminrpc.go). They authorize themselves against an admin
+	// identity. Loopback only -- the session asks the local `serve' process --
+	// so this is registered on the loopback Handler, not on AdminHandler.
+	r.HandleFunc("/admin/rpc", s.ServeAdminRPC)
+
+	// The session API and the typed /v1 admin REST API are both served by the
+	// generated strict handler (one SessionHandler implements both), mounted
+	// onto the same chi router via the generated HandlerFromMux. Admin
+	// operations authorize themselves against an admin identity -- a session
+	// credential whose stored identity is the administrator's, or the static
+	// PROXPASS_REST_API_TOKEN. The old /admin/rpc tagged-union endpoint is gone;
+	// its operations are now the typed /v1 resources.
 	return HandlerWithOptions(
-		NewStrictHandler(NewSessionHandler(s.repo, s.logger), nil),
-		StdHTTPServerOptions{
-			BaseRouter:  mux,
+		NewStrictHandler(s.sessionHandler(), nil),
+		ChiServerOptions{
+			BaseRouter:  r,
 			Middlewares: []MiddlewareFunc{bearerTokenMiddleware},
 		},
 	)
+}
+
+// AdminHandler returns a handler that serves ONLY the session + /v1 admin API,
+// WITHOUT the NSS directory routes. It is used for a second, routable listener
+// (PROXPASS_REST_API_LISTEN) so the admin REST API can be exposed off-loopback
+// without also exposing the user/group directory. Every /v1 operation still
+// requires an admin credential.
+func (s *Server) AdminHandler() http.Handler {
+	return HandlerWithOptions(
+		NewStrictHandler(s.sessionHandler(), nil),
+		ChiServerOptions{
+			BaseRouter:  chi.NewRouter(),
+			Middlewares: []MiddlewareFunc{bearerTokenMiddleware},
+		},
+	)
+}
+
+// sessionHandler builds the generated-API handler with the server's optional
+// admin wiring (static REST token + discoverer).
+func (s *Server) sessionHandler() *SessionHandler {
+	return NewSessionHandler(s.repo, s.logger).
+		WithRESTAPIToken(s.restAPIToken).
+		WithDiscoverer(s.discoverer)
+}
+
+// nssAuth wraps an NSS handler with the optional NSS bearer-token check. When
+// no NSS token is configured the handler is returned unchanged, so a
+// loopback-only deployment keeps the open directory it had.
+//
+// The token is verified in constant time. A missing or wrong token is a 401;
+// libnss_http turns that into "user not found", so a misconfigured token
+// fails closed rather than leaking the directory.
+func (s *Server) nssAuth(next http.HandlerFunc) http.HandlerFunc {
+	if s.nssTokenHash == "" {
+		return next
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		token, ok := BearerToken(withBearerToken(r).Context())
+		if !ok || subtle.ConstantTimeCompare(
+			[]byte(HashToken(token)), []byte(s.nssTokenHash)) != 1 {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
 }
 
 // bearerTokenMiddleware puts the Authorization header on the request context
@@ -223,11 +326,24 @@ func bearerTokenMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// ListenAndServe runs the directory server until ctx is canceled.
+// ListenAndServe runs the full directory + session + admin server (NSS routes
+// included) until ctx is canceled. This is the loopback listener.
 func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
+	return serveHTTP(ctx, addr, s.Handler(), "directory server")
+}
+
+// ListenAndServeAdmin runs a second listener serving ONLY the session + /v1
+// admin API (no NSS routes), for exposing the admin REST API off-loopback.
+// Runs until ctx is canceled.
+func (s *Server) ListenAndServeAdmin(ctx context.Context, addr string) error {
+	return serveHTTP(ctx, addr, s.AdminHandler(), "admin REST server")
+}
+
+// serveHTTP runs one http.Server until ctx is canceled, then drains it.
+func serveHTTP(ctx context.Context, addr string, handler http.Handler, name string) error {
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           s.Handler(),
+		Handler:           handler,
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 	//nolint:gosec // G118: the shutdown deadline must outlive ctx, which has
@@ -239,7 +355,7 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 	if err := srv.ListenAndServe(); err != nil && ctx.Err() == nil {
-		return fmt.Errorf("directory server: %w", err)
+		return fmt.Errorf("%s: %w", name, err)
 	}
 	return nil
 }

@@ -37,14 +37,18 @@ info:
     second one can be presented repeatedly, which is what a session needs:
     browsing and connecting are several calls, not one.
 
-    The same server also exposes `POST /admin/rpc`, which is deliberately
-    NOT described here. Its body is a tagged union -- an operation name plus
-    arguments shaped per operation -- which OpenAPI describes poorly and
-    generates worse. It mirrors the `db.Repository` interface so that the
-    admin CLI can keep calling the interface it always called while the
-    database moves out of its reach; see internal/api/adminrpc.go, where that
-    constraint is documented beside the code. Every operation on it requires
-    a credential whose stored identity is the administrator's.
+    The same server also exposes the **admin REST API** under `/v1`, a set of
+    typed resources (instances, clients, groups, guests, access rules,
+    instance access rules, default policy, admin keys, settings, discovery)
+    that together cover every administrative operation. It REPLACES the older
+    `POST /admin/rpc`, whose body was a tagged union -- an operation name plus
+    arguments shaped per operation -- that OpenAPI described poorly and
+    generated worse. With the database moving out of the admin CLI's reach,
+    the CLI becomes an HTTP client of these resources: each `/v1` operation
+    maps onto a method of the `db.Repository` interface (see
+    internal/db/repository.go) so the two cannot drift. Every `/v1` operation
+    requires a bearer token whose stored identity is the administrator's; see
+    the `adminToken` security scheme.
 
 servers:
   - url: http://127.0.0.1:8080
@@ -56,6 +60,11 @@ servers:
 tags:
   - name: session
     description: What a guest-console session needs, scoped to its identity.
+  - name: admin
+    description: |
+      The typed admin REST API under `/v1`. Every operation requires the
+      `adminToken` bearer scheme and mirrors a `db.Repository` method. These
+      replace the old `/admin/rpc` tagged-union endpoint.
   - name: health
 
 paths:
@@ -359,6 +368,883 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
+  # ---------------------------------------------------------------------------
+  # Admin REST API (/v1)
+  #
+  # Typed resources that replace the old /admin/rpc tagged union. Every
+  # operation below requires the adminToken bearer scheme (admin scope) and
+  # maps onto a db.Repository method. The session routes above and the NSS
+  # directory routes keep their own authentication and are unaffected.
+  # ---------------------------------------------------------------------------
+
+  /v1/instances:
+    get:
+      tags: [admin]
+      summary: List Proxmox instances.
+      description: Mirrors `db.Repository.ListProxmoxInstances`.
+      operationId: listInstances
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: Every configured Proxmox instance.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProxmoxInstance"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [admin]
+      summary: Add a Proxmox instance.
+      description: |
+        Mirrors `db.Repository.AddProxmoxInstance`. The id is assigned by the
+        server and ignored on input.
+      operationId: addInstance
+      security:
+        - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProxmoxInstance"
+      responses:
+        "201":
+          description: The instance as stored, with its assigned id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProxmoxInstance"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/instances/{id}:
+    parameters:
+      - $ref: "#/components/parameters/RowId"
+    get:
+      tags: [admin]
+      summary: Get one Proxmox instance.
+      description: |
+        There is no dedicated repository getter for a single instance; the
+        server resolves it from `ListProxmoxInstances`.
+      operationId: getInstance
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: The instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProxmoxInstance"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      tags: [admin]
+      summary: Update a Proxmox instance.
+      description: |
+        Mirrors `db.Repository.UpdateProxmoxInstance`. The id in the path wins;
+        any id in the body is ignored.
+      operationId: updateInstance
+      security:
+        - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProxmoxInstance"
+      responses:
+        "200":
+          description: The updated instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProxmoxInstance"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [admin]
+      summary: Remove a Proxmox instance.
+      description: Mirrors `db.Repository.RemoveProxmoxInstance`.
+      operationId: removeInstance
+      security:
+        - adminToken: []
+      responses:
+        "204":
+          description: The instance is gone.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/clients:
+    get:
+      tags: [admin]
+      summary: List clients, or look one up by name.
+      description: |
+        With no query this mirrors `db.Repository.ListClients`. With `name`
+        it mirrors `db.Repository.GetClientByName` and returns the single
+        matching client (404 when none matches). The by-name lookup is modeled
+        as a query parameter rather than a sub-path so a caller holding only a
+        name needs no separate route.
+      operationId: listClients
+      security:
+        - adminToken: []
+      parameters:
+        - name: name
+          in: query
+          required: false
+          description: |
+            When set, return only the client with this exact name (as
+            `GetClientByName`) rather than the whole list.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: |
+            The clients. An array when listing; a single-element array when a
+            `name` matched.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AdminClient"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [admin]
+      summary: Add a client.
+      description: Mirrors `db.Repository.AddClient`. The id is server-assigned.
+      operationId: addClient
+      security:
+        - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminClient"
+      responses:
+        "201":
+          description: The client as stored, with its assigned id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminClient"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/clients/{id}:
+    parameters:
+      - $ref: "#/components/parameters/RowId"
+    get:
+      tags: [admin]
+      summary: Get one client.
+      operationId: getClient
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: The client.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminClient"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      tags: [admin]
+      summary: Update a client.
+      description: Mirrors `db.Repository.UpdateClient`. The path id wins.
+      operationId: updateClient
+      security:
+        - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminClient"
+      responses:
+        "200":
+          description: The updated client.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminClient"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [admin]
+      summary: Remove a client.
+      description: Mirrors `db.Repository.RemoveClient`.
+      operationId: removeClient
+      security:
+        - adminToken: []
+      responses:
+        "204":
+          description: The client is gone.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/groups:
+    get:
+      tags: [admin]
+      summary: List groups.
+      description: Mirrors `db.Repository.ListGroups`.
+      operationId: listGroups
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: Every group.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ClientGroup"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [admin]
+      summary: Add a group.
+      description: Mirrors `db.Repository.AddGroup`. The id is server-assigned.
+      operationId: addGroup
+      security:
+        - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClientGroup"
+      responses:
+        "201":
+          description: The group as stored, with its assigned id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientGroup"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/groups/{id}:
+    parameters:
+      - $ref: "#/components/parameters/RowId"
+    get:
+      tags: [admin]
+      summary: Get one group.
+      operationId: getGroup
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: The group.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientGroup"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      tags: [admin]
+      summary: Update a group.
+      description: Mirrors `db.Repository.UpdateGroup`. The path id wins.
+      operationId: updateGroup
+      security:
+        - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClientGroup"
+      responses:
+        "200":
+          description: The updated group.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientGroup"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [admin]
+      summary: Remove a group.
+      description: Mirrors `db.Repository.RemoveGroup`.
+      operationId: removeGroup
+      security:
+        - adminToken: []
+      responses:
+        "204":
+          description: The group is gone.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/guests:
+    get:
+      tags: [admin]
+      summary: List guests.
+      description: |
+        Mirrors `db.Repository.ListGuests`. Guests are DISCOVERED from the
+        Proxmox instances, not created through the API, so there is no POST;
+        use `POST /v1/discover` to refresh them.
+      operationId: listGuests
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: Every discovered guest.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/GuestRow"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/guests/{id}:
+    parameters:
+      - $ref: "#/components/parameters/RowId"
+    get:
+      tags: [admin]
+      summary: Get one guest.
+      description: Mirrors `db.Repository.GetGuestByID`.
+      operationId: getGuest
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: The guest.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GuestRow"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/access-rules:
+    get:
+      tags: [admin]
+      summary: List guest access rules.
+      description: |
+        Mirrors `db.Repository.ListAccessRules`: one row per (subject, guest)
+        grant, where the subject is a client or a group.
+      operationId: listAccessRules
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: Every guest access rule.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AccessRuleRow"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/access-rules/grant:
+    post:
+      tags: [admin]
+      summary: Grant a client or group access to guests.
+      description: |
+        Mirrors `GrantClientAccess` / `GrantGroupAccess`. The subject's `kind`
+        selects which: `client` grants to one client, `group` to one group.
+        The `guest_ids` are added to that subject in one call.
+      operationId: grantAccess
+      security:
+        - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GuestAccessChange"
+      responses:
+        "204":
+          description: The grant was applied.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/access-rules/revoke:
+    post:
+      tags: [admin]
+      summary: Revoke a client's or group's access to guests.
+      description: |
+        Mirrors `RevokeClientAccess` / `RevokeGroupAccess`. The repository
+        revokes one (subject, guest) pair at a time; this accepts a list of
+        `guest_ids` and revokes each from the named subject.
+      operationId: revokeAccess
+      security:
+        - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GuestAccessChange"
+      responses:
+        "204":
+          description: The revocation was applied.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/instance-access-rules:
+    get:
+      tags: [admin]
+      summary: List instance (node) access rules.
+      description: |
+        Mirrors `db.Repository.ListInstanceAccessRules`: one row per
+        (subject, instance) grant. Separate from guest access rules because a
+        node grant and a guest grant confer different things.
+      operationId: listInstanceAccessRules
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: Every instance access rule.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/InstanceAccessRuleRow"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/instance-access-rules/grant:
+    post:
+      tags: [admin]
+      summary: Grant a client or group access to instances.
+      description: |
+        Mirrors `GrantClientInstanceAccess` / `GrantGroupInstanceAccess`. The
+        subject's `kind` selects which. The `instance_ids` are granted to that
+        subject in one call.
+      operationId: grantInstanceAccess
+      security:
+        - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InstanceAccessChange"
+      responses:
+        "204":
+          description: The grant was applied.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/instance-access-rules/revoke:
+    post:
+      tags: [admin]
+      summary: Revoke a client's or group's access to instances.
+      description: |
+        Mirrors `RevokeClientInstanceAccess` / `RevokeGroupInstanceAccess`.
+        Accepts a list of `instance_ids` and revokes each from the named
+        subject.
+      operationId: revokeInstanceAccess
+      security:
+        - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InstanceAccessChange"
+      responses:
+        "204":
+          description: The revocation was applied.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/policy:
+    get:
+      tags: [admin]
+      summary: Get the default access policy.
+      description: Mirrors `db.Repository.GetDefaultPolicy`.
+      operationId: getDefaultPolicy
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: The current default access policy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DefaultAccessPolicy"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      tags: [admin]
+      summary: Set the default access policy.
+      description: Mirrors `db.Repository.SetDefaultPolicy`.
+      operationId: setDefaultPolicy
+      security:
+        - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DefaultAccessPolicy"
+      responses:
+        "200":
+          description: The stored default access policy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DefaultAccessPolicy"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/admin-keys:
+    get:
+      tags: [admin]
+      summary: List admin public keys.
+      description: Mirrors `db.Repository.ListAdminKeys`.
+      operationId: listAdminKeys
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: Every authorized admin public key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminKeyList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [admin]
+      summary: Add an admin public key.
+      description: Mirrors `db.Repository.AddAdminKey`.
+      operationId: addAdminKey
+      security:
+        - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminKey"
+      responses:
+        "204":
+          description: The key is authorized.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [admin]
+      summary: Remove an admin public key.
+      description: |
+        Mirrors `db.Repository.RemoveAdminKey`. The key to remove is carried in
+        the request body, because a public key is long and does not belong in a
+        URL or log line.
+      operationId: removeAdminKey
+      security:
+        - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminKey"
+      responses:
+        "204":
+          description: The key is no longer authorized.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/settings/{key}:
+    parameters:
+      - name: key
+        in: path
+        required: true
+        description: The setting key, e.g. `public_endpoint`.
+        schema:
+          type: string
+    get:
+      tags: [admin]
+      summary: Get a setting value.
+      description: Mirrors `db.Repository.GetSetting`.
+      operationId: getSetting
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: The setting's value.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Setting"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      tags: [admin]
+      summary: Set a setting value.
+      description: |
+        Mirrors `db.Repository.SetSetting`. The key in the path names the
+        setting; the body carries its new value.
+      operationId: setSetting
+      security:
+        - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SettingValue"
+      responses:
+        "200":
+          description: The stored setting.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Setting"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/discover:
+    post:
+      tags: [admin]
+      summary: Run guest discovery now.
+      description: |
+        Triggers a discovery pass, the same one `proxpass discover` runs: each
+        instance is polled, running guests are stored and stale ones pruned.
+        With no `instance` query every configured instance is discovered; with
+        `instance` set, only that one. Returns a per-instance summary.
+      operationId: runDiscovery
+      security:
+        - adminToken: []
+      parameters:
+        - name: instance
+          in: query
+          required: false
+          description: |
+            When set, discover only the instance with this row id rather than
+            all of them.
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: The discovery summary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiscoverResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
 components:
   securitySchemes:
     sessionToken:
@@ -373,9 +1259,63 @@ components:
         session's own `$SSH_USER_AUTH` file is owned and writable by the
         session user, so a claim based on it could be forged.
 
+    adminToken:
+      type: http
+      scheme: bearer
+      description: |
+        A bearer credential whose stored identity is the administrator's. It
+        is required by every `/v1` admin operation and is the admin-scoped
+        counterpart of `sessionToken`: the session routes and the NSS
+        directory routes keep their own authentication and are unaffected by
+        this scheme.
+
+  parameters:
+    RowId:
+      name: id
+      in: path
+      required: true
+      description: The resource's row id.
+      schema:
+        type: integer
+        format: int64
+
   responses:
     Unauthorized:
       description: The token is missing, expired, already used, or unknown.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: |
+        The caller is authenticated but not the administrator; `/v1` is
+        admin-only.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BadRequest:
+      description: The request body or parameters were malformed or invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: No such resource.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: |
+        The request conflicts with existing state -- for example a name that
+        is already taken.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InternalError:
+      description: The server failed to complete the request.
       content:
         application/json:
           schema:
@@ -580,6 +1520,346 @@ components:
           type: integer
           format: int64
           description: The client's row id. Absent for the administrator.
+
+    # -------------------------------------------------------------------------
+    # Admin REST API (/v1) schemas.
+    #
+    # Property names here match the json tags of the Go models in
+    # internal/models/models.go exactly (snake_case), so the admin CLI's HTTP
+    # client and the stored rows cannot drift.
+    # -------------------------------------------------------------------------
+
+    ProxmoxInstance:
+      type: object
+      description: |
+        A Proxmox instance as the admin API carries it, mirroring
+        models.ProxmoxInstance. This is the full administrative view and,
+        unlike the session-scoped `InstanceCredentials`, includes the stored
+        API token secret.
+      required:
+        - id
+        - name
+        - api_url
+        - api_token_id
+        - api_token_secret
+        - console_transport
+        - node
+        - insecure_tls
+        - insecure_ssh
+        - ssh_host
+        - ssh_port
+        - ssh_user
+        - ssh_fingerprint
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: The row id. Server-assigned; ignored on create.
+        name:
+          type: string
+          description: |
+            What the administrator called this instance. Stored lower case.
+        api_url:
+          type: string
+        api_token_id:
+          type: string
+        api_token_secret:
+          type: string
+        console_transport:
+          type: string
+          enum: [termproxy, ssh]
+          description: How a guest CONSOLE is attached; see models.ConsoleTransport.
+        node:
+          type: string
+          description: The resolved Proxmox short node name.
+        insecure_tls:
+          type: boolean
+          description: |
+            When true, TLS certificate verification is skipped for the API and
+            termproxy console. Off by default.
+        insecure_ssh:
+          type: boolean
+          description: |
+            When true, SSH host-key verification is skipped for node
+            connections. Off by default.
+        ssh_host:
+          type: string
+        ssh_port:
+          type: integer
+        ssh_user:
+          type: string
+        ssh_fingerprint:
+          type: string
+          description: |
+            The pinned SSH host-key fingerprint ("SHA256:<base64>"). When
+            empty, the host key is verified against DNSSEC-validated SSHFP
+            records instead.
+
+    AdminClient:
+      type: object
+      description: A client, mirroring models.Client.
+      required: [id, name, public_keys, group_ids]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: The row id. Server-assigned; ignored on create.
+        name:
+          type: string
+        public_keys:
+          type: array
+          items:
+            type: string
+        group_ids:
+          type: array
+          items:
+            type: integer
+            format: int64
+
+    ClientGroup:
+      type: object
+      description: |
+        A group, mirroring models.Group. Named `ClientGroup` in the spec to
+        avoid colliding with the hand-written NSS `Group` type in
+        internal/api/types.go, whose JSON shape is fixed by the nss_http wire
+        format and must not be regenerated.
+      required: [id, name, client_ids]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: The row id. Server-assigned; ignored on create.
+        name:
+          type: string
+        client_ids:
+          type: array
+          items:
+            type: integer
+            format: int64
+
+    GuestRow:
+      type: object
+      description: |
+        A guest as the admin API carries it, mirroring models.Guest. Named
+        `GuestRow` to avoid colliding with the session-scoped `Guest` schema,
+        which carries a different, picker-oriented shape.
+      required: [id, type, name, status, proxmox_id, instance_id]
+      properties:
+        id:
+          type: integer
+          format: int64
+        type:
+          type: string
+          enum: [ct, vm]
+        name:
+          type: string
+        status:
+          type: string
+          enum: [running, stopped]
+        proxmox_id:
+          type: integer
+          description: The guest's id within its Proxmox instance, e.g. 100.
+        instance_id:
+          type: integer
+          format: int64
+
+    AccessRuleRow:
+      type: object
+      description: |
+        One guest access rule, mirroring models.AccessRuleRow: a flat per-row
+        representation with one guest per row.
+      required: [id, type, subject_id, guest_id]
+      properties:
+        id:
+          type: integer
+          format: int64
+        type:
+          $ref: "#/components/schemas/RuleType"
+        subject_id:
+          type: integer
+          format: int64
+          description: The client or group id, per `type`.
+        guest_id:
+          type: integer
+          format: int64
+
+    InstanceAccessRuleRow:
+      type: object
+      description: |
+        One instance (node) access rule, mirroring
+        models.InstanceAccessRuleRow: one instance per row.
+      required: [id, type, subject_id, instance_id]
+      properties:
+        id:
+          type: integer
+          format: int64
+        type:
+          $ref: "#/components/schemas/RuleType"
+        subject_id:
+          type: integer
+          format: int64
+          description: The client or group id, per `type`.
+        instance_id:
+          type: integer
+          format: int64
+
+    RuleType:
+      type: string
+      enum: [client, group]
+      x-enum-varnames: [RuleTypeClient, RuleTypeGroup]
+      description: |
+        Whether an access rule's subject is a client or a group; mirrors
+        models.RuleType.
+
+    DefaultAccessPolicy:
+      type: object
+      description: |
+        The default access policy, mirroring models.DefaultAccessPolicy: the
+        clients and groups granted access to guests not covered by an explicit
+        rule.
+      required: [authorized_client_ids, authorized_group_ids]
+      properties:
+        authorized_client_ids:
+          type: array
+          items:
+            type: integer
+            format: int64
+        authorized_group_ids:
+          type: array
+          items:
+            type: integer
+            format: int64
+
+    AccessSubject:
+      type: object
+      description: |
+        Who a grant or revoke applies to: a client or a group, selected by
+        `kind`. Mirrors the client/group split of the Grant*/Revoke* methods.
+      required: [kind, id]
+      properties:
+        kind:
+          $ref: "#/components/schemas/RuleType"
+        id:
+          type: integer
+          format: int64
+          description: The client or group row id, per `kind`.
+
+    GuestAccessChange:
+      type: object
+      description: |
+        A guest grant or revoke for one subject. On grant, every id in
+        `guest_ids` is added to the subject (GrantClientAccess /
+        GrantGroupAccess); on revoke, every id is removed (RevokeClientAccess /
+        RevokeGroupAccess, which the server applies one pair at a time).
+      required: [subject, guest_ids]
+      properties:
+        subject:
+          $ref: "#/components/schemas/AccessSubject"
+        guest_ids:
+          type: array
+          items:
+            type: integer
+            format: int64
+
+    InstanceAccessChange:
+      type: object
+      description: |
+        An instance (node) grant or revoke for one subject, the node
+        counterpart of `GuestAccessChange`. Mirrors
+        GrantClient/GroupInstanceAccess and RevokeClient/GroupInstanceAccess.
+      required: [subject, instance_ids]
+      properties:
+        subject:
+          $ref: "#/components/schemas/AccessSubject"
+        instance_ids:
+          type: array
+          items:
+            type: integer
+            format: int64
+
+    AdminKey:
+      type: object
+      description: |
+        A single admin public key, used to add (AddAdminKey) or remove
+        (RemoveAdminKey) one. The key travels in the body rather than the URL
+        because it is long and should not appear in logs.
+      required: [public_key]
+      properties:
+        public_key:
+          type: string
+          description: The authorized SSH public key, in authorized_keys form.
+
+    AdminKeyList:
+      type: object
+      description: |
+        The authorized admin public keys, mirroring ListAdminKeys (a list of
+        strings), wrapped in an object so the response is self-describing.
+      required: [public_keys]
+      properties:
+        public_keys:
+          type: array
+          items:
+            type: string
+
+    SettingValue:
+      type: object
+      description: The new value for a setting; mirrors SetSetting's value argument.
+      required: [value]
+      properties:
+        value:
+          type: string
+
+    Setting:
+      type: object
+      description: |
+        A setting's key and value, as returned by GetSetting (the key echoes
+        the path parameter).
+      required: [key, value]
+      properties:
+        key:
+          type: string
+        value:
+          type: string
+
+    DiscoverResult:
+      type: object
+      description: |
+        The outcome of a discovery pass, mirroring what `proxpass discover`
+        prints: one entry per instance plus a total of stored guests.
+      required: [instances, total]
+      properties:
+        instances:
+          type: array
+          items:
+            $ref: "#/components/schemas/DiscoverInstanceResult"
+        total:
+          type: integer
+          description: The total number of guests stored across all instances.
+
+    DiscoverInstanceResult:
+      type: object
+      description: The discovery outcome for one instance.
+      required: [instance_id, name, discovered, stored, removed]
+      properties:
+        instance_id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        discovered:
+          type: integer
+          description: How many guests the instance reported.
+        stored:
+          type: integer
+          description: How many running guests were stored.
+        removed:
+          type: integer
+          description: How many stale guests were pruned.
+        error:
+          type: string
+          description: |
+            Set when this instance failed; the pass continues with the others,
+            so a failure here does not fail the whole call.
 
     Error:
       type: object
