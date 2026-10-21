@@ -45,15 +45,27 @@ which is why the image is Debian based.
 ## Quick Start
 
 **1. Run proxpass.** The admin key is your own public key: it is what lets you
-run the CLI in the steps below.
+run the CLI in the steps below. The two `PROXPASS_REST_API_*` variables and the
+`-p 8081:8081` publish the [admin web UI](#admin-web-ui) — leave them out if you
+only want the SSH CLI.
 
 ```bash
 docker run -d --name proxpass \
   -p 2222:22 \
+  -p 8081:8081 \
   -v proxpass-data:/var/lib/proxpass \
   -e PROXPASS_ADMIN_KEY="$(cat ~/.ssh/id_ed25519.pub)" \
+  -e PROXPASS_REST_API_LISTEN="0.0.0.0:8081" \
+  -e PROXPASS_REST_API_TOKEN="change-me-to-a-long-random-token" \
   ghcr.io/eun/proxpass:latest
 ```
+
+The admin UI is now at **`http://localhost:8081/`**. Open it, and sign in with
+the `PROXPASS_REST_API_TOKEN` value you set above — that token is the password.
+Pick a long random one (e.g. `openssl rand -hex 32`) and keep it secret: anyone
+with it has full admin access. See [Admin Web UI](#admin-web-ui) for details.
+The steps below use the SSH CLI, but everything they do can also be done in the
+UI.
 
 **2. Add a Proxmox instance.** Nothing is discovered until proxpass knows where
 to look, so this has to come before you connect.
@@ -497,23 +509,73 @@ single-page app — TailwindCSS and Alpine.js — compiled into the binary, so t
 same proxpass process that serves `/v1` serves the UI with no separate web
 server, no Node.js runtime, and no external files.
 
-Open the listener that serves the API in a browser:
+### Exposing it
 
-- On the loopback listener (`--listen`), the UI is at `http://127.0.0.1:8080/`.
-- When a routable admin listener is configured (`--rest-api-listen`), the UI is
-  also served there, e.g. `http://host:8081/`, and that listener serves only
-  the admin API and the UI — never the NSS directory.
+The container's HTTP listener is **loopback-only by default** (`PROXPASS_LISTEN`
+is `127.0.0.1:8080`), so nothing is reachable from outside the container until
+you ask for it. To reach the UI from your browser, enable the second, routable
+admin listener and publish its port:
 
-Sign in with an admin bearer token — the value of `PROXPASS_REST_API_TOKEN`, or
-an admin session token. The UI keeps the token only in the browser tab's memory
-(never a cookie), so it is not exposed to CSRF and is forgotten when the tab
-closes. It is same-origin with the API it drives, so no CORS configuration is
-needed.
+```bash
+docker run -d --name proxpass \
+  -p 2222:22 \
+  -p 8081:8081 \
+  -v proxpass-data:/var/lib/proxpass \
+  -e PROXPASS_ADMIN_KEY="$(cat ~/.ssh/id_ed25519.pub)" \
+  -e PROXPASS_REST_API_LISTEN="0.0.0.0:8081" \
+  -e PROXPASS_REST_API_TOKEN="$(openssl rand -hex 32)" \
+  ghcr.io/eun/proxpass:latest
+```
+
+`PROXPASS_REST_API_LISTEN` turns on the second listener, and
+`PROXPASS_REST_API_TOKEN` is the token you will log in with — **required**
+whenever the listener is set, so proxpass refuses to start a routable admin
+listener with no token rather than exposing an unauthenticated one. That
+listener serves only the admin API and the UI — never the NSS directory.
+
+The same works in a compose file:
+
+```yaml
+services:
+  proxpass:
+    image: ghcr.io/eun/proxpass:latest
+    ports:
+      - "2222:22"
+      - "8081:8081"
+    volumes:
+      - proxpass-data:/var/lib/proxpass
+    environment:
+      PROXPASS_ADMIN_KEY: "ssh-ed25519 AAAA… you"
+      PROXPASS_REST_API_LISTEN: "0.0.0.0:8081"
+      PROXPASS_REST_API_TOKEN: "a-long-random-secret"
+```
+
+> On the loopback listener (`--listen`), the UI is also served, at
+> `http://127.0.0.1:8080/` — reachable only from inside the container (or
+> through an SSH tunnel). For browser access from your machine, use the
+> routable listener above.
+
+### Logging in
+
+1. Open **`http://localhost:8081/`** (or wherever you published the admin
+   listener).
+2. You are asked for an **admin API token**. Paste the value of
+   `PROXPASS_REST_API_TOKEN` — that token *is* the login. (An admin session
+   token minted over SSH also works, but the static token is the simple path.)
+3. Click **Sign in**. The token is checked against the API and, if valid, the
+   dashboard loads.
+
+The UI keeps the token only in the browser tab's memory — never a cookie — so
+it is not exposed to CSRF, is forgotten when the tab closes, and signing out
+clears it immediately. Because the token grants full admin access, pick a long
+random value (`openssl rand -hex 32`), serve the listener over TLS if it is
+reachable beyond localhost, and rotate it by restarting with a new value.
 
 The UI covers every admin resource: instances, guests, clients, groups, guest
 and node access rules, the default policy, admin keys, settings, and running
-discovery. The OpenAPI spec the UI is built against is also served, at
-`/openapi.json`, for generating clients or exploring the API.
+discovery — the same operations as the [Admin CLI](#admin-cli). The OpenAPI
+spec the UI is built against is also served, at `/openapi.json`, for generating
+clients or exploring the API.
 
 ### Building the UI
 
