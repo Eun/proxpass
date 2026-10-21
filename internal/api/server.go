@@ -174,6 +174,11 @@ type Server struct {
 	// the SessionHandler so RemoveAdminKey refuses to delete it. Empty protects
 	// nothing. Set with WithProtectedAdminKey.
 	protectedAdminKey string
+
+	// settings is the effective serve configuration, passed through to the
+	// SessionHandler for the read-only ListSettings view. Nil until set with
+	// WithSettings.
+	settings *SettingsSnapshot
 }
 
 // NewServer builds the directory server with the default id layout.
@@ -215,6 +220,13 @@ func (s *Server) WithDiscoverer(factory proxmox.DiscovererFactory) *Server {
 // handler so RemoveAdminKey refuses to delete it. Chainable.
 func (s *Server) WithProtectedAdminKey(key string) *Server {
 	s.protectedAdminKey = key
+	return s
+}
+
+// WithSettings passes the effective serve configuration through to the session
+// handler for the read-only ListSettings view. Chainable.
+func (s *Server) WithSettings(snap *SettingsSnapshot) *Server {
+	s.settings = snap
 	return s
 }
 
@@ -346,7 +358,8 @@ func (s *Server) sessionHandler() *SessionHandler {
 	return NewSessionHandler(s.repo, s.logger).
 		WithRESTAPIToken(s.restAPIToken).
 		WithDiscoverer(s.discoverer).
-		WithProtectedAdminKey(s.protectedAdminKey)
+		WithProtectedAdminKey(s.protectedAdminKey).
+		WithSettings(s.settings)
 }
 
 // nssAuth wraps an NSS handler with the optional NSS bearer-token check. When

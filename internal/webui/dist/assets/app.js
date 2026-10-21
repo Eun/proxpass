@@ -160,17 +160,24 @@ function app() {
                 },
                 settings: {
                     singular: 'setting', path: '/settings',
-                    // settings has no list endpoint; the known keys are shown.
-                    // public_endpoint is the only real setting, and it is
-                    // controlled by PROXPASS_PUBLIC_ENDPOINT -- serve rewrites
-                    // it on every start, so it is read-only here (editing it
-                    // would be overwritten on restart). Shown for visibility.
-                    staticKeys: ['public_endpoint'],
+                    // The effective serve configuration, listed by GET
+                    // /v1/settings. It is entirely READ-ONLY: these come from
+                    // the environment/flags, so changing one means changing the
+                    // configuration and restarting, not editing here. Secrets
+                    // (tokens, the DB password) arrive already masked by the
+                    // server -- the browser never sees their real values.
                     readOnly: true,
+                    // Give each row a stable id (its key) for list rendering.
+                    unwrap: (data) => (data || []).map((s) => ({ ...s, id: s.key })),
                     columns: [
                         { key: 'key', label: 'Key' },
-                        { key: 'value', label: 'Value', render: (v) => v ? esc(v) : '<span class="text-gray-300">(unset)</span>' },
-                        { key: 'source', label: 'Source' },
+                        {
+                            key: 'value', label: 'Value',
+                            render: (v, row) => row.secret
+                                ? '<span class="text-gray-500 font-mono">' + esc(v) + '</span>'
+                                : (v ? esc(v) : '<span class="text-gray-300">(unset)</span>'),
+                        },
+                        { key: 'source', label: 'Source', render: (v) => v ? '<code class="text-xs text-gray-500">' + esc(v) + '</code>' : '' },
                     ],
                 },
             };
@@ -232,7 +239,6 @@ function app() {
         // ---- generic list loading ----
         async loadResource(id) {
             const r = this.resources[id];
-            if (r.staticKeys) return this.loadSettings(r);
             this.loading = true; this.rows = [];
             try {
                 let data = await this.request('GET', r.path);
@@ -241,25 +247,6 @@ function app() {
                 this.cache[id] = this.rows;
             } catch (e) { this.fail(e); }
             finally { this.loading = false; }
-        },
-
-        async loadSettings(r) {
-            this.loading = true; this.rows = [];
-            // Each known setting and where it comes from, so the read-only
-            // settings view can explain why it cannot be edited here.
-            const source = { public_endpoint: 'PROXPASS_PUBLIC_ENDPOINT (env)' };
-            const out = [];
-            for (const key of r.staticKeys) {
-                try {
-                    const s = await this.request('GET', r.path + '/' + encodeURIComponent(key));
-                    out.push({ id: key, key: s.key, value: s.value, source: source[key] || '' });
-                } catch (e) {
-                    if (e.status === 404) out.push({ id: key, key, value: '', source: source[key] || '' });
-                    else if (e.isAuth) { this.fail(e); break; }
-                }
-            }
-            this.rows = out;
-            this.loading = false;
         },
 
         // ---- dashboard ----

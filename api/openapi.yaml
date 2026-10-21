@@ -1148,6 +1148,37 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/settings:
+    get:
+      tags: [admin]
+      summary: List the effective settings.
+      description: |
+        Returns every operator-facing setting that governs this running serve
+        process -- the configuration it was started with (flags/environment)
+        plus the stored public endpoint -- each with its source. Secret values
+        (tokens, the database password) are masked by the server and never
+        returned in cleartext. These are read-only: they come from the
+        environment/flags, so changing them means changing the configuration
+        and restarting, not writing through this API.
+      operationId: listSettings
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: The effective settings.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Setting"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /v1/settings/{key}:
     parameters:
       - name: key
@@ -1815,13 +1846,25 @@ components:
       type: object
       description: |
         A setting's key and value, as returned by GetSetting (the key echoes
-        the path parameter).
+        the path parameter) and listSettings. For listSettings each entry also
+        carries where it comes from and whether it is a secret; a secret's
+        value is masked by the server and never returned in cleartext.
       required: [key, value]
       properties:
         key:
           type: string
         value:
           type: string
+        source:
+          type: string
+          description: |
+            Where the setting comes from, e.g. an environment variable name.
+            Present on listSettings entries; omitted by getSetting.
+        secret:
+          type: boolean
+          description: |
+            True when the value is sensitive (a token, a password). The server
+            masks such values, so `value` is a placeholder, not the real one.
 
     DiscoverResult:
       type: object

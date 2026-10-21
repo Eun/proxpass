@@ -207,11 +207,26 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 		repo, interval, logger, proxmox.DefaultDiscovererFactory)
 	go discovery.Run(ctx)
 
+	// A read-only snapshot of the effective configuration for the admin
+	// Settings view. Only set/unset is recorded for the secrets, never their
+	// values; the handler masks them further before they leave the process.
+	settingsSnapshot := &api.SettingsSnapshot{
+		Data:              dataPath,
+		LogLevel:          level.String(),
+		DiscoveryInterval: interval.String(),
+		Listen:            listenAddr,
+		RESTAPIListen:     restAPIListen,
+		AdminKeySet:       strings.TrimSpace(cmd.String("admin-key")) != "",
+		NSSTokenSet:       nssToken != "",
+		RESTAPITokenSet:   restAPIToken != "",
+	}
+
 	server := api.NewServerWithIDs(repo, logger, ids).
 		WithNSSToken(nssToken).
 		WithRESTAPIToken(restAPIToken).
 		WithDiscoverer(proxmox.DefaultDiscovererFactory).
-		WithProtectedAdminKey(cmd.String("admin-key"))
+		WithProtectedAdminKey(cmd.String("admin-key")).
+		WithSettings(settingsSnapshot)
 
 	// The admin REST API on its own routable listener (no NSS routes), when
 	// configured. It runs alongside the loopback listener and shares ctx for

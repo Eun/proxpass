@@ -49,6 +49,11 @@ type SessionHandler struct {
 	// the next restart silently brought it back. Refusing is clearer than that
 	// surprise. Empty means no key is protected. Set with WithProtectedAdminKey.
 	protectedAdminKey string
+
+	// settings is the effective serve configuration the ListSettings handler
+	// reports (read-only, secrets masked). Nil (no WithSettings) still answers
+	// -- with blank config -- rather than failing. Set with WithSettings.
+	settings *SettingsSnapshot
 }
 
 // NewSessionHandler returns a handler reading identities from repo.
@@ -77,6 +82,13 @@ func (h *SessionHandler) WithRESTAPIToken(token string) *SessionHandler {
 // comparison is not defeated by surrounding whitespace.
 func (h *SessionHandler) WithProtectedAdminKey(key string) *SessionHandler {
 	h.protectedAdminKey = strings.TrimSpace(key)
+	return h
+}
+
+// WithSettings records the effective serve configuration the ListSettings
+// handler reports. Chainable.
+func (h *SessionHandler) WithSettings(s *SettingsSnapshot) *SessionHandler {
+	h.settings = s
 	return h
 }
 

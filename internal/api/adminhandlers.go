@@ -899,6 +899,36 @@ func (h *SessionHandler) SetDefaultPolicy(
 
 // --- Settings ---
 
+// ListSettings returns the effective serve configuration, read-only, with
+// secrets masked by buildSettings. The stored public endpoint is read from the
+// repo (it can change without a restart); everything else comes from the
+// snapshot captured at startup.
+func (h *SessionHandler) ListSettings(
+	ctx context.Context, _ ListSettingsRequestObject,
+) (ListSettingsResponseObject, error) {
+	if denied, ok, err := gateAdmin(ctx, h,
+		func(reason string) ListSettingsResponseObject {
+			return ListSettings401JSONResponse{UnauthorizedJSONResponse{Error: reason}}
+		},
+		func() ListSettingsResponseObject {
+			return ListSettings403JSONResponse{ForbiddenJSONResponse{Error: errNotAdminAPI.Error()}}
+		},
+	); !ok {
+		return denied, err
+	}
+	// public_endpoint is the one stored setting; a missing row is just an
+	// empty value, not an error (the deployment may not have one).
+	endpoint, err := h.repo.GetSetting(ctx, db.SettingPublicEndpoint)
+	if err != nil {
+		endpoint = ""
+	}
+	snap := h.settings
+	if snap == nil {
+		snap = &SettingsSnapshot{}
+	}
+	return ListSettings200JSONResponse(buildSettings(snap, endpoint)), nil
+}
+
 // GetSetting returns one setting by key.
 //
 // An unset key reads back as "" from the repository, which is a legitimate
