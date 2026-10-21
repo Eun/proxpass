@@ -26,9 +26,10 @@ import (
 // actually needs: the PUBLIC half to print, and a yes/no reachability answer.
 // The private key never leaves this process.
 //
-// They are NOT db.Repository methods, which is why they are kept apart from
-// the mirror-the-interface ops in adminops.go: the key is a file, not a row,
-// and storing it in the database is exactly what the design avoids.
+// They are NOT db.Repository methods, which is why they stayed on the slim
+// /admin/rpc endpoint instead of becoming typed /v1 resources like the
+// repository-backed admin ops (see adminhandlers.go): the key is a file, not a
+// row, and storing it in the database is exactly what the design avoids.
 
 // sshPublicKeyResult is the authorized_keys line for the deployment key, or an
 // empty Key when the deployment has no key at all (a termproxy-only setup).

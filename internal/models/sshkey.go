@@ -21,9 +21,9 @@ import (
 //   - The administrator can read the public half at any time to install it,
 //     without proxpass having to offer a command that prints a private key.
 //   - The database is reachable from an admin session through GetSetting on
-//     /admin/rpc. Storing the key there would put a Proxmox credential back
-//     within reach of a session, which is exactly what moving sessions onto
-//     the API was meant to stop.
+//     the typed /v1 admin API. Storing the key there would put a Proxmox
+//     credential back within reach of a session, which is exactly what moving
+//     sessions onto the API was meant to stop.
 //
 // The entrypoint generates it on the volume when it is absent, so recreating
 // the container does not invalidate the key already installed on every host.
