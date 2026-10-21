@@ -15,6 +15,11 @@ before:
   hooks:
     - "sh -c 'GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags=\"-s -w\" -o dist/helper-amd64 ./cmd/proxpass-helper && mv -f dist/helper-amd64 internal/guesthelper/bin/proxpass-helper-amd64'"
     - "sh -c 'GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags=\"-s -w\" -o dist/helper-arm64 ./cmd/proxpass-helper && mv -f dist/helper-arm64 internal/guesthelper/bin/proxpass-helper-arm64'"
+    # The admin web UI is EMBEDDED into the binary the same way: a before-hook,
+    # not a second build, so it lands before the parallel builds embed it. Uses
+    # the mise-pinned Tailwind standalone CLI (no Node.js); see the `frontend'
+    # task. internal/webui/dist holds the committed build so a checkout compiles.
+    - "mise run frontend"
 # proxpass only ships as a container image: the binary is useless on its own
 # now that OpenSSH sshd terminates the SSH connection and resolves users
 # through libnss_http.so.2. So: linux/amd64 + linux/arm64 only, no archives,

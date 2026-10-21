@@ -2,6 +2,13 @@
 go = "1.26.8"
 golangci-lint = "2.12.2"
 goreleaser = "2.16.0"
+# Tailwind's standalone CLI: a single self-contained binary that compiles the
+# admin web UI's CSS with NO Node.js/npm runtime. It bundles the first-party
+# plugins the template uses (notably @tailwindcss/forms), so frontend/ needs no
+# node_modules. Pinned here so every build -- local, CI, and the goreleaser
+# release hook -- compiles the UI with the exact same compiler. See the
+# `frontend' task and internal/webui.
+"aqua:tailwindlabs/tailwindcss" = "3.4.17"
 
 # The guest helper is embedded into the proxpass binary, one build per
 # architecture a Proxmox node can be, because it has to run on the NODE's cpu
@@ -25,9 +32,32 @@ run = [
   "mv -f $MISE_PROJECT_ROOT/dist/proxpass-helper-arm64 internal/guesthelper/bin/proxpass-helper-arm64",
 ]
 
+# Compile the admin web UI into internal/webui/dist, which is //go:embed'd into
+# the binary. Like `helpers', this MUST run before any `go build' that will be
+# shipped: embedding happens at compile time, so a build run before this one
+# embeds the committed placeholder dist (see internal/webui/dist/.gitkeep and
+# index.html placeholder) rather than the real UI.
+#
+# Uses the mise-pinned Tailwind standalone CLI -- no Node.js. The vendored JS
+# (Alpine.js, Chart.js) is copied verbatim; only the CSS is compiled. --minify
+# keeps the embedded asset small.
+[tasks.frontend]
+description = "Build the admin web UI (Tailwind CSS, no Node runtime)"
+dir = "frontend"
+# The dist/ tree is rebuilt from scratch each run so a stale asset (or the
+# committed placeholder) can never linger. index.html + the vendored JS are
+# copied verbatim; only the CSS is compiled.
+run = [
+  "rm -rf ../internal/webui/dist",
+  "mkdir -p ../internal/webui/dist/assets",
+  "cp index.html ../internal/webui/dist/index.html",
+  "cp -r assets/js ../internal/webui/dist/assets/js",
+  "tailwindcss -c tailwind.config.js -i assets/app.css -o ../internal/webui/dist/assets/app.css --minify",
+]
+
 [tasks.build]
 description = "Build the proxpass binary"
-depends = ["helpers"]
+depends = ["helpers", "frontend"]
 run = "go build -o proxpass ./cmd/proxpass"
 
 [tasks.generate]
@@ -52,7 +82,7 @@ run = "goreleaser release --snapshot --clean"
 # dist/ via extra_files so both paths line up).
 [tasks.docker]
 description = "Build the proxpass docker image locally"
-depends = ["helpers"]
+depends = ["helpers", "frontend"]
 run = [
   "go build -ldflags='-s -w' -o dist/proxpass ./cmd/proxpass",
   "docker build -f .github/Dockerfile --build-arg BINARY=dist/proxpass -t proxpass:local .",

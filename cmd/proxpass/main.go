@@ -31,6 +31,7 @@ import (
 	"proxpass/internal/loglevel"
 	"proxpass/internal/proxmox"
 	"proxpass/internal/session"
+	"proxpass/internal/webui"
 )
 
 func main() {
@@ -145,6 +146,14 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	logger := log.New(os.Stdout, "proxpass: ", log.LstdFlags)
 	logger.Printf("config: listen=%s data=%s discovery-interval=%s log-level=%s",
 		listenAddr, dataPath, interval, level)
+
+	// The admin UI is embedded. If this binary was built without running
+	// the frontend task, it carries the placeholder stub instead -- warn
+	// rather than silently serve a broken page.
+	if webui.IsPlaceholder() {
+		logger.Printf("warning: admin web UI is a build placeholder " +
+			"(build with `mise run build' to embed the real UI)")
+	}
 
 	// Resolve the uid/gid layout before anything else: an invalid one must
 	// fail at startup rather than after sshd has accepted a key, where it

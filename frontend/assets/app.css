@@ -1,0 +1,9 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* x-cloak hides Alpine-controlled elements until Alpine initializes, so the
+   markup does not flash before it is wired up. */
+[x-cloak] {
+  display: none !important;
+}

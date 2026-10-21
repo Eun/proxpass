@@ -12,6 +12,7 @@ protocol, and proxpass supplies the users, the keys and the session.
 - **Public Key Authentication** — The only supported method; password authentication is disabled
 - **Auto-Discovery** — Periodically reconciles the guest list against the configured Proxmox hosts via the REST API: guests that start are added, and guests that stop or are destroyed are removed
 - **Admin CLI over SSH** — Full command-line interface for managing instances, clients, groups, access rules, and admin keys
+- **Admin REST API & Web UI** — A typed `/v1` REST API, with a static browser admin UI (TailwindCSS + Alpine.js) compiled into the binary — no Node.js, no external web server
 - **Run Commands In Guests** — `ssh ct100@host whoami` runs it inside the container, with the exit status, streams and PTY behaving as any other ssh
 - **Flexible Guest Resolution** — Connect by VMID (`100`), type+VMID (`ct100`), name (`webserver`), or instance-qualified (`ct101@rome`) — as the login name (`ssh ct100@host`) or via `guest connect`
 - **Access Control** — Per-client and per-group access rules with a global default policy fallback
@@ -488,6 +489,50 @@ curl -X POST -H 'Authorization: Bearer s3cr3t-admin-token' \
   -d '{"id":0,"name":"alice","public_keys":["ssh-ed25519 AAAA... alice"],"group_ids":[]}' \
   http://host:8081/v1/clients
 ```
+
+## Admin Web UI
+
+proxpass ships a browser admin UI for the REST API. It is a static
+single-page app — TailwindCSS and Alpine.js — compiled into the binary, so the
+same proxpass process that serves `/v1` serves the UI with no separate web
+server, no Node.js runtime, and no external files.
+
+Open the listener that serves the API in a browser:
+
+- On the loopback listener (`--listen`), the UI is at `http://127.0.0.1:8080/`.
+- When a routable admin listener is configured (`--rest-api-listen`), the UI is
+  also served there, e.g. `http://host:8081/`, and that listener serves only
+  the admin API and the UI — never the NSS directory.
+
+Sign in with an admin bearer token — the value of `PROXPASS_REST_API_TOKEN`, or
+an admin session token. The UI keeps the token only in the browser tab's memory
+(never a cookie), so it is not exposed to CSRF and is forgotten when the tab
+closes. It is same-origin with the API it drives, so no CORS configuration is
+needed.
+
+The UI covers every admin resource: instances, guests, clients, groups, guest
+and node access rules, the default policy, admin keys, settings, and running
+discovery. The OpenAPI spec the UI is built against is also served, at
+`/openapi.json`, for generating clients or exploring the API.
+
+### Building the UI
+
+The UI is built into the binary at compile time and the built assets are
+committed, so a plain `go build` or the container image already includes it —
+there is nothing extra to run for a normal build or deployment.
+
+To rebuild it after changing `frontend/`, run:
+
+```bash
+mise run frontend   # or `mise run build`, which depends on it
+```
+
+This uses the mise-pinned Tailwind **standalone** CLI (a single binary; no
+`npm install`, no `node_modules`) to compile `frontend/` into
+`internal/webui/dist/`. Alpine.js and Chart.js are vendored under
+`frontend/assets/js/` rather than loaded from a CDN, so the UI works with no
+outbound network. The pinned toolchain is in `mise.toml`, so local builds, CI,
+and the release all compile the UI the same way.
 
 ## Configuration
 

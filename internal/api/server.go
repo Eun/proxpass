@@ -18,6 +18,7 @@ import (
 	"proxpass/internal/db"
 	"proxpass/internal/models"
 	"proxpass/internal/proxmox"
+	"proxpass/internal/webui"
 )
 
 const (
@@ -252,6 +253,9 @@ func (s *Server) Handler() http.Handler {
 	// so this is registered on the loopback Handler, not on AdminHandler.
 	r.HandleFunc("/admin/rpc", s.ServeAdminRPC)
 
+	// The admin web UI and /openapi.json are served from this listener too.
+	s.mountWebUI(r)
+
 	// The session API and the typed /v1 admin REST API are both served by the
 	// generated strict handler (one SessionHandler implements both), mounted
 	// onto the same chi router via the generated HandlerFromMux. Admin
@@ -268,16 +272,57 @@ func (s *Server) Handler() http.Handler {
 	)
 }
 
+// mountWebUI registers the static admin SPA and the /openapi.json spec route on
+// a chi router, before the generated API routes are attached.
+//
+// The SPA is mounted as a catch-all (NotFound), not as a greedy "/*" route:
+// chi dispatches an incoming request to the most specific matching pattern, so
+// every generated API route (/v1/..., /session/..., /healthz) and the NSS and
+// /admin/rpc routes still win. Only paths that match nothing else -- "/", the
+// SPA's assets, an unknown sub-path -- fall through to the UI. That keeps the
+// API authoritative while letting the UI own the rest of the origin.
+//
+// The whole thing is same-origin with the API it drives, so no CORS is needed;
+// the UI authenticates with a bearer token it holds in memory (see the
+// frontend), never a cookie, so there is nothing for a CSRF to ride.
+func (s *Server) mountWebUI(r chi.Router) {
+	// The embedded spec is public shape, not secrets, and the UI (or any
+	// client) may fetch it to render or to generate a typed client. It is a
+	// plain GET with no auth, like /healthz.
+	r.Get("/openapi.json", func(w http.ResponseWriter, _ *http.Request) {
+		spec, err := GetSpecJSON()
+		if err != nil {
+			http.Error(w, "spec unavailable", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(spec)
+	})
+
+	// NotFound catches everything the API did not claim and hands it to the
+	// SPA's file server, which serves index.html for "/" and the built assets
+	// for their paths (404 for a genuinely missing file).
+	ui := webui.Handler()
+	r.NotFound(ui.ServeHTTP)
+}
+
 // AdminHandler returns a handler that serves ONLY the session + /v1 admin API,
 // WITHOUT the NSS directory routes. It is used for a second, routable listener
 // (PROXPASS_REST_API_LISTEN) so the admin REST API can be exposed off-loopback
 // without also exposing the user/group directory. Every /v1 operation still
 // requires an admin credential.
 func (s *Server) AdminHandler() http.Handler {
+	r := chi.NewRouter()
+
+	// The admin UI is served here too: this is the listener a remote admin
+	// reaches, so it is exactly where the UI needs to be available. It serves
+	// no NSS routes, so the UI does not expose the directory.
+	s.mountWebUI(r)
+
 	return HandlerWithOptions(
 		NewStrictHandler(s.sessionHandler(), nil),
 		ChiServerOptions{
-			BaseRouter:  chi.NewRouter(),
+			BaseRouter:  r,
 			Middlewares: []MiddlewareFunc{bearerTokenMiddleware},
 		},
 	)
