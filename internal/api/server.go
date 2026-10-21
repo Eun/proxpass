@@ -237,6 +237,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/group/gid/", nss(s.handleGroupByGID))
 	mux.HandleFunc("/groups", nss(s.handleGroups))
 
+	// The SSH-key operations are the one remaining /admin/rpc endpoint: they
+	// read a root-owned key file on an admin session's behalf and have no /v1
+	// resource (see adminrpc.go). They authorize themselves against an admin
+	// identity. Loopback only -- the session asks the local `serve' process --
+	// so this is registered on the loopback Handler, not on AdminHandler.
+	mux.HandleFunc("/admin/rpc", s.ServeAdminRPC)
+
 	// The session API and the typed /v1 admin REST API are both served by the
 	// generated strict handler (one SessionHandler implements both). Admin
 	// operations authorize themselves against an admin identity -- a session

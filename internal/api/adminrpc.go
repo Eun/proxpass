@@ -12,26 +12,22 @@ import (
 	"proxpass/internal/models"
 )
 
-// The admin API: one endpoint, one operation name per Repository method.
+// The last of the admin RPC: the two SSH-key operations.
 //
-// This is deliberately an RPC rather than a REST resource tree. The caller is
-// the admin CLI, which already speaks db.Repository -- it is not a general
-// client, and nothing but proxpass will ever call this. Mirroring the
-// interface means the CLI keeps working untouched, so the change is "where
-// does a repository live", not "rewrite every command". A REST design would
-// have meant ~20 hand-shaped routes and rewriting all 50 call sites, each an
-// opportunity to quietly change behavior.
+// Every db.Repository operation the admin CLI uses now has a typed /v1 REST
+// resource (see adminhandlers.go); the old tagged-union allowlist is gone.
+// What remains here are the two operations that have no /v1 endpoint on
+// purpose: the proxpass SSH key is a root-owned FILE, not a database row (see
+// models.sshkey.go and sshkeyops.go). A session cannot read it, so it asks
+// `proxpass serve' -- which runs as root -- over this one endpoint, and only
+// the public half / a reachability answer come back. Modeling a file read as a
+// REST resource bought nothing, so these stayed an RPC.
 //
-// It is NOT a way to run arbitrary SQL: the operation name is matched against
-// a fixed list below, and anything else is refused. The set of things an
-// administrator can do is exactly the set of methods proxpass already
-// implements.
-//
-// Every call requires an admin credential. See adminIdentity.
+// Every call still requires an admin credential. See adminIdentity.
 
-// AdminRequest is one Repository call.
+// AdminRequest is one SSH-key operation.
 type AdminRequest struct {
-	// Op names the Repository method, e.g. "ListClients".
+	// Op names the operation: "GetSSHPublicKey" or "CheckInstanceSSHAccess".
 	Op string `json:"op"`
 
 	// Params carries the arguments, shaped per operation. Decoded by the
@@ -47,16 +43,20 @@ type AdminResponse struct {
 	Result json.RawMessage `json:"result,omitempty"`
 
 	// Error is the failure message, empty on success. Carried in the body
-	// rather than as a status code because these are domain errors -- "a
-	// client with that name exists" -- and the CLI prints them verbatim.
+	// rather than as a status code because these are domain errors the CLI
+	// prints verbatim.
 	Error string `json:"error,omitempty"`
 }
 
-// ServeAdminRPC handles POST /admin/rpc.
-//
-// Written by hand rather than generated: the request body is a tagged union,
-// which OpenAPI describes badly and oapi-codegen generates worse. The spec
-// documents the endpoint and says so.
+// sshKeyOps is the allowlist: exactly the two SSH-key operations, and nothing
+// else. An unknown Op is refused rather than reaching anything.
+var sshKeyOps = map[string]func(context.Context, json.RawMessage) (json.RawMessage, error){
+	"GetSSHPublicKey":        getSSHPublicKey,
+	"CheckInstanceSSHAccess": checkInstanceSSHAccess,
+}
+
+// ServeAdminRPC handles POST /admin/rpc, now serving only the SSH-key
+// operations. Wired by Handler(); see server.go.
 func (s *Server) ServeAdminRPC(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -67,9 +67,8 @@ func (s *Server) ServeAdminRPC(w http.ResponseWriter, r *http.Request) {
 		code := http.StatusUnauthorized
 		if errors.Is(err, errNotAdmin) {
 			// 403, not 404: the caller authenticated fine, it just is not
-			// an administrator. There is nothing to hide here -- whether
-			// an admin API exists is not a secret, and the CLI needs to
-			// tell "log in as the admin" from "your token expired".
+			// an administrator. The CLI needs to tell "log in as the admin"
+			// from "your token expired".
 			code = http.StatusForbidden
 		}
 		writeAdminError(w, code, err.Error())
@@ -83,20 +82,24 @@ func (s *Server) ServeAdminRPC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.dispatchAdmin(r.Context(), &req)
+	op, ok := sshKeyOps[req.Op]
+	if !ok {
+		s.writeJSON(w, AdminResponse{Error: fmt.Sprintf("unknown operation %q", req.Op)})
+		return
+	}
+	result, err := op(r.Context(), req.Params)
 	if err != nil {
-		// A domain error is a 200 with an error field: the call reached the
-		// repository and the repository said no. Reserving the status codes
-		// for transport problems keeps the CLI's error messages the same as
-		// they were when it held the database itself.
+		// A domain error is a 200 with an error field: the operation ran and
+		// said no. Reserving the status codes for transport problems keeps
+		// the CLI's error messages the same as they were.
 		s.writeJSON(w, AdminResponse{Error: err.Error()})
 		return
 	}
 	s.writeJSON(w, AdminResponse{Result: result})
 }
 
-// maxAdminBody caps a request. The largest legitimate one is a handful of
-// SSH public keys.
+// maxAdminBody caps a request. The largest legitimate one is a single
+// instance for the reachability check.
 const maxAdminBody = 1 << 20
 
 func writeAdminError(w http.ResponseWriter, code int, msg string) {
@@ -113,8 +116,8 @@ var errNotAdmin = errors.New("this operation requires the administrator")
 //
 // The check is here, server-side, from the stored identity -- never from
 // anything the request carries. This is the only thing standing between a
-// client session and every write in the system, so it is one function and
-// every operation goes through it.
+// client session and the SSH-key operations, so it is one function and every
+// operation goes through it.
 func (s *Server) adminIdentity(r *http.Request) (*models.SessionIdentity, error) {
 	req := withBearerToken(r)
 	token, ok := BearerToken(req.Context())
@@ -135,14 +138,21 @@ func (s *Server) adminIdentity(r *http.Request) (*models.SessionIdentity, error)
 	return identity, nil
 }
 
-// dispatchAdmin routes one operation.
-//
-// The switch is the allowlist: an unknown Op is refused rather than reaching
-// anything. Adding a Repository method does not silently expose it.
-func (s *Server) dispatchAdmin(ctx context.Context, req *AdminRequest) (json.RawMessage, error) {
-	h, ok := adminOps[req.Op]
-	if !ok {
-		return nil, fmt.Errorf("unknown operation %q", req.Op)
+// decodeParams unmarshals an operation's JSON arguments, tolerating an absent
+// body. Used by the SSH-key operations in sshkeyops.go.
+func decodeParams(p json.RawMessage, into any) error {
+	if len(p) == 0 {
+		return nil
 	}
-	return h(ctx, s.repo, req.Params)
+	return json.Unmarshal(p, into)
+}
+
+// encodeResult marshals an operation's return value. Used by the SSH-key
+// operations in sshkeyops.go.
+func encodeResult(v any) (json.RawMessage, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
 }
