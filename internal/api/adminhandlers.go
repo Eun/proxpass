@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 
 	"proxpass/internal/db"
 	"proxpass/internal/models"
@@ -1012,6 +1013,18 @@ func (h *SessionHandler) RemoveAdminKey(
 	}
 	if request.Body == nil {
 		return RemoveAdminKey400JSONResponse{BadRequestJSONResponse{Error: errMissingBody}}, nil
+	}
+	// The configured admin key (PROXPASS_ADMIN_KEY) cannot be removed here:
+	// serve re-adds it on the next start, so "deleting" it would only lock the
+	// configured administrator out until a restart quietly restored it. Refuse
+	// with a 409 and a message the UI can show, rather than accept a delete
+	// that does not stick.
+	if h.protectedAdminKey != "" &&
+		strings.TrimSpace(request.Body.PublicKey) == h.protectedAdminKey {
+		return RemoveAdminKey409JSONResponse{ConflictJSONResponse{
+			Error: "this key is set by PROXPASS_ADMIN_KEY and cannot be removed " +
+				"here; change the configuration and restart instead",
+		}}, nil
 	}
 	if err := h.repo.RemoveAdminKey(ctx, request.Body.PublicKey); err != nil {
 		return nil, err

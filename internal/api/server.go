@@ -169,6 +169,11 @@ type Server struct {
 
 	// discoverer backs the admin RunDiscovery handler; nil disables it.
 	discoverer proxmox.DiscovererFactory
+
+	// protectedAdminKey is the configured PROXPASS_ADMIN_KEY, passed through to
+	// the SessionHandler so RemoveAdminKey refuses to delete it. Empty protects
+	// nothing. Set with WithProtectedAdminKey.
+	protectedAdminKey string
 }
 
 // NewServer builds the directory server with the default id layout.
@@ -203,6 +208,13 @@ func (s *Server) WithRESTAPIToken(token string) *Server {
 // uses. Chainable.
 func (s *Server) WithDiscoverer(factory proxmox.DiscovererFactory) *Server {
 	s.discoverer = factory
+	return s
+}
+
+// WithProtectedAdminKey passes the configured admin key through to the session
+// handler so RemoveAdminKey refuses to delete it. Chainable.
+func (s *Server) WithProtectedAdminKey(key string) *Server {
+	s.protectedAdminKey = key
 	return s
 }
 
@@ -329,11 +341,12 @@ func (s *Server) AdminHandler() http.Handler {
 }
 
 // sessionHandler builds the generated-API handler with the server's optional
-// admin wiring (static REST token + discoverer).
+// admin wiring (static REST token, discoverer, protected admin key).
 func (s *Server) sessionHandler() *SessionHandler {
 	return NewSessionHandler(s.repo, s.logger).
 		WithRESTAPIToken(s.restAPIToken).
-		WithDiscoverer(s.discoverer)
+		WithDiscoverer(s.discoverer).
+		WithProtectedAdminKey(s.protectedAdminKey)
 }
 
 // nssAuth wraps an NSS handler with the optional NSS bearer-token check. When

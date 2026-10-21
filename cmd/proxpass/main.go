@@ -210,7 +210,8 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	server := api.NewServerWithIDs(repo, logger, ids).
 		WithNSSToken(nssToken).
 		WithRESTAPIToken(restAPIToken).
-		WithDiscoverer(proxmox.DefaultDiscovererFactory)
+		WithDiscoverer(proxmox.DefaultDiscovererFactory).
+		WithProtectedAdminKey(cmd.String("admin-key"))
 
 	// The admin REST API on its own routable listener (no NSS routes), when
 	// configured. It runs alongside the loopback listener and shares ctx for

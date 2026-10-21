@@ -286,6 +286,41 @@ func TestAdminKeyRoundTrips(t *testing.T) {
 	}
 }
 
+// The configured admin key (PROXPASS_ADMIN_KEY) is refused for removal with a
+// 409, so a UI delete cannot lock the configured administrator out. A
+// different key is still removable.
+func TestRemoveAdminKeyRefusesTheProtectedKey(t *testing.T) {
+	h, _, ctx := newAdminHandler(t)
+	h.WithProtectedAdminKey("  " + testAdminKey + "  ") // whitespace must not defeat the guard
+
+	for _, k := range []string{testAdminKey, "ssh-ed25519 AAAA other"} {
+		body := AddAdminKeyJSONRequestBody{PublicKey: k}
+		if _, err := h.AddAdminKey(ctx, AddAdminKeyRequestObject{Body: &body}); err != nil {
+			t.Fatalf("AddAdminKey(%q): %v", k, err)
+		}
+	}
+
+	// The protected key is refused with a 409.
+	rmProtected := RemoveAdminKeyJSONRequestBody{PublicKey: testAdminKey}
+	resp, err := h.RemoveAdminKey(ctx, RemoveAdminKeyRequestObject{Body: &rmProtected})
+	if err != nil {
+		t.Fatalf("RemoveAdminKey(protected): %v", err)
+	}
+	if _, ok := resp.(RemoveAdminKey409JSONResponse); !ok {
+		t.Fatalf("RemoveAdminKey(protected) returned %T, want 409", resp)
+	}
+
+	// A different key is still removable.
+	rmOther := RemoveAdminKeyJSONRequestBody{PublicKey: "ssh-ed25519 AAAA other"}
+	resp, err = h.RemoveAdminKey(ctx, RemoveAdminKeyRequestObject{Body: &rmOther})
+	if err != nil {
+		t.Fatalf("RemoveAdminKey(other): %v", err)
+	}
+	if _, ok := resp.(RemoveAdminKey204Response); !ok {
+		t.Fatalf("RemoveAdminKey(other) returned %T, want 204", resp)
+	}
+}
+
 // A non-admin credential is refused with a 403 even though the credential is
 // otherwise valid.
 func TestAdminEndpointRefusesANonAdmin(t *testing.T) {

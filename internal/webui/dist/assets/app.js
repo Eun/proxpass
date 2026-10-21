@@ -32,8 +32,10 @@ function app() {
 
         modal: { open: false, mode: 'create', data: {} },
 
-        // policy + discovery view state
-        policyForm: { clients: '', groups: '' },
+        // policy + discovery view state. policyForm holds arrays of selected
+        // client/group IDs; the clients/groups lists to pick from come from
+        // cache.clients / cache.groups (loaded by loadPolicy).
+        policyForm: { clients: [], groups: [] },
         discoverInstance: '',
         discoverResult: null,
 
@@ -43,8 +45,8 @@ function app() {
         get nav() {
             return [
                 { id: 'dashboard', label: 'Dashboard', icon: icon.home },
-                { id: 'instances', label: 'Instances', icon: icon.server },
-                { id: 'guests', label: 'Guests', icon: icon.desktop },
+                { id: 'instances', label: 'Proxmox Nodes', icon: icon.server },
+                { id: 'guests', label: 'Proxmox Guests', icon: icon.desktop },
                 { id: 'clients', label: 'Clients', icon: icon.users },
                 { id: 'groups', label: 'Groups', icon: icon.collection },
                 { id: 'access', label: 'Guest Access', icon: icon.key },
@@ -81,12 +83,21 @@ function app() {
                         { key: 'ssh_host', label: 'SSH host', placeholder: 'optional; enables node shell / SFTP' },
                         { key: 'ssh_port', label: 'SSH port', type: 'number' },
                         { key: 'ssh_user', label: 'SSH user', placeholder: 'root' },
-                        { key: 'ssh_fingerprint', label: 'SSH fingerprint', help: 'Pin a host key that has no DNSSEC SSHFP.' },
                         { key: 'insecure_tls', label: 'Skip TLS verification', type: 'checkbox' },
                         { key: 'insecure_ssh', label: 'Skip SSH host-key verification', type: 'checkbox' },
+                        // Pinning a fingerprint only makes sense when SSH host
+                        // keys ARE verified; when insecure_ssh is on it is
+                        // ignored, so hide it and drop it from the request.
+                        {
+                            key: 'ssh_fingerprint', label: 'SSH fingerprint',
+                            help: 'Pin a host key that has no DNSSEC SSHFP.',
+                            hideWhen: (d) => !!d.insecure_ssh,
+                        },
                     ],
                     defaults: { console_transport: 'termproxy', ssh_port: 22, insecure_tls: false, insecure_ssh: false },
                     numeric: ['ssh_port'],
+                    // Fields dropped from the request under a condition.
+                    omitWhen: { ssh_fingerprint: (d) => !!d.insecure_ssh },
                 },
                 guests: {
                     singular: 'guest', path: '/guests',
@@ -111,10 +122,11 @@ function app() {
                     fields: [
                         { key: 'name', label: 'Name', required: true },
                         { key: 'public_keys', label: 'Public keys', type: 'textarea', required: true, help: 'One SSH public key per line.', placeholder: 'ssh-ed25519 AAAA… alice' },
-                        { key: 'group_ids', label: 'Group IDs', help: 'Comma-separated group IDs.' },
+                        // Pick groups by name; the field stores their IDs.
+                        { key: 'group_ids', label: 'Groups', type: 'multiselect', optionsFrom: 'groups', help: 'Select the groups this client belongs to.' },
                     ],
                     defaults: { public_keys: [], group_ids: [] },
-                    lists: { public_keys: 'lines', group_ids: 'intCsv' },
+                    lists: { public_keys: 'lines' },
                 },
                 groups: {
                     singular: 'group', path: '/groups',
@@ -126,10 +138,10 @@ function app() {
                     ],
                     fields: [
                         { key: 'name', label: 'Name', required: true },
-                        { key: 'client_ids', label: 'Client IDs', help: 'Comma-separated client IDs.' },
+                        // Pick members by name; the field stores their IDs.
+                        { key: 'client_ids', label: 'Members', type: 'multiselect', optionsFrom: 'clients', help: 'Select the clients in this group.' },
                     ],
                     defaults: { client_ids: [] },
-                    lists: { client_ids: 'intCsv' },
                 },
                 adminKeys: {
                     singular: 'admin key', path: '/admin-keys',
@@ -148,15 +160,17 @@ function app() {
                 },
                 settings: {
                     singular: 'setting', path: '/settings',
-                    // settings has no list endpoint; a fixed, known set is shown.
-                    staticKeys: ['public_endpoint', 'default_ssh_user', 'ssh_key_algorithm'],
-                    edit: true, editKey: true,
+                    // settings has no list endpoint; the known keys are shown.
+                    // public_endpoint is the only real setting, and it is
+                    // controlled by PROXPASS_PUBLIC_ENDPOINT -- serve rewrites
+                    // it on every start, so it is read-only here (editing it
+                    // would be overwritten on restart). Shown for visibility.
+                    staticKeys: ['public_endpoint'],
+                    readOnly: true,
                     columns: [
                         { key: 'key', label: 'Key' },
                         { key: 'value', label: 'Value', render: (v) => v ? esc(v) : '<span class="text-gray-300">(unset)</span>' },
-                    ],
-                    fields: [
-                        { key: 'value', label: 'Value', required: false, help: 'Leave blank to clear.' },
+                        { key: 'source', label: 'Source' },
                     ],
                 },
             };
@@ -231,13 +245,16 @@ function app() {
 
         async loadSettings(r) {
             this.loading = true; this.rows = [];
+            // Each known setting and where it comes from, so the read-only
+            // settings view can explain why it cannot be edited here.
+            const source = { public_endpoint: 'PROXPASS_PUBLIC_ENDPOINT (env)' };
             const out = [];
             for (const key of r.staticKeys) {
                 try {
                     const s = await this.request('GET', r.path + '/' + encodeURIComponent(key));
-                    out.push({ id: key, key: s.key, value: s.value });
+                    out.push({ id: key, key: s.key, value: s.value, source: source[key] || '' });
                 } catch (e) {
-                    if (e.status === 404) out.push({ id: key, key, value: '' });
+                    if (e.status === 404) out.push({ id: key, key, value: '', source: source[key] || '' });
                     else if (e.isAuth) { this.fail(e); break; }
                 }
             }
@@ -266,8 +283,8 @@ function app() {
 
         get dashCards() {
             return [
-                { id: 'instances', label: 'Instances', count: (this.cache.instances || []).length },
-                { id: 'guests', label: 'Guests', count: (this.cache.guests || []).length },
+                { id: 'instances', label: 'Proxmox Nodes', count: (this.cache.instances || []).length },
+                { id: 'guests', label: 'Proxmox Guests', count: (this.cache.guests || []).length },
                 { id: 'clients', label: 'Clients', count: (this.cache.clients || []).length },
                 { id: 'groups', label: 'Groups', count: (this.cache.groups || []).length },
             ];
@@ -317,23 +334,66 @@ function app() {
             return esc(String(v));
         },
 
+        // options for multiselect fields, keyed by the resource name they come
+        // from (e.g. 'groups', 'clients'): [{ id, name }]. Loaded when a modal
+        // with a multiselect field opens.
+        modalOptions: {},
+
         // ---- create / edit modal ----
-        openCreate() {
+        async openCreate() {
             const r = this.currentResource();
+            await this.loadModalOptions(r);
             this.modal = { open: true, mode: 'create', data: { ...(r.defaults || {}) } };
         },
-        openEdit(row) {
+        async openEdit(row) {
             const r = this.currentResource();
+            await this.loadModalOptions(r);
             const data = { ...row };
-            // Convert list fields back to their editable string form.
+            // Convert line-list fields back to their editable string form.
+            // Multiselect fields keep their array value as-is.
             if (r.lists) {
                 for (const [k, kind] of Object.entries(r.lists)) {
                     data[k] = (row[k] || []).join(kind === 'lines' ? '\n' : ', ');
                 }
             }
+            (r.fields || []).forEach((f) => {
+                if (f.type === 'multiselect') data[f.key] = [...(row[f.key] || [])];
+            });
             this.modal = { open: true, mode: 'edit', data };
         },
         closeModal() { this.modal.open = false; },
+
+        // loadModalOptions fetches the option lists any multiselect field in
+        // this resource needs, so the user picks by name instead of typing IDs.
+        async loadModalOptions(r) {
+            const sources = new Set((r.fields || [])
+                .filter((f) => f.type === 'multiselect')
+                .map((f) => f.optionsFrom));
+            for (const src of sources) {
+                try {
+                    const data = await this.request('GET', '/' + src);
+                    this.modalOptions[src] = (data || []).map((o) => ({ id: o.id, name: o.name }));
+                } catch (e) { this.fail(e); this.modalOptions[src] = []; }
+            }
+        },
+
+        // toggleMulti flips one id in a multiselect field's array value.
+        toggleMulti(fieldKey, id) {
+            const arr = this.modal.data[fieldKey] || [];
+            const i = arr.indexOf(id);
+            if (i === -1) arr.push(id); else arr.splice(i, 1);
+            this.modal.data[fieldKey] = [...arr];
+        },
+        isMultiSelected(fieldKey, id) {
+            return (this.modal.data[fieldKey] || []).includes(id);
+        },
+        // fieldHidden reports whether a field is hidden for the current form
+        // state (hideWhen) or only shown on create (createOnly).
+        fieldHidden(field) {
+            if (field.createOnly && this.modal.mode === 'edit') return true;
+            if (field.hideWhen && field.hideWhen(this.modal.data)) return true;
+            return false;
+        },
 
         async submitModal() {
             const r = this.currentResource();
@@ -366,11 +426,20 @@ function app() {
                 return;
             }
 
-            // Coerce numeric + list fields to the shapes the API expects.
+            // Coerce numeric + line-list fields to the shapes the API expects.
+            // Multiselect fields already hold arrays of IDs.
             (r.numeric || []).forEach((k) => { if (d[k] !== undefined && d[k] !== '') d[k] = Number(d[k]); });
             if (r.lists) {
                 for (const [k, kind] of Object.entries(r.lists)) {
                     d[k] = parseList(d[k], kind);
+                }
+            }
+            // Drop fields that do not apply under the current form state (e.g.
+            // ssh_fingerprint when SSH host-key verification is skipped) so a
+            // stale or meaningless value is never sent.
+            if (r.omitWhen) {
+                for (const [k, when] of Object.entries(r.omitWhen)) {
+                    if (when(d)) delete d[k];
                 }
             }
             if (this.modal.mode === 'create') d.id = d.id || 0;
@@ -472,18 +541,34 @@ function app() {
         async loadPolicy() {
             this.busy = true;
             try {
-                const p = await this.request('GET', '/policy');
-                this.policyForm.clients = (p.authorized_client_ids || []).join(', ');
-                this.policyForm.groups = (p.authorized_group_ids || []).join(', ');
+                // The clients/groups the operator picks from, and the current
+                // policy selection -- fetched together so the checkbox lists
+                // render with names and the right boxes already ticked.
+                const [policy, clients, groups] = await Promise.all([
+                    this.request('GET', '/policy'),
+                    this.request('GET', '/clients'),
+                    this.request('GET', '/groups'),
+                ]);
+                this.cache.clients = clients || [];
+                this.cache.groups = groups || [];
+                this.policyForm.clients = [...(policy.authorized_client_ids || [])];
+                this.policyForm.groups = [...(policy.authorized_group_ids || [])];
             } catch (e) { this.fail(e); }
             finally { this.busy = false; }
+        },
+        // togglePolicy flips one client/group id in the policy selection.
+        togglePolicy(which, id) {
+            const arr = this.policyForm[which];
+            const i = arr.indexOf(id);
+            if (i === -1) arr.push(id); else arr.splice(i, 1);
+            this.policyForm[which] = [...arr];
         },
         async savePolicy() {
             this.busy = true;
             try {
                 await this.request('PUT', '/policy', {
-                    authorized_client_ids: parseList(this.policyForm.clients, 'intCsv'),
-                    authorized_group_ids: parseList(this.policyForm.groups, 'intCsv'),
+                    authorized_client_ids: this.policyForm.clients,
+                    authorized_group_ids: this.policyForm.groups,
                 });
                 this.ok('Default policy saved.');
             } catch (e) { this.fail(e); }
