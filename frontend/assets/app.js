@@ -402,7 +402,9 @@ function app() {
         },
 
         // ---- wizard navigation (only for resources with `steps') ----
-        isWizard() { return !!(this.currentResource().steps && this.modal.mode === 'create'); },
+        // A stepped resource uses the wizard for both add and edit, so editing
+        // a Proxmox node walks the same Connection / Console / SSH steps.
+        isWizard() { return !!this.currentResource().steps; },
         wizardSteps() { return this.currentResource().steps || []; },
         isLastStep() { return this.modal.step >= this.wizardSteps().length - 1; },
         // The visible fields of the current step (hidden ones excluded), used to

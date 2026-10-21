@@ -130,9 +130,7 @@ func (h *SessionHandler) ListInstances(
 	return ListInstances200JSONResponse(out), nil
 }
 
-// AddInstance creates a Proxmox instance.
-//
-//nolint:dupl // parallel REST CRUD across entity types; the symmetry is the point
+// AddInstance creates a Proxmox instance and discovers its guests immediately.
 func (h *SessionHandler) AddInstance(
 	ctx context.Context, request AddInstanceRequestObject,
 ) (AddInstanceResponseObject, error) {
@@ -156,6 +154,21 @@ func (h *SessionHandler) AddInstance(
 		}
 		return nil, err
 	}
+
+	// Discover the new node's guests right away so the guest list is populated
+	// without waiting for the next poll. AddProxmoxInstance set inst.ID via
+	// RETURNING, which discoverInstance needs to store guests against it. This
+	// is best-effort: the node is already stored, so a discovery failure (an
+	// unreachable node, a bad token) must not fail the add -- it is logged and
+	// the next scheduled pass retries, exactly as the CLI's `instance add'
+	// behaves. Skipped when no discoverer is wired (e.g. in tests).
+	if h.discoverer != nil {
+		if row := h.discoverInstance(ctx, inst); row.Error != nil {
+			h.logger.Printf("instance %q added but initial discovery failed: %s",
+				inst.Name, *row.Error)
+		}
+	}
+
 	return AddInstance201JSONResponse(toAPIInstance(inst)), nil
 }
 
@@ -164,6 +177,8 @@ func (h *SessionHandler) AddInstance(
 // There is no GetByID repo method for instances, so the row is found by
 // listing and filtering -- the same way ConnectSessionNode's findInstance
 // does. A missing row is a 404.
+//
+//nolint:dupl // parallel REST reads across entity types; the symmetry is the point
 func (h *SessionHandler) GetInstance(
 	ctx context.Context, request GetInstanceRequestObject,
 ) (GetInstanceResponseObject, error) {
@@ -291,8 +306,6 @@ func (h *SessionHandler) ListClients(
 }
 
 // AddClient creates a client.
-//
-//nolint:dupl // parallel REST CRUD across entity types; the symmetry is the point
 func (h *SessionHandler) AddClient(
 	ctx context.Context, request AddClientRequestObject,
 ) (AddClientResponseObject, error) {
@@ -323,6 +336,8 @@ func (h *SessionHandler) AddClient(
 //
 // There is no GetByID repo method for clients, so the row is found by
 // listing and filtering. GetClientByName exists but keys on name, not id.
+//
+//nolint:dupl // parallel REST reads across entity types; the symmetry is the point
 func (h *SessionHandler) GetClient(
 	ctx context.Context, request GetClientRequestObject,
 ) (GetClientResponseObject, error) {
@@ -452,8 +467,6 @@ func (h *SessionHandler) ListGroups(
 }
 
 // AddGroup creates a group.
-//
-//nolint:dupl // parallel REST CRUD across entity types; the symmetry is the point
 func (h *SessionHandler) AddGroup(
 	ctx context.Context, request AddGroupRequestObject,
 ) (AddGroupResponseObject, error) {
@@ -484,6 +497,8 @@ func (h *SessionHandler) AddGroup(
 //
 // There is no GetByID repo method for groups, so the row is found by listing
 // and filtering.
+//
+//nolint:dupl // parallel REST reads across entity types; the symmetry is the point
 func (h *SessionHandler) GetGroup(
 	ctx context.Context, request GetGroupRequestObject,
 ) (GetGroupResponseObject, error) {
