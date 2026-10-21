@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -32,11 +33,33 @@ type SessionHandler struct {
 	// nil by NewSessionHandler; wire it with WithDiscoverer. See the field's
 	// use in adminhandlers.go for why it is optional and append-only.
 	discoverer proxmox.DiscovererFactory
+
+	// restAPITokenHash, when non-empty, is the SHA-256 hash of a static admin
+	// bearer token (PROXPASS_REST_API_TOKEN). A request carrying it is treated
+	// as the administrator WITHOUT a database session, so external REST clients
+	// can call the /v1 admin API without going through the SSH login that mints
+	// a session credential. Empty disables the static token. Set with
+	// WithRESTAPIToken.
+	restAPITokenHash string
 }
 
 // NewSessionHandler returns a handler reading identities from repo.
 func NewSessionHandler(repo db.Repository, logger *log.Logger) *SessionHandler {
 	return &SessionHandler{repo: repo, logger: logger, now: time.Now}
+}
+
+// WithRESTAPIToken enables a static admin bearer token for the /v1 admin API.
+// The token is stored only as its SHA-256 hash and compared in constant time,
+// matching how session credentials are stored. An empty token leaves the
+// static path disabled; only session credentials (admins who logged in over
+// SSH) can then reach the admin API.
+func (h *SessionHandler) WithRESTAPIToken(token string) *SessionHandler {
+	if token == "" {
+		h.restAPITokenHash = ""
+		return h
+	}
+	h.restAPITokenHash = HashToken(token)
+	return h
 }
 
 // GetHealth answers the liveness probe.
@@ -158,8 +181,27 @@ func (h *SessionHandler) callerIdentity(ctx context.Context) (*models.SessionIde
 	if !ok {
 		return nil, errNoCredential
 	}
+
+	// The static admin REST token authenticates the administrator directly,
+	// without a database session: an external REST client has no SSH login to
+	// mint one. Compared by hash in constant time, matching how credentials
+	// are stored. It is only honored when configured (WithRESTAPIToken).
+	if h.restAPITokenHash != "" &&
+		subtle.ConstantTimeCompare([]byte(HashToken(token)), []byte(h.restAPITokenHash)) == 1 {
+		return &models.SessionIdentity{
+			IdentityName: restAPIIdentityName,
+			IsAdmin:      true,
+		}, nil
+	}
+
 	return h.repo.LookupAPISession(ctx, HashToken(token), h.now())
 }
+
+// restAPIIdentityName is the audit-log name recorded for a caller that
+// authenticated with the static PROXPASS_REST_API_TOKEN rather than an SSH
+// login. It names the mechanism, so the log distinguishes an external REST
+// client from a named administrator session.
+const restAPIIdentityName = "rest-api-token"
 
 // identityResponse converts the stored identity into the wire shape.
 //
