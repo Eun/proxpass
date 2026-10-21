@@ -545,7 +545,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/Client"
+                  $ref: "#/components/schemas/AdminClient"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -566,14 +566,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/Client"
+              $ref: "#/components/schemas/AdminClient"
       responses:
         "201":
           description: The client as stored, with its assigned id.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Client"
+                $ref: "#/components/schemas/AdminClient"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -600,7 +600,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Client"
+                $ref: "#/components/schemas/AdminClient"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -621,14 +621,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/Client"
+              $ref: "#/components/schemas/AdminClient"
       responses:
         "200":
           description: The updated client.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Client"
+                $ref: "#/components/schemas/AdminClient"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -1595,7 +1595,7 @@ components:
             empty, the host key is verified against DNSSEC-validated SSHFP
             records instead.
 
-    Client:
+    AdminClient:
       type: object
       description: A client, mirroring models.Client.
       required: [id, name, public_keys, group_ids]
@@ -1706,6 +1706,7 @@ components:
     RuleType:
       type: string
       enum: [client, group]
+      x-enum-varnames: [RuleTypeClient, RuleTypeGroup]
       description: |
         Whether an access rule's subject is a client or a group; mirrors
         models.RuleType.

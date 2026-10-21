@@ -13,6 +13,7 @@ generate:
   models: true
   std-http-server: true
   strict-server: true
+  client: true
   embedded-spec: true
 output-options:
   # The NSS wire format fixes these names; a generated "Uid" must stay "Uid".
