@@ -15,6 +15,7 @@ import (
 
 	"proxpass/internal/db"
 	"proxpass/internal/models"
+	"proxpass/internal/proxmox"
 )
 
 // SessionHandler implements the generated session API.
@@ -26,6 +27,11 @@ type SessionHandler struct {
 	repo   db.Repository
 	logger *log.Logger
 	now    func() time.Time
+
+	// discoverer is used only by the admin RunDiscovery handler and is left
+	// nil by NewSessionHandler; wire it with WithDiscoverer. See the field's
+	// use in adminhandlers.go for why it is optional and append-only.
+	discoverer proxmox.DiscovererFactory
 }
 
 // NewSessionHandler returns a handler reading identities from repo.

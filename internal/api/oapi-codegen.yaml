@@ -15,6 +15,7 @@ generate:
   strict-server: true
   client: true
   embedded-spec: true
+  client: true
 output-options:
   # The NSS wire format fixes these names; a generated "Uid" must stay "Uid".
   # oapi-codegen would otherwise produce idiomatic Go names and silently
