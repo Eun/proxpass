@@ -125,7 +125,7 @@ function app() {
                             fields: [
                                 { key: 'ssh_host', label: 'SSH host', placeholder: 'optional; enables node shell / SFTP', help: 'Optional. Enables the node shell, SFTP and file transfer (and is required for the "ssh" console transport). Leave blank to skip SSH entirely.' },
                                 { key: 'ssh_port', label: 'SSH port', type: 'number', help: 'The SSH port, typically 22.' },
-                                { key: 'ssh_user', label: 'SSH user', placeholder: 'root', help: 'The user proxpass logs in as, usually root.' },
+                                { key: 'ssh_user', label: 'SSH user', placeholder: 'root', placeholderIsDefault: true, help: 'The user proxpass logs in as, usually root. Defaults to root if left blank.' },
                                 { key: 'insecure_ssh', label: 'Skip SSH host-key verification', type: 'switch', help: 'Enable only on a host whose key you cannot verify out of band.' },
                                 // Pinning a fingerprint only makes sense when SSH
                                 // host keys ARE verified; when insecure_ssh is on
@@ -597,6 +597,18 @@ function app() {
                     d[k] = parseList(d[k], kind);
                 }
             }
+            // For fields whose placeholder is a real default (placeholderIsDefault:
+            // true, e.g. ssh_user's "root"), send the placeholder when the field
+            // was left blank. The placeholder is only a visual hint otherwise, so
+            // without this the backend would store an empty value -- and for the
+            // SSH user that means proxpass tries to log in with no username. The
+            // CLI already defaults ssh-user to "root"; this keeps the UI in step.
+            this.modalFields(r).forEach((f) => {
+                if (f.placeholderIsDefault && f.placeholder &&
+                    (d[f.key] === undefined || String(d[f.key]).trim() === '')) {
+                    d[f.key] = f.placeholder;
+                }
+            });
             // Drop fields that do not apply under the current form state (e.g.
             // ssh_fingerprint when SSH host-key verification is skipped) so a
             // stale or meaningless value is never sent.
