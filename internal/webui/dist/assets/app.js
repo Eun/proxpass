@@ -31,6 +31,13 @@ function app() {
         rows: [],
         cache: {},
 
+        // Resource definitions injected at runtime (the Guest/Node access views,
+        // built by accessResource() when their view loads). They live here, in a
+        // plain reactive object, rather than on `resources` -- which is a GETTER
+        // that rebuilds a fresh object on every access, so a write to it is lost.
+        // currentResource() and go() consult this map alongside `resources`.
+        dynamicResources: {},
+
         modal: { open: false, mode: 'create', step: 0, data: {} },
 
         // In-app confirmation dialog (replaces the browser's native confirm()).
@@ -221,7 +228,7 @@ function app() {
         },
 
         currentResource() {
-            return this.resources[this.view] || { columns: [] };
+            return this.dynamicResources[this.view] || this.resources[this.view] || { columns: [] };
         },
 
         // ---- lifecycle ----
@@ -654,8 +661,12 @@ function app() {
                 this.rows = (data || []).map((row) => ({ ...row, id: row.id }));
             } catch (e) { this.fail(e); }
             finally { this.loading = false; }
-            // Inject a resource definition for the access view on the fly.
-            this.resources[this.view] = this.accessResource();
+            // Inject a resource definition for the access view on the fly. It
+            // goes in dynamicResources, NOT resources: `resources` is a getter
+            // that rebuilds a fresh object each read, so a write there is lost
+            // and the table would render with no columns (an empty-looking view
+            // even though rows loaded).
+            this.dynamicResources[this.view] = this.accessResource();
         },
         accessResource() {
             const self = this;
