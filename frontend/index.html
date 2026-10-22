@@ -78,6 +78,36 @@
                     }
                     return data;
                 },
+
+                // rpc calls the /admin/rpc endpoint, which is NOT under /v1 and
+                // requires an admin SESSION (the static REST token is refused).
+                // It is the only way to read the deployment's SSH public key,
+                // which is a root-owned file the /v1 session process cannot see.
+                // Errors come back in the body as {error}, and 401/403 bubble up
+                // typed like request() so the caller can degrade gracefully.
+                async rpc(op, params) {
+                    const headers = {
+                        'Authorization': 'Bearer ' + this.token,
+                        'Content-Type': 'application/json',
+                    };
+                    let res;
+                    try {
+                        res = await fetch('./admin/rpc', {
+                            method: 'POST', headers,
+                            body: JSON.stringify({ op, params: params || null }),
+                        });
+                    } catch (e) {
+                        throw new ApiError(0, 'network error: ' + e.message);
+                    }
+                    let data = null;
+                    const text = await res.text();
+                    if (text) { try { data = JSON.parse(text); } catch (_) { data = text; } }
+                    if (!res.ok || (data && data.error)) {
+                        const msg = (data && data.error) ? data.error : ('HTTP ' + res.status);
+                        throw new ApiError(res.status, msg);
+                    }
+                    return data ? data.result : null;
+                },
             };
         }
 
@@ -532,6 +562,53 @@
                         <div class="flex justify-end gap-3 p-4 border-t">
                             <button @click="resolveConfirm(false)" class="px-4 py-2 text-gray-600 hover:text-gray-900">Cancel</button>
                             <button @click="resolveConfirm(true)" class="bg-red-600 hover:bg-red-700 text-white font-medium px-4 py-2 rounded transition">Confirm</button>
+                        </div>
+                    </div>
+                </div>
+            </template>
+
+            <!-- ============= SSH key hint (after adding an SSH node) ============= -->
+            <!-- Shown only when a node was added with the SSH console transport:
+                 proxpass must log in over SSH, so its public key has to be
+                 installed on the node or SSH (and the ssh console) will fail. -->
+            <template x-if="keyHint.open">
+                <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
+                    <div class="fixed inset-0 bg-black opacity-50" @click="closeKeyHint()"></div>
+                    <div class="relative bg-white rounded-lg shadow-xl w-full max-w-xl">
+                        <div class="p-6">
+                            <div class="flex items-start gap-3">
+                                <span class="flex-shrink-0 flex items-center justify-center w-10 h-10 rounded-full bg-amber-100 text-amber-600">
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
+                                </span>
+                                <div class="min-w-0">
+                                    <h3 class="font-semibold text-secondary">Finish SSH setup on this node</h3>
+                                    <p class="text-sm text-gray-600 mt-1">
+                                        You chose the <span class="font-medium">ssh</span> console transport, so proxpass logs in to
+                                        <code class="text-xs" x-text="keyHint.user + '@' + keyHint.host"></code>
+                                        over SSH. Add proxpass's public key to that node's
+                                        <code class="text-xs">~/.ssh/authorized_keys</code>, or SSH (and the console) will fail.
+                                    </p>
+                                    <p class="text-sm text-gray-600 mt-2" x-show="keyHint.message" x-text="keyHint.message"></p>
+                                </div>
+                            </div>
+
+                            <div class="mt-4" x-show="keyHint.publicKey">
+                                <div class="flex items-center justify-between mb-1">
+                                    <span class="text-xs font-medium text-gray-500 uppercase tracking-wide">proxpass public key</span>
+                                    <button @click="copyKeyHint()" class="text-xs text-primary hover:underline">Copy</button>
+                                </div>
+                                <pre class="bg-gray-50 border rounded p-3 text-xs overflow-x-auto whitespace-pre-wrap break-all select-all" x-text="keyHint.publicKey"></pre>
+                                <p class="text-xs text-gray-500 mt-2">Install it on the node, e.g.:</p>
+                                <pre class="bg-gray-50 border rounded p-3 text-xs overflow-x-auto whitespace-pre-wrap break-all select-all" x-text="'ssh-copy-id -f ' + keyHint.user + '@' + keyHint.host + '   # or append the key to ~/.ssh/authorized_keys'"></pre>
+                            </div>
+
+                            <div class="mt-4" x-show="!keyHint.publicKey && keyHint.path">
+                                <span class="text-xs font-medium text-gray-500 uppercase tracking-wide">Key file on the proxpass server</span>
+                                <pre class="bg-gray-50 border rounded p-3 text-xs overflow-x-auto whitespace-pre-wrap break-all select-all" x-text="keyHint.path + '.pub'"></pre>
+                            </div>
+                        </div>
+                        <div class="flex justify-end gap-3 p-4 border-t">
+                            <button @click="closeKeyHint()" class="bg-primary hover:opacity-90 text-white font-medium px-4 py-2 rounded transition">Got it</button>
                         </div>
                     </div>
                 </div>
