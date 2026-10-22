@@ -96,6 +96,13 @@ func gateAdmin[R any](
 // Append-only on purpose: the session API predates discovery and must keep
 // constructing with no discoverer, so this is a setter rather than a new
 // required argument.
+func (h *SessionHandler) WithTermProxyChecker(
+	check func(context.Context, *models.ProxmoxInstance) error,
+) *SessionHandler {
+	h.termProxyChecker = check
+	return h
+}
+
 func (h *SessionHandler) WithDiscoverer(factory proxmox.DiscovererFactory) *SessionHandler {
 	h.discoverer = factory
 	return h
@@ -148,6 +155,22 @@ func (h *SessionHandler) AddInstance(
 		return AddInstance400JSONResponse{BadRequestJSONResponse{Error: errMissingBody}}, nil
 	}
 	inst := fromAPIInstance(request.Body)
+
+	// For the termproxy console transport, verify the Proxmox VE version
+	// supports termproxy with API token auth before storing anything -- the
+	// same check `instance add' runs in the CLI (checkTermProxyVersion). Done
+	// here, server-side, so the web UI and every other /v1 client get it too:
+	// the browser cannot reach the Proxmox node itself. A too-old (or
+	// unreachable) node is a 400 with the reason, so the operator sees it
+	// immediately rather than when the first console fails to open. The ssh
+	// transport needs no such check. The checker is nil in tests and in a
+	// deployment that did not wire it, which skips the check.
+	if inst.ConsoleTransport == models.ConsoleTransportTermProxy && h.termProxyChecker != nil {
+		if err := h.termProxyChecker(ctx, inst); err != nil {
+			return AddInstance400JSONResponse{BadRequestJSONResponse{Error: err.Error()}}, nil
+		}
+	}
+
 	if err := h.repo.AddProxmoxInstance(ctx, inst); err != nil {
 		if isConflict(err) {
 			return AddInstance409JSONResponse{ConflictJSONResponse{Error: err.Error()}}, nil

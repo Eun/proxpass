@@ -173,6 +173,12 @@ type Server struct {
 	// discoverer backs the admin RunDiscovery handler; nil disables it.
 	discoverer proxmox.DiscovererFactory
 
+	// termProxyChecker validates a node's termproxy support at AddInstance
+	// time. NewServerWithIDs defaults it to the real checkTermProxySupport
+	// (which dials the Proxmox API); tests override it with WithTermProxyChecker
+	// so they do not need a live node. Nil skips the check.
+	termProxyChecker func(context.Context, *models.ProxmoxInstance) error
+
 	// protectedAdminKey is the configured PROXPASS_ADMIN_KEY, passed through to
 	// the SessionHandler so RemoveAdminKey refuses to delete it. Empty protects
 	// nothing. Set with WithProtectedAdminKey.
@@ -195,7 +201,20 @@ func NewServer(repo db.Repository, logger *log.Logger) *Server {
 
 // NewServerWithIDs builds the directory server with an explicit id layout.
 func NewServerWithIDs(repo db.Repository, logger *log.Logger, ids IDLayout) *Server {
-	return &Server{repo: repo, logger: logger, ids: ids}
+	return &Server{
+		repo: repo, logger: logger, ids: ids,
+		termProxyChecker: checkTermProxySupport,
+	}
+}
+
+// WithTermProxyChecker overrides the AddInstance termproxy version check.
+// Production uses the default (checkTermProxySupport); tests pass a stub so
+// they need not reach a Proxmox node. Chainable.
+func (s *Server) WithTermProxyChecker(
+	check func(context.Context, *models.ProxmoxInstance) error,
+) *Server {
+	s.termProxyChecker = check
+	return s
 }
 
 // WithNSSToken requires the given bearer token on the NSS directory routes.
@@ -353,10 +372,34 @@ func (s *Server) sessionHandler() *SessionHandler {
 	return NewSessionHandler(s.repo, s.logger).
 		WithRESTAPIToken(s.restAPIToken).
 		WithDiscoverer(s.discoverer).
+		WithTermProxyChecker(s.termProxyChecker).
 		WithProtectedAdminKey(s.protectedAdminKey).
 		WithSettings(s.settings).
 		WithVersion(s.version)
 }
+
+// checkTermProxySupport is the default termProxyChecker wired in production: it
+// opens a temporary Proxmox API client for the instance and asks whether the
+// node's pve-manager version supports the termproxy console transport. It is
+// the server-side twin of the CLI's checkTermProxyVersion, kept here so the
+// web UI and every other /v1 client validate the same way before a termproxy
+// node is stored.
+func checkTermProxySupport(ctx context.Context, inst *models.ProxmoxInstance) error {
+	client, err := proxmox.NewAPIClient(inst)
+	if err != nil {
+		return err
+	}
+	// Bound the probe: the Proxmox API client sets no HTTP timeout, so an
+	// unreachable node would otherwise hang the AddInstance request (and the
+	// web UI behind it) until the client gives up. 15s is ample for a reachable
+	// node's /version and turns a black-holed host into a prompt error.
+	ctx, cancel := context.WithTimeout(ctx, termProxyCheckTimeout)
+	defer cancel()
+	return client.CheckTermProxySupport(ctx)
+}
+
+// termProxyCheckTimeout bounds the AddInstance termproxy version probe.
+const termProxyCheckTimeout = 15 * time.Second
 
 // nssAuth wraps an NSS handler with the NSS bearer-token check. The NSS
 // directory routes are reachable ONLY with PROXPASS_NSS_TOKEN -- the token

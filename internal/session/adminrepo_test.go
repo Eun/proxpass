@@ -25,7 +25,11 @@ func newAdminRepo(
 
 	direct = newRepo(t)
 	srv := httptest.NewServer(
-		api.NewServer(direct, log.New(io.Discard, "", 0)).Handler())
+		// Skip the AddInstance termproxy version check: these tests add nodes
+		// pointing at hosts that do not resolve, and they exercise the
+		// repository round-trip, not the Proxmox version gate.
+		api.NewServer(direct, log.New(io.Discard, "", 0)).
+			WithTermProxyChecker(nil).Handler())
 	t.Cleanup(srv.Close)
 
 	minted := "minted-" + identity.IdentityName

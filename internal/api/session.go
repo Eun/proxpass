@@ -34,6 +34,15 @@ type SessionHandler struct {
 	// use in adminhandlers.go for why it is optional and append-only.
 	discoverer proxmox.DiscovererFactory
 
+	// termProxyChecker verifies, at AddInstance time, that a node's Proxmox VE
+	// version supports the termproxy console transport -- the same check the
+	// CLI runs in checkTermProxyVersion. It needs to reach the Proxmox API, so
+	// it lives only in the serve process: the web UI and other /v1 clients
+	// cannot run it themselves. Left nil by NewSessionHandler (tests and any
+	// deployment without it skip the check); wire the real one with
+	// WithTermProxyChecker during server construction.
+	termProxyChecker func(context.Context, *models.ProxmoxInstance) error
+
 	// restAPITokenHash, when non-empty, is the SHA-256 hash of a static admin
 	// bearer token (PROXPASS_REST_API_TOKEN). A request carrying it is treated
 	// as the administrator WITHOUT a database session, so external REST clients
