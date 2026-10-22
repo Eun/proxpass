@@ -45,7 +45,7 @@ function app() {
         // not be fetched, e.g. logged in with the static REST token rather than
         // an admin session); path is where the key lives on the server, shown as
         // a fallback so the operator can still retrieve it.
-        keyHint: { open: false, host: '', user: '', message: '', publicKey: '', path: '' },
+        keyHint: { open: false, host: '', user: '', sshConsole: false, message: '', publicKey: '', path: '' },
 
         // policy + discovery view state. policyForm holds arrays of selected
         // client/group IDs; the clients/groups lists to pick from come from
@@ -421,6 +421,7 @@ function app() {
         async showSSHKeyHint(d) {
             const host = (d.ssh_host || '').trim();
             const user = (d.ssh_user || 'root').trim() || 'root';
+            const sshConsole = d.console_transport === 'ssh';
             let publicKey = '';
             let path = '';
             let message = '';
@@ -440,9 +441,9 @@ function app() {
                     ? 'Sign in with an admin SSH session to display the key here, or read it on the server (see the path below).'
                     : ('Could not fetch the key: ' + e.message);
             }
-            this.keyHint = { open: true, host, user, message, publicKey, path };
+            this.keyHint = { open: true, host, user, sshConsole, message, publicKey, path };
         },
-        closeKeyHint() { this.keyHint = { open: false, host: '', user: '', message: '', publicKey: '', path: '' }; },
+        closeKeyHint() { this.keyHint = { open: false, host: '', user: '', sshConsole: false, message: '', publicKey: '', path: '' }; },
         async copyKeyHint() {
             const text = this.keyHint.publicKey || this.keyHint.path;
             if (!text) return;
@@ -605,13 +606,16 @@ function app() {
                 if (this.modal.mode === 'create') {
                     await this.request('POST', r.path, body);
                     this.ok(cap(r.singular) + ' created.');
-                    // A node added with the SSH console transport needs proxpass's
-                    // public key installed on it, or SSH login (and the ssh
-                    // console) will fail. Surface that hint with the key only in
-                    // that case -- a termproxy node reaches its console over the
-                    // API and needs nothing added. Mirrors the CLI's `instance
-                    // add' behaviour (probeSSHAccessBeforeAdd).
-                    if (this.view === 'instances' && d.console_transport === 'ssh' && (d.ssh_host || '').trim()) {
+                    // Whenever SSH is configured (an ssh_host is set) proxpass
+                    // logs in to the node over SSH -- for the node shell, SFTP
+                    // and file transfer, and for the console too when the ssh
+                    // console transport is chosen. All of that fails until
+                    // proxpass's public key is on the node, so hint with the key
+                    // whenever ssh_host is set, regardless of console transport.
+                    // A termproxy node with no ssh_host needs nothing added and
+                    // gets no hint. Mirrors the CLI's `instance add' behaviour
+                    // (probeSSHAccessBeforeAdd).
+                    if (this.view === 'instances' && (d.ssh_host || '').trim()) {
                         await this.showSSHKeyHint(d);
                     }
                 } else {
