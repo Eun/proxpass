@@ -583,10 +583,12 @@
                                 <div class="min-w-0">
                                     <h3 class="font-semibold text-secondary">Finish SSH setup on this node</h3>
                                     <p class="text-sm text-gray-600 mt-1">
-                                        You chose the <span class="font-medium">ssh</span> console transport, so proxpass logs in to
+                                        You configured SSH, so proxpass logs in to
                                         <code class="text-xs" x-text="keyHint.user + '@' + keyHint.host"></code>
-                                        over SSH. Add proxpass's public key to that node's
-                                        <code class="text-xs">~/.ssh/authorized_keys</code>, or SSH (and the console) will fail.
+                                        over SSH for the node shell, SFTP and file transfer
+                                        <span x-show="keyHint.sshConsole">(and the console)</span>.
+                                        Add proxpass's public key to that node's
+                                        <code class="text-xs">~/.ssh/authorized_keys</code>, or SSH will fail.
                                     </p>
                                     <p class="text-sm text-gray-600 mt-2" x-show="keyHint.message" x-text="keyHint.message"></p>
                                 </div>
