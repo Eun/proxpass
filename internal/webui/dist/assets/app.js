@@ -38,6 +38,15 @@ function app() {
         // the dialog and resolves true/false when the user chooses.
         confirmState: { open: false, message: '', resolve: null },
 
+        // keyHint backs the post-add "install proxpass's SSH key" dialog. It is
+        // shown only when a node was added with the SSH console transport, since
+        // only then does proxpass need to log in over SSH. message explains why;
+        // publicKey is the authorized_keys line to install (empty when it could
+        // not be fetched, e.g. logged in with the static REST token rather than
+        // an admin session); path is where the key lives on the server, shown as
+        // a fallback so the operator can still retrieve it.
+        keyHint: { open: false, host: '', user: '', message: '', publicKey: '', path: '' },
+
         // policy + discovery view state. policyForm holds arrays of selected
         // client/group IDs; the clients/groups lists to pick from come from
         // cache.clients / cache.groups (loaded by loadPolicy).
@@ -403,6 +412,44 @@ function app() {
             if (r) r(ok);
         },
 
+        // showSSHKeyHint opens the post-add dialog telling the operator to add
+        // proxpass's SSH public key to the new node. It fetches the key over
+        // /admin/rpc (GetSSHPublicKey). That endpoint needs an admin SESSION, so
+        // when the UI was signed in with the static REST token the fetch 403s;
+        // we still show the hint and the key's path on the server so the key can
+        // be retrieved out of band, rather than hiding the instruction entirely.
+        async showSSHKeyHint(d) {
+            const host = (d.ssh_host || '').trim();
+            const user = (d.ssh_user || 'root').trim() || 'root';
+            let publicKey = '';
+            let path = '';
+            let message = '';
+            try {
+                const res = await this.rpc('GetSSHPublicKey');
+                publicKey = (res && res.key) || '';
+                path = (res && res.path) || '';
+                if (!publicKey) {
+                    message = 'This deployment has no SSH key yet (' + (path || 'none on disk') +
+                        '). proxpass cannot log in over SSH until a key exists and its public half is installed on the node.';
+                }
+            } catch (e) {
+                // Most commonly a 403: signed in with the static REST token, not
+                // an admin session, so /admin/rpc is refused. Degrade to the
+                // instruction without the live key.
+                message = e.isAuth
+                    ? 'Sign in with an admin SSH session to display the key here, or read it on the server (see the path below).'
+                    : ('Could not fetch the key: ' + e.message);
+            }
+            this.keyHint = { open: true, host, user, message, publicKey, path };
+        },
+        closeKeyHint() { this.keyHint = { open: false, host: '', user: '', message: '', publicKey: '', path: '' }; },
+        async copyKeyHint() {
+            const text = this.keyHint.publicKey || this.keyHint.path;
+            if (!text) return;
+            try { await navigator.clipboard.writeText(text); this.ok('Copied to clipboard.'); }
+            catch (_) { /* clipboard may be unavailable over plain HTTP; the key is selectable in the dialog */ }
+        },
+
         // modalFields returns every field of a resource, whether it defines a
         // flat `fields' list or a stepped wizard (`steps'). Used by submit,
         // edit, and option loading, which do not care about step boundaries.
@@ -558,6 +605,15 @@ function app() {
                 if (this.modal.mode === 'create') {
                     await this.request('POST', r.path, body);
                     this.ok(cap(r.singular) + ' created.');
+                    // A node added with the SSH console transport needs proxpass's
+                    // public key installed on it, or SSH login (and the ssh
+                    // console) will fail. Surface that hint with the key only in
+                    // that case -- a termproxy node reaches its console over the
+                    // API and needs nothing added. Mirrors the CLI's `instance
+                    // add' behaviour (probeSSHAccessBeforeAdd).
+                    if (this.view === 'instances' && d.console_transport === 'ssh' && (d.ssh_host || '').trim()) {
+                        await this.showSSHKeyHint(d);
+                    }
                 } else {
                     await this.request('PUT', r.path + '/' + d.id, d);
                     this.ok(cap(r.singular) + ' updated.');
