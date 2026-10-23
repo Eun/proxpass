@@ -236,7 +236,24 @@ function app() {
 
         // ---- lifecycle ----
         init() {
-            if (this.authed) { this.loadVersion(); this.go('dashboard'); }
+            // Route between pages via the URL hash (#clients, #instances, …) so
+            // a view is bookmarkable and the browser Back/Forward buttons work.
+            // On load, honour the hash if it names a real view; otherwise show
+            // the dashboard. A hashchange (back/forward, or an edited URL) then
+            // re-navigates without rewriting the hash (go() guards that).
+            window.addEventListener('hashchange', () => {
+                if (!this.authed) return;
+                const id = this.viewFromHash();
+                if (id !== this.view) this.go(id);
+            });
+            if (this.authed) { this.loadVersion(); this.go(this.viewFromHash()); }
+        },
+
+        // viewFromHash resolves the current location hash to a known view id,
+        // defaulting to the dashboard when the hash is empty or unrecognised.
+        viewFromHash() {
+            const id = (window.location.hash || '').replace(/^#/, '');
+            return this.nav.some((n) => n.id === id) ? id : 'dashboard';
         },
 
         // loadVersion fetches the build version once, for the sidebar footer.
@@ -258,7 +275,9 @@ function app() {
                 await this.request('GET', '/instances');
                 this.tokenInput = '';
                 this.loadVersion();
-                this.go('dashboard');
+                // Honour a bookmarked hash (e.g. someone opened /#clients then
+                // signed in) rather than always landing on the dashboard.
+                this.go(this.viewFromHash());
             } catch (e) {
                 this.clearToken();
                 this.authError = e.isAuth ? 'Token rejected (not an admin credential).' : e.message;
@@ -271,6 +290,11 @@ function app() {
             this.clearToken();
             this.view = 'dashboard';
             this.rows = []; this.cache = {};
+            // Drop the page hash so a signed-out URL is the clean root and a
+            // later sign-in starts at the dashboard.
+            if (window.location.hash) {
+                history.replaceState(null, '', window.location.pathname + window.location.search);
+            }
         },
 
         navLabel() {
@@ -283,6 +307,13 @@ function app() {
             this.search = '';
             this.error = '';
             this.modal.open = false;
+            // Reflect the current page in the URL hash. Guard against rewriting
+            // it to the same value so navigation triggered BY a hashchange does
+            // not loop. history.replaceState keeps Back/Forward meaningful
+            // without stacking a duplicate entry when the hash already matches.
+            if (this.viewFromHash() !== id) {
+                window.location.hash = id;
+            }
             if (id === 'dashboard') return this.loadDashboard();
             if (id === 'access') return this.loadAccess('/access-rules', 'guest');
             if (id === 'instanceAccess') return this.loadAccess('/instance-access-rules', 'instance');
