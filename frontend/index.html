@@ -648,8 +648,12 @@
                                         <code class="text-xs" x-text="keyHint.user + '@' + keyHint.host"></code>
                                         over SSH for the node shell, SFTP and file transfer
                                         <span x-show="keyHint.sshConsole">(and the console)</span>.
-                                        Add proxpass's public key to that node's
-                                        <code class="text-xs">~/.ssh/authorized_keys</code>, or SSH will fail.
+                                        Add proxpass's public key below to that node's
+                                        <code class="text-xs">authorized_keys</code>, or SSH will fail.
+                                        On a Proxmox cluster, prefer
+                                        <code class="text-xs">/etc/pve/priv/authorized_keys</code>:
+                                        it is replicated to every node, so you install the key once per
+                                        cluster instead of on each node's <code class="text-xs">~/.ssh/authorized_keys</code>.
                                     </p>
                                     <p class="text-sm text-gray-600 mt-2" x-show="keyHint.message" x-text="keyHint.message"></p>
                                 </div>
@@ -661,7 +665,9 @@
                                     <button @click="copyKeyHint()" class="text-xs text-primary hover:underline">Copy</button>
                                 </div>
                                 <pre class="bg-gray-50 border rounded p-3 text-xs overflow-x-auto whitespace-pre-wrap break-all select-all" x-text="keyHint.publicKey"></pre>
-                                <p class="text-xs text-gray-500 mt-2">Install it on the node, e.g.:</p>
+                                <p class="text-xs text-gray-500 mt-2">Install it on the node. On a cluster, append it to the replicated file so every node gets it:</p>
+                                <pre class="bg-gray-50 border rounded p-3 text-xs overflow-x-auto whitespace-pre-wrap break-all select-all" x-text="'echo ' + JSON.stringify(keyHint.publicKey) + ' >> /etc/pve/priv/authorized_keys'"></pre>
+                                <p class="text-xs text-gray-500 mt-2">Standalone node (no cluster):</p>
                                 <pre class="bg-gray-50 border rounded p-3 text-xs overflow-x-auto whitespace-pre-wrap break-all select-all" x-text="'ssh-copy-id -f ' + keyHint.user + '@' + keyHint.host + '   # or append the key to ~/.ssh/authorized_keys'"></pre>
                             </div>
 
