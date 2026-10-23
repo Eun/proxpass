@@ -555,22 +555,31 @@
                                 </div>
                             </template>
                         </div>
+                        <!-- Dialog footer guideline (one fixed layout for every dialog):
+                             - Cancel is ALWAYS on the far LEFT.
+                             - The far RIGHT is ALWAYS Save, the primary action; before Save
+                               comes Next (only mid-wizard); before Next comes Back (only in a
+                               wizard past step 0). So the right cluster reads, left to right:
+                               Back, Next, Save -- navigation first, commit last.
+                             - Save visibility differs by mode: a NEW (create) wizard shows Save
+                               only on the LAST step, so the user walks the steps in order; an
+                               EDIT wizard (the record is already complete) shows Save on EVERY
+                               step so any change can be committed at once. A non-wizard dialog
+                               always shows Save. (showSave() encodes this.) -->
                         <div class="flex justify-between gap-3 p-4 border-t">
-                            <div>
-                                <!-- Back is only shown mid-wizard. -->
-                                <button x-show="isWizard() && modal.step > 0" @click="prevStep()" class="px-4 py-2 text-gray-600 hover:text-gray-900">Back</button>
-                            </div>
+                            <button @click="closeModal()" class="px-4 py-2 text-gray-600 hover:text-gray-900">Cancel</button>
                             <div class="flex gap-3">
-                                <button @click="closeModal()" class="px-4 py-2 text-gray-600 hover:text-gray-900">Cancel</button>
-                                <!-- Mid-wizard: Next advances; otherwise Save submits. -->
+                                <!-- Back: only in a wizard past the first step. -->
+                                <button x-show="isWizard() && modal.step > 0" @click="prevStep()" class="px-4 py-2 text-gray-600 hover:text-gray-900">Back</button>
+                                <!-- Next: only mid-wizard. -->
                                 <template x-if="isWizard() && !isLastStep()">
-                                    <button @click="nextStep()" :disabled="!stepValid()" class="bg-primary hover:bg-primary-dark text-white font-medium px-4 py-2 rounded transition disabled:opacity-50">Next</button>
+                                    <button @click="nextStep()" :disabled="!stepValid()" class="border border-primary text-primary hover:bg-primary hover:text-white font-medium px-4 py-2 rounded transition disabled:opacity-50">Next</button>
                                 </template>
-                                <template x-if="!isWizard() || isLastStep()">
-                                    <button @click="submitModal()" :disabled="busy" class="bg-primary hover:bg-primary-dark text-white font-medium px-4 py-2 rounded transition disabled:opacity-50">
-                                        <span x-text="busy ? 'Saving…' : 'Save'"></span>
-                                    </button>
-                                </template>
+                                <!-- Save: far right, primary. Always in edit / non-wizard; only
+                                     on the last step of a new wizard. -->
+                                <button x-show="showSave()" @click="submitModal()" :disabled="busy" class="bg-primary hover:bg-primary-dark text-white font-medium px-4 py-2 rounded transition disabled:opacity-50">
+                                    <span x-text="busy ? 'Saving…' : 'Save'"></span>
+                                </button>
                             </div>
                         </div>
                     </div>
