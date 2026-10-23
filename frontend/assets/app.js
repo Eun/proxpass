@@ -488,6 +488,33 @@ function app() {
         },
         nextStep() { if (this.stepValid() && !this.isLastStep()) this.modal.step++; },
         prevStep() { if (this.modal.step > 0) this.modal.step--; },
+        // goToStep jumps to a step from the top indicator. Going back (or
+        // staying) is always allowed. Going forward is gated the same way Next
+        // is: it advances only across steps whose required fields are filled,
+        // stopping at the first incomplete one, so a required field can never be
+        // skipped by clicking ahead. In edit mode every step is reachable since
+        // the record is already complete.
+        goToStep(i) {
+            if (i <= this.modal.step) { this.modal.step = Math.max(0, i); return; }
+            while (this.modal.step < i && this.stepValid() && !this.isLastStep()) {
+                this.modal.step++;
+            }
+        },
+        // stepReachable reports whether the top indicator should offer a step as
+        // a click target: earlier/current steps always, a later step only once
+        // every step before it is valid. Drives the indicator's cursor/disabled
+        // styling so users see which steps they can jump to.
+        stepReachable(i) {
+            if (i <= this.modal.step) return true;
+            for (let s = this.modal.step; s < i; s++) {
+                if (!this.stepFields(s).every((f) => {
+                    if (!f.required) return true;
+                    const v = this.modal.data[f.key];
+                    return v !== undefined && v !== null && String(v).trim() !== '';
+                })) return false;
+            }
+            return true;
+        },
         // visibleFields: the fields to render right now -- the current step's
         // for a wizard, otherwise all of them (edit, or a non-stepped resource).
         visibleFields() {

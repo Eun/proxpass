@@ -417,10 +417,19 @@
                                 <div class="flex items-center gap-2">
                                     <template x-for="(s, i) in wizardSteps()" :key="s.title">
                                         <div class="flex items-center gap-2">
-                                            <span class="flex items-center justify-center w-6 h-6 rounded-full text-xs font-semibold"
-                                                :class="i === modal.step ? 'bg-primary text-white' : (i < modal.step ? 'bg-primary/30 text-primary' : 'bg-gray-200 text-gray-500')"
-                                                x-text="i + 1"></span>
-                                            <span class="text-sm" :class="i === modal.step ? 'text-secondary font-medium' : 'text-gray-400'" x-text="s.title"></span>
+                                            <!-- The step is a click target so users can jump between
+                                                 pages instead of only using Next/Back. Forward jumps are
+                                                 gated by stepReachable (required fields must be filled);
+                                                 unreachable steps are shown disabled. -->
+                                            <button type="button" @click="goToStep(i)" :disabled="!stepReachable(i)"
+                                                class="flex items-center gap-2 rounded px-1 -mx-1 transition"
+                                                :class="stepReachable(i) ? 'cursor-pointer hover:bg-gray-50' : 'cursor-not-allowed'"
+                                                :title="stepReachable(i) ? ('Go to ' + s.title) : 'Fill the earlier steps first'">
+                                                <span class="flex items-center justify-center w-6 h-6 rounded-full text-xs font-semibold"
+                                                    :class="i === modal.step ? 'bg-primary text-white' : (i < modal.step ? 'bg-primary/30 text-primary' : 'bg-gray-200 text-gray-500')"
+                                                    x-text="i + 1"></span>
+                                                <span class="text-sm" :class="i === modal.step ? 'text-secondary font-medium' : 'text-gray-400'" x-text="s.title"></span>
+                                            </button>
                                             <span x-show="i < wizardSteps().length - 1" class="text-gray-300">›</span>
                                         </div>
                                     </template>
