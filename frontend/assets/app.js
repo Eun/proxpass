@@ -541,9 +541,11 @@ function app() {
             } catch (e) {
                 // Most commonly a 403: signed in with the static REST token, not
                 // an admin session, so /admin/rpc is refused. Degrade to the
-                // instruction without the live key.
+                // instruction without the live key. The web UI has no "SSH
+                // session" login -- the distinction the operator can act on is
+                // which token they signed in with, so say that.
                 message = e.isAuth
-                    ? 'Sign in with an admin SSH session to display the key here, or read it on the server (see the path below).'
+                    ? 'You are signed in with the static PROXPASS_REST_API_TOKEN, which cannot read the key. Sign in with an admin session token to show it here, or read it from the file on the server (path below).'
                     : ('Could not fetch the key: ' + e.message);
             }
             this.keyHint = { open: true, host, user, sshConsole, message, publicKey, path };
