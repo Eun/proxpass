@@ -20,8 +20,11 @@
         // One page, one origin: it is served by the same proxpass listener that
         // serves /v1, so every API call is same-origin and needs no CORS. Auth
         // is a bearer token (PROXPASS_REST_API_TOKEN or an admin session token)
-        // kept in sessionStorage -- never a cookie, so there is nothing for a
-        // CSRF attack to ride on, and the token is gone when the tab closes.
+        // kept in localStorage -- never a cookie, so there is nothing for a
+        // CSRF attack to ride on. localStorage (not sessionStorage) persists the
+        // token across tabs and restarts: on load the app re-validates it and
+        // signs in automatically, or drops it and shows the login if it no
+        // longer works (see init/autoLogin in app.js).
         //
         // The whole thing is plain Alpine.js: no build step, no framework, no
         // generated client. Resource definitions below drive generic list and
@@ -32,24 +35,30 @@
         const TOKEN_KEY = 'proxpass_admin_token';
 
         function api() {
-            const stored = sessionStorage.getItem(TOKEN_KEY) || '';
+            const stored = localStorage.getItem(TOKEN_KEY) || '';
             return {
+                // The stored token is held but NOT trusted yet: authed stays
+                // false until init() re-validates it against the API. booting is
+                // true while that check runs, so the UI shows neither the login
+                // form nor the shell (no flash) until we know which to show.
                 token: stored,
                 // authed is a plain reactive property, NOT a getter: app()
                 // builds its state with `...api()`, and the spread operator
-                // would copy a getter's *value* once (always false at startup)
-                // instead of the getter itself, so the view could never leave
-                // the sign-in screen. saveToken/clearToken keep it in step.
-                authed: !!stored,
+                // would copy a getter's *value* once instead of the getter
+                // itself. saveToken/clearToken keep it in step.
+                authed: false,
+                booting: !!stored,
+                // saveToken persists the token but does NOT flip authed: the
+                // caller (signIn / autoLogin) validates first and only then sets
+                // authed, so a bad token never flashes the shell.
                 saveToken(t) {
                     this.token = t.trim();
-                    this.authed = !!this.token;
-                    sessionStorage.setItem(TOKEN_KEY, this.token);
+                    localStorage.setItem(TOKEN_KEY, this.token);
                 },
                 clearToken() {
                     this.token = '';
                     this.authed = false;
-                    sessionStorage.removeItem(TOKEN_KEY);
+                    localStorage.removeItem(TOKEN_KEY);
                 },
 
                 // request performs one API call and normalizes errors. A 401/403
@@ -120,8 +129,16 @@
 <body class="bg-gray-100 text-gray-800">
 <div x-data="app()" x-cloak class="min-h-screen">
 
+    <!-- Booting: a stored token is being re-validated. Show a neutral splash so
+         the login form does not flash before auto-login decides. -->
+    <template x-if="booting">
+        <div class="min-h-screen flex items-center justify-center">
+            <div class="text-gray-400 text-sm">Signing in…</div>
+        </div>
+    </template>
+
     <!-- ===================== Token / sign-in screen ===================== -->
-    <template x-if="!authed">
+    <template x-if="!booting && !authed">
         <div class="min-h-screen flex items-center justify-center p-4">
             <div class="w-full max-w-md bg-white rounded-lg shadow p-8">
                 <div class="flex items-center justify-center mb-6">
@@ -130,7 +147,8 @@
                 <p class="text-sm text-gray-600 mb-4">
                     Enter an admin API token to manage this deployment. Use the value of
                     <code class="bg-gray-100 px-1 rounded">PROXPASS_REST_API_TOKEN</code>,
-                    or an admin session token. The token is kept only in this tab's memory.
+                    or an admin session token. It is stored in this browser so you stay
+                    signed in; use Sign out to clear it.
                 </p>
                 <form @submit.prevent="signIn()">
                     <input

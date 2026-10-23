@@ -238,15 +238,42 @@ function app() {
         init() {
             // Route between pages via the URL hash (#clients, #instances, …) so
             // a view is bookmarkable and the browser Back/Forward buttons work.
-            // On load, honour the hash if it names a real view; otherwise show
-            // the dashboard. A hashchange (back/forward, or an edited URL) then
-            // re-navigates without rewriting the hash (go() guards that).
+            // A hashchange (back/forward, or an edited URL) re-navigates without
+            // rewriting the hash (go() guards that).
             window.addEventListener('hashchange', () => {
                 if (!this.authed) return;
                 const id = this.viewFromHash();
                 if (id !== this.view) this.go(id);
             });
-            if (this.authed) { this.loadVersion(); this.go(this.viewFromHash()); }
+            // A token stored from a previous visit is not trusted blindly: it
+            // may have been rotated or revoked. Re-validate it, and only then
+            // sign in. booting keeps both the login form and the shell hidden
+            // while this runs.
+            this.autoLogin();
+        },
+
+        // autoLogin signs in with a token already in browser storage. On
+        // success it lands on the route the URL asked for (or the dashboard);
+        // on failure it drops the stale token and falls back to the login form.
+        // When no token is stored, it just shows the login form.
+        async autoLogin() {
+            if (!this.token) { this.booting = false; return; }
+            try {
+                // Validate by hitting a cheap admin endpoint with the stored
+                // token. A 401/403 (rotated/revoked token) throws e.isAuth.
+                await this.request('GET', '/instances');
+                this.authed = true;
+                this.loadVersion();
+                // Honour a bookmarked route (e.g. /#clients); default dashboard.
+                this.go(this.viewFromHash());
+            } catch (_) {
+                // Any failure means the stored token is no good: forget it and
+                // show the login. (A transient network error also lands here;
+                // the operator can just sign in again.)
+                this.clearToken();
+            } finally {
+                this.booting = false;
+            }
         },
 
         // viewFromHash resolves the current location hash to a known view id,
@@ -271,8 +298,9 @@ function app() {
             this.busy = true; this.authError = '';
             this.saveToken(t);
             try {
-                // Validate by hitting a cheap admin endpoint.
+                // Validate by hitting a cheap admin endpoint, then sign in.
                 await this.request('GET', '/instances');
+                this.authed = true;
                 this.tokenInput = '';
                 this.loadVersion();
                 // Honour a bookmarked hash (e.g. someone opened /#clients then
