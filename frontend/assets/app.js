@@ -475,15 +475,25 @@ function app() {
         modalOptions: {},
 
         // ---- create / edit modal ----
+        // resetFingerprintScan clears the transient SSH-fingerprint scan state
+        // (the fetched list, the manual-entry box, and any in-flight flag). Both
+        // openCreate and openEdit call it so a scan from a previous node never
+        // leaks into the next wizard -- the list is per-host and must start empty.
+        resetFingerprintScan() {
+            this.scannedFingerprints = [];
+            this.fingerprintInput = '';
+            this.scanning = false;
+        },
         async openCreate() {
             const r = this.currentResource();
             await this.loadModalOptions(r);
-            this.scannedFingerprints = []; this.fingerprintInput = '';
+            this.resetFingerprintScan();
             this.modal = { open: true, mode: 'create', step: 0, data: { ...(r.defaults || {}) } };
         },
         async openEdit(row) {
             const r = this.currentResource();
             await this.loadModalOptions(r);
+            this.resetFingerprintScan();
             const data = { ...row };
             // Convert line-list fields back to their editable string form.
             // Multiselect fields keep their array value as-is.
