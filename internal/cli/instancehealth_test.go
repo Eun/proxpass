@@ -43,7 +43,10 @@ func TestConfiguredSSH(t *testing.T) {
 	}{
 		{"no host", &models.ProxmoxInstance{SSHHost: ""}, "SSH: not configured"},
 		{"sshfp", &models.ProxmoxInstance{SSHHost: testInstanceName, SSHPort: 22}, "SSH: pve:22 (sshfp)"},
-		{"pinned", &models.ProxmoxInstance{SSHHost: testInstanceName, SSHPort: 22, SSHFingerprint: "SHA256:x"}, "SSH: pve:22 (pinned)"},
+		{"pinned", &models.ProxmoxInstance{
+			SSHHost: testInstanceName, SSHPort: 22,
+			SSHFingerprints: []string{"SHA256:x"},
+		}, "SSH: pve:22 (pinned)"},
 		{"insecure", &models.ProxmoxInstance{SSHHost: testInstanceName, SSHPort: 2222, InsecureSSH: true}, "SSH: pve:2222 (insecure)"},
 	}
 	for _, tc := range cases {

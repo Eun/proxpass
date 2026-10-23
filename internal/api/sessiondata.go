@@ -445,7 +445,13 @@ func (h *SessionHandler) instanceCredentials(inst *models.ProxmoxInstance) (Inst
 	setIfNotEmpty(&out.APITokenSecret, inst.APITokenSecret)
 	setIfNotEmpty(&out.SSHHost, inst.SSHHost)
 	setIfNotEmpty(&out.SSHUser, inst.SSHUser)
-	setIfNotEmpty(&out.SSHFingerprint, inst.SSHFingerprint)
+	// Only carry pins when there are some: an empty list must omit the field
+	// so the session falls back to SSHFP verification, exactly as the stored
+	// instance does.
+	if len(inst.SSHFingerprints) > 0 {
+		fps := append([]string(nil), inst.SSHFingerprints...)
+		out.SSHFingerprints = &fps
+	}
 	if inst.SSHPort != 0 {
 		port := inst.SSHPort
 		out.SSHPort = &port

@@ -1560,12 +1560,14 @@ components:
           type: integer
         sshUser:
           type: string
-        sshFingerprint:
-          type: string
+        sshFingerprints:
+          type: array
+          items:
+            type: string
           description: |
-            The pinned SSH host-key fingerprint ("SHA256:<base64>") the node
-            must present. When absent, the host key is verified against
-            DNSSEC-validated SSHFP records instead.
+            The pinned SSH host-key fingerprints ("SHA256:<base64>" each); the
+            node's host key must match any one of them. When absent/empty, the
+            host key is verified against DNSSEC-validated SSHFP records instead.
         sshKey:
           type: string
           description: |
@@ -1656,7 +1658,7 @@ components:
         - ssh_host
         - ssh_port
         - ssh_user
-        - ssh_fingerprint
+        - ssh_fingerprints
       properties:
         id:
           type: integer
@@ -1695,12 +1697,16 @@ components:
           type: integer
         ssh_user:
           type: string
-        ssh_fingerprint:
-          type: string
+        ssh_fingerprints:
+          type: array
+          items:
+            type: string
           description: |
-            The pinned SSH host-key fingerprint ("SHA256:<base64>"). When
-            empty, the host key is verified against DNSSEC-validated SSHFP
-            records instead.
+            The pinned SSH host-key fingerprints ("SHA256:<base64>" each). The
+            host key the node presents must match ANY one of them -- several
+            may be pinned because a node answers with a different host key per
+            algorithm and may be re-keyed. When empty, the host key is verified
+            against DNSSEC-validated SSHFP records instead.
 
     AdminClient:
       type: object

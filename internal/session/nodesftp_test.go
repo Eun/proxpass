@@ -32,7 +32,7 @@ func nodeOn(t *testing.T, repo db.Repository, mock *testenv.MockSSHServer) *mode
 		Name: instRome, APIURL: romeAPIURL, Node: instRome,
 		ConsoleTransport: models.ConsoleTransportSSH,
 		SSHHost:          mock.Host, SSHPort: mock.Port, SSHUser: mock.User,
-		SSHFingerprint: mock.HostKeyFingerprint(),
+		SSHFingerprints: []string{mock.HostKeyFingerprint()},
 	}
 	if err := repo.AddProxmoxInstance(t.Context(), inst); err != nil {
 		t.Fatalf("add instance: %v", err)

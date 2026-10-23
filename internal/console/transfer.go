@@ -46,7 +46,7 @@ func DialNode(inst *models.ProxmoxInstance, sshKey string, logger *log.Logger) (
 	client, err := gossh.Dial("tcp", addr, &gossh.ClientConfig{
 		User:            inst.SSHUser,
 		Auth:            []gossh.AuthMethod{gossh.PublicKeys(signer)},
-		HostKeyCallback: sshhostkey.Callback(inst.SSHHost, inst.SSHFingerprint, inst.InsecureSSH),
+		HostKeyCallback: sshhostkey.Callback(inst.SSHHost, inst.SSHFingerprints, inst.InsecureSSH),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dialing proxmox %s: %w", addr, err)

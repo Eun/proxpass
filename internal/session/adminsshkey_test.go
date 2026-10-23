@@ -109,7 +109,7 @@ func TestCheckInstanceSSHAccessReachesTheHost(t *testing.T) {
 		SSHUser:          srv.User,
 		// Pin the mock host key: a test host publishes no SSHFP, so without a
 		// pin the server-side dial would fall back to a failing DNS lookup.
-		SSHFingerprint: srv.HostKeyFingerprint(),
+		SSHFingerprints: []string{srv.HostKeyFingerprint()},
 	}
 	if err := remote.CheckInstanceSSHAccess(t.Context(), inst); err != nil {
 		t.Fatalf("expected the configured key to open the host: %v", err)
@@ -187,7 +187,7 @@ func TestCheckInstanceSSHAccessReportsAnUninstalledKey(t *testing.T) {
 		SSHUser:          srv.User,
 		// Pin the host key so verification passes and the dial reaches the
 		// auth step -- the failure under test is the uninstalled client key.
-		SSHFingerprint: srv.HostKeyFingerprint(),
+		SSHFingerprints: []string{srv.HostKeyFingerprint()},
 	}
 	err = remote.CheckInstanceSSHAccess(t.Context(), inst)
 	if err == nil {

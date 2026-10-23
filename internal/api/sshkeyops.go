@@ -170,7 +170,7 @@ func dialSSHSession(ctx context.Context, inst *models.ProxmoxInstance, keyPEM st
 	clientConn, chans, reqs, err := gossh.NewClientConn(conn, addr, &gossh.ClientConfig{
 		User:            inst.SSHUser,
 		Auth:            []gossh.AuthMethod{gossh.PublicKeys(signer)},
-		HostKeyCallback: sshhostkey.Callback(inst.SSHHost, inst.SSHFingerprint, inst.InsecureSSH),
+		HostKeyCallback: sshhostkey.Callback(inst.SSHHost, inst.SSHFingerprints, inst.InsecureSSH),
 		Timeout:         sshCheckTimeout,
 	})
 	if err != nil {

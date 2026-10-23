@@ -56,7 +56,7 @@ func callNoAddr(cb gossh.HostKeyCallback, key gossh.PublicKey) error {
 // TestPinnedFingerprintMatches accepts the key whose fingerprint was pinned.
 func TestPinnedFingerprintMatches(t *testing.T) {
 	key := newHostKey(t)
-	cb := callbackWithResolver("pve", FingerprintSHA256(key), false, fakeResolver{})
+	cb := callbackWithResolver("pve", []string{FingerprintSHA256(key)}, false, fakeResolver{})
 	if err := callNoAddr(cb, key); err != nil {
 		t.Fatalf("pinned key should be accepted: %v", err)
 	}
@@ -66,7 +66,34 @@ func TestPinnedFingerprintMatches(t *testing.T) {
 func TestPinnedFingerprintMismatchIsRejected(t *testing.T) {
 	pinned := FingerprintSHA256(newHostKey(t))
 	other := newHostKey(t)
-	cb := callbackWithResolver("pve", pinned, false, fakeResolver{})
+	cb := callbackWithResolver("pve", []string{pinned}, false, fakeResolver{})
+	err := callNoAddr(cb, other)
+	if err == nil || !strings.Contains(err.Error(), "mismatch") {
+		t.Fatalf("expected a mismatch error, got: %v", err)
+	}
+}
+
+// TestPinnedFingerprintMatchesAnyOfSeveral accepts the presented key when it
+// matches ANY pinned fingerprint, not just the first -- the point of allowing
+// a list (a node answers with a different host key per algorithm).
+func TestPinnedFingerprintMatchesAnyOfSeveral(t *testing.T) {
+	other := FingerprintSHA256(newHostKey(t))
+	key := newHostKey(t)
+	// key's fingerprint is the SECOND entry; the first is some other key.
+	cb := callbackWithResolver("pve",
+		[]string{other, FingerprintSHA256(key)}, false, fakeResolver{})
+	if err := callNoAddr(cb, key); err != nil {
+		t.Fatalf("key matching the second pinned fingerprint should be accepted: %v", err)
+	}
+}
+
+// TestPinnedFingerprintsAllMismatch rejects a key that matches none of several
+// pins, and the error names them so the operator can see what was expected.
+func TestPinnedFingerprintsAllMismatch(t *testing.T) {
+	a := FingerprintSHA256(newHostKey(t))
+	b := FingerprintSHA256(newHostKey(t))
+	other := newHostKey(t)
+	cb := callbackWithResolver("pve", []string{a, b}, false, fakeResolver{})
 	err := callNoAddr(cb, other)
 	if err == nil || !strings.Contains(err.Error(), "mismatch") {
 		t.Fatalf("expected a mismatch error, got: %v", err)
@@ -78,7 +105,7 @@ func TestPinnedFingerprintMismatchIsRejected(t *testing.T) {
 func TestSSHFPMatchAccepts(t *testing.T) {
 	key := newHostKey(t)
 	res := fakeResolver{records: []*dns.SSHFP{sshfpRecordFor(key)}, authenticated: true}
-	cb := callbackWithResolver("pve", "", false, res)
+	cb := callbackWithResolver("pve", nil, false, res)
 	if err := callNoAddr(cb, key); err != nil {
 		t.Fatalf("matching SSHFP should be accepted: %v", err)
 	}
@@ -90,7 +117,7 @@ func TestSSHFPMismatchIsRejected(t *testing.T) {
 	published := newHostKey(t)
 	presented := newHostKey(t)
 	res := fakeResolver{records: []*dns.SSHFP{sshfpRecordFor(published)}, authenticated: true}
-	cb := callbackWithResolver("pve", "", false, res)
+	cb := callbackWithResolver("pve", nil, false, res)
 	err := callNoAddr(cb, presented)
 	var noFP *ErrNoFingerprint
 	if errors.As(err, &noFP) {
@@ -108,7 +135,7 @@ func TestUnauthenticatedSSHFPIsIgnoredByDefault(t *testing.T) {
 	t.Setenv(RequireDNSSECEnv, "") // default: require DNSSEC
 	key := newHostKey(t)
 	res := fakeResolver{records: []*dns.SSHFP{sshfpRecordFor(key)}, authenticated: false}
-	cb := callbackWithResolver("pve", "", false, res)
+	cb := callbackWithResolver("pve", nil, false, res)
 	err := callNoAddr(cb, key)
 	var noFP *ErrNoFingerprint
 	if !errors.As(err, &noFP) {
@@ -121,7 +148,7 @@ func TestUnauthenticatedSSHFPAcceptedWhenRelaxed(t *testing.T) {
 	t.Setenv(RequireDNSSECEnv, "0")
 	key := newHostKey(t)
 	res := fakeResolver{records: []*dns.SSHFP{sshfpRecordFor(key)}, authenticated: false}
-	cb := callbackWithResolver("pve", "", false, res)
+	cb := callbackWithResolver("pve", nil, false, res)
 	if err := callNoAddr(cb, key); err != nil {
 		t.Fatalf("with DNSSEC relaxed, a matching SSHFP should be accepted: %v", err)
 	}
@@ -131,7 +158,7 @@ func TestUnauthenticatedSSHFPAcceptedWhenRelaxed(t *testing.T) {
 // operator can pin it.
 func TestNoSSHFPPromptsForFingerprint(t *testing.T) {
 	key := newHostKey(t)
-	cb := callbackWithResolver("pve", "", false, fakeResolver{}) // no records
+	cb := callbackWithResolver("pve", nil, false, fakeResolver{}) // no records
 	err := callNoAddr(cb, key)
 	var noFP *ErrNoFingerprint
 	if !errors.As(err, &noFP) {
@@ -150,7 +177,7 @@ func TestNoSSHFPPromptsForFingerprint(t *testing.T) {
 func TestLookupErrorPromptsRatherThanFailing(t *testing.T) {
 	key := newHostKey(t)
 	res := fakeResolver{err: errors.New("i/o timeout")}
-	cb := callbackWithResolver("pve", "", false, res)
+	cb := callbackWithResolver("pve", nil, false, res)
 	err := callNoAddr(cb, key)
 	var noFP *ErrNoFingerprint
 	if !errors.As(err, &noFP) {
@@ -164,7 +191,7 @@ func TestInsecureAcceptsAnyKey(t *testing.T) {
 	// A resolver that would fail if consulted, to prove insecure short-circuits
 	// before any SSHFP lookup.
 	res := fakeResolver{err: errors.New("resolver must not be consulted")}
-	cb := callbackWithResolver("pve", "", true, res)
+	cb := callbackWithResolver("pve", nil, true, res)
 	if err := callNoAddr(cb, newHostKey(t)); err != nil {
 		t.Fatalf("insecure should accept any key: %v", err)
 	}

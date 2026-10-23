@@ -86,7 +86,7 @@ func TestAddInstanceRoundTrips(t *testing.T) {
 		SSHHost:          "pve.example",
 		SSHPort:          2222,
 		SSHUser:          "root",
-		SSHFingerprint:   "SHA256:abc",
+		SSHFingerprints:  []string{"SHA256:abc"},
 	}
 	resp, err := h.AddInstance(ctx, AddInstanceRequestObject{Body: &body})
 	if err != nil {
@@ -99,7 +99,7 @@ func TestAddInstanceRoundTrips(t *testing.T) {
 	if created.ID == 0 {
 		t.Fatal("AddInstance did not assign an id")
 	}
-	if created.SSHFingerprint != "SHA256:abc" || created.SSHPort != 2222 ||
+	if len(created.SSHFingerprints) != 1 || created.SSHFingerprints[0] != "SHA256:abc" || created.SSHPort != 2222 ||
 		!created.InsecureSSH || !created.InsecureTLS {
 		t.Errorf("AddInstance dropped a field: %+v", created)
 	}
