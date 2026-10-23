@@ -188,19 +188,26 @@ func (b *StatusBar) Start() {
 		return
 	}
 	b.active = true
-	// Install the scroll region and home the cursor into it.
+	// Clear the screen, install the scroll region, and home the cursor into
+	// it, so the console always begins on a clean screen at the top.
 	//
-	// This is the one place an explicit home is right, and it is not for the
-	// reason the comment here used to give (that DECSTBM might leave the
-	// cursor alone -- it never does; see reinstallRegion). It is because
-	// there is nothing to preserve yet: Start runs before the guest has
-	// produced any output, so no guest position exists to discard, and the
-	// session should begin at the top of the screen.
+	// The clear (ED, "\x1b[2J") matters because of what is on screen at
+	// attach. The session may have run the interactive picker first, whose
+	// alternate-screen exit restores the user's ORIGINAL main screen -- old
+	// scrollback and the cursor partway down (say row 80), not a blank one.
+	// Homing alone (what this used to do) leaves that content in place, and a
+	// quiet console -- a VM serial console (qm terminal) sends nothing until
+	// the guest prints a line -- then draws its first output over the stale
+	// screen at the wrong place. A termproxy console hides this because its
+	// backend repaints a full frame; the serial path does not, which is why it
+	// was "always" the serial connection. Clearing makes both start the same.
 	//
-	// Everywhere else the region changes mid-session, the guest does have a
+	// This is the one place an explicit home is right: Start runs before the
+	// guest has produced any output, so no guest position exists to discard.
+	// Everywhere else the region changes mid-session the guest does have a
 	// position and it must survive -- which is what reinstallRegion and
 	// releaseRegion are for.
-	b.write(fmt.Sprintf("\x1b[1;%dr\x1b[1;1H", b.guestRowsLocked()))
+	b.write(fmt.Sprintf("\x1b[2J\x1b[1;%dr\x1b[1;1H", b.guestRowsLocked()))
 	b.mu.Unlock()
 
 	b.request()

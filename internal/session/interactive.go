@@ -85,8 +85,10 @@ func (d *Deps) pickInteractive(rows []guestRow) (guestRow, error) {
 	}
 
 	// The alternate screen keeps the picker from scrolling the user's real
-	// scrollback away, and guarantees the guest console starts on a clean
-	// screen.
+	// scrollback away. On exit seqAltScreenOff restores the user's ORIGINAL
+	// main screen -- old content and cursor position, NOT a blank one -- so it
+	// does not by itself give the guest console a clean screen; the console
+	// attach clears it (see console.StatusBar.Start / clearScreenNoBar).
 	fmt.Fprint(out, seqAltScreenOn+seqHideCursor)
 	restore := func() { fmt.Fprint(out, seqShowCursor+seqAltScreenOff+seqReset) }
 

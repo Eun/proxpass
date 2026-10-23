@@ -129,6 +129,29 @@ func startBar(term *Terminal, label, hint string) (*StatusBar, io.Writer, int) {
 	return bar, &barWriter{bar: bar}, rows
 }
 
+// clearScreenNoBar clears the terminal and homes the cursor when a console is
+// attached WITHOUT a status bar.
+//
+// When a bar is drawn, StatusBar.Start already clears and homes (see there for
+// why that matters for a quiet serial console). But a bar may be absent --
+// PROXPASS_DISABLE_STATUSBAR, or a terminal too short to reserve a row -- and
+// then nothing would reset the screen, so a serial console's first output
+// would land wherever the cursor already was (e.g. row 80 after the picker's
+// alternate screen restored the user's old screen). This gives the no-bar case
+// the same clean start.
+//
+// It only writes to a raw terminal: on proxpass's own stdout in a pipe or a
+// test (not raw, or no Out) the escape sequence would just be noise, which is
+// the same condition barEligible already guards.
+func clearScreenNoBar(term *Terminal) {
+	if !term.Raw || term.Out == nil {
+		return
+	}
+	// ED (erase whole screen) then CUP home. Deliberately no scroll region:
+	// without a bar the guest may use every row.
+	_, _ = io.WriteString(term.Out, "\x1b[2J\x1b[H")
+}
+
 // barWriter forwards guest output unchanged while letting the bar watch it
 // for mode changes.
 //
