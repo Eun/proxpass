@@ -64,8 +64,8 @@ func instanceFromAPI(c *api.InstanceCredentials) *models.ProxmoxInstance {
 	if c.SSHUser != nil {
 		inst.SSHUser = *c.SSHUser
 	}
-	if c.SSHFingerprint != nil {
-		inst.SSHFingerprint = *c.SSHFingerprint
+	if c.SSHFingerprints != nil {
+		inst.SSHFingerprints = *c.SSHFingerprints
 	}
 	return inst
 }

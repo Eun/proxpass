@@ -80,10 +80,11 @@ stored one describes the host that was there before.`,
 				Usage: `SSH host — "host" or "host:port"`,
 			},
 			&ucli.StringFlag{Name: "ssh-user", Usage: "SSH username"},
-			&ucli.StringFlag{
+			&ucli.StringSliceFlag{
 				Name: "ssh-fingerprint",
-				Usage: `Pin the node's SSH host key as "SHA256:<base64>". ` +
-					`Pass "" to clear it and fall back to SSHFP.`,
+				Usage: `Pin the node's SSH host key(s) as "SHA256:<base64>". ` +
+					`Repeat to pin several (the host key must match any). ` +
+					`Pass a single "" to clear all pins and fall back to SSHFP.`,
 			},
 		},
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
@@ -179,16 +180,14 @@ func applyInstanceFlags(cmd *ucli.Command, inst *models.ProxmoxInstance) error {
 		inst.InsecureSSH = cmd.Bool(flagInsecureSSH)
 	}
 	if cmd.IsSet("ssh-fingerprint") {
-		fp := cmd.String("ssh-fingerprint")
-		if fp != "" {
-			normalized, err := sshhostkey.NormalizeFingerprint(fp)
-			if err != nil {
-				return err
-			}
-			fp = normalized
+		// NormalizeFingerprints drops blank entries, so passing a single ""
+		// (or only blanks) yields an empty list -- deliberately clearing all
+		// pins and falling back to SSHFP.
+		fps, err := sshhostkey.NormalizeFingerprints(cmd.StringSlice("ssh-fingerprint"))
+		if err != nil {
+			return err
 		}
-		// An empty value deliberately clears the pin, falling back to SSHFP.
-		inst.SSHFingerprint = fp
+		inst.SSHFingerprints = fps
 	}
 	if cmd.IsSet("console-transport") {
 		transport := models.ConsoleTransport(cmd.String("console-transport"))

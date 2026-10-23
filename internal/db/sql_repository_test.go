@@ -118,12 +118,12 @@ func TestProxmoxInstances(t *testing.T) {
 		APITokenSecret: testTokenSecret,
 		// Deliberately asymmetric: the two insecure flags are independent, so
 		// the round-trip must not conflate them.
-		InsecureTLS:    true,
-		InsecureSSH:    false,
-		SSHHost:        "pve1.local",
-		SSHPort:        22,
-		SSHUser:        "root",
-		SSHFingerprint: fingerprint,
+		InsecureTLS:     true,
+		InsecureSSH:     false,
+		SSHHost:         "pve1.local",
+		SSHPort:         22,
+		SSHUser:         "root",
+		SSHFingerprints: []string{fingerprint},
 	}
 	if err := repo.AddProxmoxInstance(ctx, inst); err != nil {
 		t.Fatal(err)
@@ -143,8 +143,20 @@ func TestProxmoxInstances(t *testing.T) {
 	if !list[0].InsecureTLS || list[0].InsecureSSH {
 		t.Errorf("insecure flags did not round-trip independently: %+v", list[0])
 	}
-	if list[0].SSHFingerprint != fingerprint {
-		t.Errorf("ssh fingerprint = %q, want %q", list[0].SSHFingerprint, fingerprint)
+	if len(list[0].SSHFingerprints) != 1 || list[0].SSHFingerprints[0] != fingerprint {
+		t.Errorf("ssh fingerprints = %q, want [%q]", list[0].SSHFingerprints, fingerprint)
+	}
+
+	// Pin several and confirm the list round-trips in order: the column stores
+	// them newline-joined, so this exercises the encode/decode path too.
+	inst.SSHFingerprints = []string{fingerprint, "SHA256:second", "SHA256:third"}
+	if err := repo.UpdateProxmoxInstance(ctx, inst); err != nil {
+		t.Fatal(err)
+	}
+	list, _ = repo.ListProxmoxInstances(ctx)
+	if got := list[0].SSHFingerprints; len(got) != 3 ||
+		got[0] != fingerprint || got[1] != "SHA256:second" || got[2] != "SHA256:third" {
+		t.Errorf("multiple fingerprints did not round-trip: %q", got)
 	}
 
 	inst.Name = "pve1-updated"
@@ -152,7 +164,7 @@ func TestProxmoxInstances(t *testing.T) {
 	// each column from its own field.
 	inst.InsecureTLS = false
 	inst.InsecureSSH = true
-	inst.SSHFingerprint = ""
+	inst.SSHFingerprints = nil
 	if err := repo.UpdateProxmoxInstance(ctx, inst); err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +173,7 @@ func TestProxmoxInstances(t *testing.T) {
 	if list[0].Name != "pve1-updated" {
 		t.Fatalf("update failed: %+v", list[0])
 	}
-	if list[0].InsecureTLS || !list[0].InsecureSSH || list[0].SSHFingerprint != "" {
+	if list[0].InsecureTLS || !list[0].InsecureSSH || len(list[0].SSHFingerprints) != 0 {
 		t.Errorf("update did not persist the flipped security fields: %+v", list[0])
 	}
 

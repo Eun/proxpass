@@ -133,17 +133,17 @@ function app() {
                                 // button that scans the host (ssh_host:ssh_port)
                                 // and lets the operator pick a presented key.
                                 {
-                                    key: 'ssh_fingerprint', label: 'SSH fingerprint', type: 'fingerprint',
-                                    help: 'Pin a host key that has no DNSSEC SSHFP. Fetch scans the host above; confirm the value out of band before saving.',
+                                    key: 'ssh_fingerprints', label: 'SSH fingerprints', type: 'fingerprints',
+                                    help: 'Pin one or more host keys that have no DNSSEC SSHFP; the node must present any one of them. Fetch scans the host above and lets you tick the keys to pin; confirm them out of band before saving.',
                                     hideWhen: (d) => !!d.insecure_ssh,
                                 },
                             ],
                         },
                     ],
-                    defaults: { console_transport: 'termproxy', ssh_port: 22, insecure_tls: false, insecure_ssh: false },
+                    defaults: { console_transport: 'termproxy', ssh_port: 22, insecure_tls: false, insecure_ssh: false, ssh_fingerprints: [] },
                     numeric: ['ssh_port'],
                     // Fields dropped from the request under a condition.
-                    omitWhen: { ssh_fingerprint: (d) => !!d.insecure_ssh },
+                    omitWhen: { ssh_fingerprints: (d) => !!d.insecure_ssh },
                 },
                 guests: {
                     singular: 'guest', path: '/guests',
@@ -420,7 +420,7 @@ function app() {
         async openCreate() {
             const r = this.currentResource();
             await this.loadModalOptions(r);
-            this.scannedFingerprints = [];
+            this.scannedFingerprints = []; this.fingerprintInput = '';
             this.modal = { open: true, mode: 'create', step: 0, data: { ...(r.defaults || {}) } };
         },
         async openEdit(row) {
@@ -435,7 +435,10 @@ function app() {
                 }
             }
             this.modalFields(r).forEach((f) => {
-                if (f.type === 'multiselect') data[f.key] = [...(row[f.key] || [])];
+                // Array-valued fields are copied so edits do not mutate the row.
+                if (f.type === 'multiselect' || f.type === 'fingerprints') {
+                    data[f.key] = [...(row[f.key] || [])];
+                }
             });
             this.modal = { open: true, mode: 'edit', step: 0, data };
         },
@@ -575,9 +578,41 @@ function app() {
 
         // Scanned SSH host-key fingerprints for the add-node form, and whether
         // a scan is in flight. fetchFingerprints populates this from the host
-        // the operator entered.
+        // the operator entered. fingerprintInput backs the manual "add a
+        // fingerprint" text box.
         scannedFingerprints: [],
         scanning: false,
+        fingerprintInput: '',
+
+        // --- SSH fingerprint pin management (the 'fingerprints' field) ---
+        // The field value is an array of "SHA256:<base64>" strings; the node's
+        // host key must match any one. These helpers keep that array in sync
+        // with the scan checkboxes and the manual add box.
+        pinnedFingerprints(fieldKey) { return this.modal.data[fieldKey] || []; },
+        fingerprintPinned(fieldKey, fp) { return this.pinnedFingerprints(fieldKey).includes(fp); },
+        toggleFingerprint(fieldKey, fp) {
+            const arr = [...this.pinnedFingerprints(fieldKey)];
+            const i = arr.indexOf(fp);
+            if (i === -1) arr.push(fp); else arr.splice(i, 1);
+            this.modal.data[fieldKey] = arr;
+        },
+        removeFingerprint(fieldKey, fp) {
+            this.modal.data[fieldKey] = this.pinnedFingerprints(fieldKey).filter((x) => x !== fp);
+        },
+        // addManualFingerprint pins a hand-typed value. It is lenient about the
+        // exact casing but requires the "SHA256:" form the backend validates.
+        addManualFingerprint(fieldKey) {
+            const fp = (this.fingerprintInput || '').trim();
+            if (!fp) return;
+            if (!fp.startsWith('SHA256:')) {
+                this.error = 'A fingerprint must be in the "SHA256:<base64>" form ssh-keyscan prints.';
+                return;
+            }
+            if (!this.fingerprintPinned(fieldKey, fp)) {
+                this.modal.data[fieldKey] = [...this.pinnedFingerprints(fieldKey), fp];
+            }
+            this.fingerprintInput = '';
+        },
 
         // fetchFingerprints scans the SSH host/port in the form and offers the
         // presented host keys for the operator to pick from. It does not pick
@@ -593,7 +628,7 @@ function app() {
                 if (this.scannedFingerprints.length === 0) {
                     this.error = 'The host presented no SSH host keys.';
                 } else {
-                    this.ok('Fetched ' + this.scannedFingerprints.length + ' host key(s). Pick one and confirm it out of band.');
+                    this.ok('Fetched ' + this.scannedFingerprints.length + ' host key(s). Tick the ones to pin and confirm them out of band.');
                 }
             } catch (e) {
                 // A 502 carries the reason (unreachable, timeout); show it.

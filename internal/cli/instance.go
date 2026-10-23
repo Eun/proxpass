@@ -70,13 +70,14 @@ func instanceCmd(deps *Deps) *ucli.Command { //nolint:gocognit,funlen // CLI com
 						Usage: "Shorthand for both --insecure-tls and --insecure-ssh:" +
 							" skip all verification for this instance.",
 					},
-					&ucli.StringFlag{
+					&ucli.StringSliceFlag{
 						Name: "ssh-fingerprint",
 						Usage: "Pin the node's SSH host key as \"SHA256:<base64>\"" +
-							" (the form ssh-keyscan prints). When omitted the host" +
-							" key is verified against DNSSEC-validated SSHFP records;" +
-							" if none exist the add fails and prints the fingerprint" +
-							" to pin here.",
+							" (the form ssh-keyscan prints). Repeat the flag to pin" +
+							" several; the host key must match any one of them. When" +
+							" omitted the host key is verified against DNSSEC-validated" +
+							" SSHFP records; if none exist the add fails and prints the" +
+							" fingerprint to pin here.",
 					},
 					&ucli.StringFlag{
 						Name:  "console-transport",
@@ -241,7 +242,7 @@ func configuredSSH(inst *models.ProxmoxInstance) string {
 	switch {
 	case inst.InsecureSSH:
 		verify = statusInsecure
-	case inst.SSHFingerprint != "":
+	case len(inst.SSHFingerprints) > 0:
 		verify = "pinned"
 	default:
 		verify = "sshfp"
@@ -271,7 +272,7 @@ func inspectInstance(ctx context.Context, deps *Deps, inst *models.ProxmoxInstan
 	fmt.Fprintf(deps.Out, "SSH Host:         %s\n", inst.SSHHost)
 	fmt.Fprintf(deps.Out, "SSH Port:         %d\n", inst.SSHPort)
 	fmt.Fprintf(deps.Out, "SSH User:         %s\n", inst.SSHUser)
-	fmt.Fprintf(deps.Out, "SSH Host Key:     %s\n", sshHostKeyStatus(inst.InsecureSSH, inst.SSHFingerprint))
+	fmt.Fprintf(deps.Out, "SSH Host Key:     %s\n", sshHostKeyStatus(inst.InsecureSSH, inst.SSHFingerprints))
 	reportSSHKey(ctx, deps, inst)
 }
 
@@ -338,14 +339,14 @@ func tlsStatus(insecure bool) string {
 // sshHostKeyStatus renders how an instance's SSH host key is verified for
 // display: insecure (not verified), a pinned fingerprint, or the SSHFP
 // fallback when none is pinned.
-func sshHostKeyStatus(insecure bool, fingerprint string) string {
+func sshHostKeyStatus(insecure bool, fingerprints []string) string {
 	if insecure {
 		return "insecure (host-key verification disabled)"
 	}
-	if fingerprint == "" {
+	if len(fingerprints) == 0 {
 		return "(none pinned; verified via DNS SSHFP)"
 	}
-	return fingerprint
+	return strings.Join(fingerprints, ", ")
 }
 
 // addInstance adds the Proxmox instance described by the "instance add" flags.
@@ -373,12 +374,9 @@ func addInstance(
 	// Validated here so a malformed value is rejected before anything is
 	// stored. When empty, the host key is verified against DNSSEC-validated
 	// SSHFP records instead.
-	var sshFingerprint string
-	if fp := cmd.String("ssh-fingerprint"); fp != "" {
-		sshFingerprint, err = sshhostkey.NormalizeFingerprint(fp)
-		if err != nil {
-			return err
-		}
+	sshFingerprints, err := sshhostkey.NormalizeFingerprints(cmd.StringSlice("ssh-fingerprint"))
+	if err != nil {
+		return err
 	}
 
 	// Resolve the node name from the API.
@@ -413,12 +411,12 @@ func addInstance(
 		Node:             nodeName,
 		// --insecure is shorthand for both; --insecure-tls / --insecure-ssh
 		// toggle each independently.
-		InsecureTLS:    cmd.Bool(flagInsecure) || cmd.Bool(flagInsecureTLS),
-		InsecureSSH:    cmd.Bool(flagInsecure) || cmd.Bool(flagInsecureSSH),
-		SSHHost:        sshHost,
-		SSHPort:        sshPort,
-		SSHUser:        cmd.String("ssh-user"),
-		SSHFingerprint: sshFingerprint,
+		InsecureTLS:     cmd.Bool(flagInsecure) || cmd.Bool(flagInsecureTLS),
+		InsecureSSH:     cmd.Bool(flagInsecure) || cmd.Bool(flagInsecureSSH),
+		SSHHost:         sshHost,
+		SSHPort:         sshPort,
+		SSHUser:         cmd.String("ssh-user"),
+		SSHFingerprints: sshFingerprints,
 	}
 
 	// Check that the key actually opens the host BEFORE storing anything,

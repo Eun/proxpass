@@ -33,7 +33,7 @@ func toAPIInstance(inst *models.ProxmoxInstance) api.ProxmoxInstance {
 		SSHHost:          inst.SSHHost,
 		SSHPort:          inst.SSHPort,
 		SSHUser:          inst.SSHUser,
-		SSHFingerprint:   inst.SSHFingerprint,
+		SSHFingerprints:  inst.SSHFingerprints,
 	}
 }
 
@@ -51,7 +51,7 @@ func fromAPIInstance(in *api.ProxmoxInstance) *models.ProxmoxInstance {
 		SSHHost:          in.SSHHost,
 		SSHPort:          in.SSHPort,
 		SSHUser:          in.SSHUser,
-		SSHFingerprint:   in.SSHFingerprint,
+		SSHFingerprints:  in.SSHFingerprints,
 	}
 }
 

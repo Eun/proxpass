@@ -88,6 +88,6 @@ func nodeInstance(host string, port int, user, fingerprint string) *models.Proxm
 	return &models.ProxmoxInstance{
 		Name: "test-node", Node: "test-node",
 		SSHHost: host, SSHPort: port, SSHUser: user,
-		SSHFingerprint: fingerprint,
+		SSHFingerprints: []string{fingerprint},
 	}
 }
