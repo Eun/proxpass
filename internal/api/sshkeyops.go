@@ -38,25 +38,38 @@ type sshPublicKeyResult struct {
 	Path string `json:"path"`
 }
 
-// getSSHPublicKey reads the deployment key as root and returns its public half.
+// readPublicKey reads the deployment key as root and returns its public half
+// and the key file's path.
 //
 // A missing key is not an error: ReadSSHKey already treats an absent file as
-// "no key", and the CLI decides what to say about that. The private key is
-// never returned -- only the authorized_keys line the administrator installs.
-func getSSHPublicKey(context.Context, json.RawMessage) (json.RawMessage, error) {
+// "no key", and the empty key is reported as-is. The private key is never
+// returned -- only the authorized_keys line the administrator installs.
+//
+// Shared by the /admin/rpc op (getSSHPublicKey) and the typed /v1 handler
+// (GetSSHPublicKey) so both read the key through one path. Both run in the
+// root `proxpass serve' process, which is the only process that can open the
+// root-owned key file.
+func readPublicKey() (key, path string, err error) {
 	pem, err := models.ReadSSHKey()
+	if err != nil {
+		return "", "", err
+	}
+	path = models.SSHKeyPath()
+	if pem != "" {
+		if key, err = publicKeyLine(pem); err != nil {
+			return "", "", err
+		}
+	}
+	return key, path, nil
+}
+
+// getSSHPublicKey reads the deployment key as root and returns its public half.
+func getSSHPublicKey(context.Context, json.RawMessage) (json.RawMessage, error) {
+	key, path, err := readPublicKey()
 	if err != nil {
 		return nil, err
 	}
-	out := sshPublicKeyResult{Path: models.SSHKeyPath()}
-	if pem != "" {
-		pub, err := publicKeyLine(pem)
-		if err != nil {
-			return nil, err
-		}
-		out.Key = pub
-	}
-	return encodeResult(out)
+	return encodeResult(sshPublicKeyResult{Key: key, Path: path})
 }
 
 // sshAccessResult reports whether the deployment key opens a session on an

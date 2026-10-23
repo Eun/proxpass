@@ -48,11 +48,10 @@ function app() {
         // keyHint backs the post-add "install proxpass's SSH key" dialog. It is
         // shown only when a node was added with the SSH console transport, since
         // only then does proxpass need to log in over SSH. message explains why;
-        // publicKey is the authorized_keys line to install (empty when it could
-        // not be fetched, e.g. logged in with the static REST token rather than
-        // an admin session); path is where the key lives on the server, shown as
-        // a fallback so the operator can still retrieve it.
-        keyHint: { open: false, host: '', user: '', sshConsole: false, message: '', publicKey: '', path: '' },
+        // publicKey is the authorized_keys line to install (empty when the
+        // deployment has no key yet, or when it could not be fetched). The key
+        // file's path on the server is deliberately not exposed to the UI.
+        keyHint: { open: false, host: '', user: '', sshConsole: false, message: '', publicKey: '' },
 
         // policy + discovery view state. policyForm holds arrays of selected
         // client/group IDs; the clients/groups lists to pick from come from
@@ -519,38 +518,32 @@ function app() {
 
         // showSSHKeyHint opens the post-add dialog telling the operator to add
         // proxpass's SSH public key to the new node. It fetches the key over
-        // /admin/rpc (GetSSHPublicKey). That endpoint needs an admin SESSION, so
-        // when the UI was signed in with the static REST token the fetch 403s;
-        // we still show the hint and the key's path on the server so the key can
-        // be retrieved out of band, rather than hiding the instruction entirely.
+        // GET /v1/proxpass-ssh-public-key, which is behind the same REST API
+        // token the UI already signed in with -- so the actual key always
+        // displays. The key is read server-side in the root serve process; the
+        // private half never leaves the server and the key file's path is not
+        // exposed. An empty key means the deployment has no SSH key yet.
         async showSSHKeyHint(d) {
             const host = (d.ssh_host || '').trim();
             const user = (d.ssh_user || 'root').trim() || 'root';
             const sshConsole = d.console_transport === 'ssh';
             let publicKey = '';
-            let path = '';
             let message = '';
             try {
-                const res = await this.rpc('GetSSHPublicKey');
+                const res = await this.request('GET', '/proxpass-ssh-public-key');
                 publicKey = (res && res.key) || '';
-                path = (res && res.path) || '';
                 if (!publicKey) {
-                    message = 'This deployment has no SSH key yet (' + (path || 'none on disk') +
-                        '). proxpass cannot log in over SSH until a key exists and its public half is installed on the node.';
+                    message = 'This deployment has no SSH key yet. proxpass cannot log in over SSH ' +
+                        'until a key exists and its public half is installed on the node.';
                 }
             } catch (e) {
-                // Most commonly a 403: signed in with the static REST token, not
-                // an admin session, so /admin/rpc is refused. Degrade to the
-                // instruction without the live key.
-                message = e.isAuth
-                    ? 'Sign in with an admin SSH session to display the key here, or read it on the server (see the path below).'
-                    : ('Could not fetch the key: ' + e.message);
+                message = 'Could not fetch the key: ' + e.message;
             }
-            this.keyHint = { open: true, host, user, sshConsole, message, publicKey, path };
+            this.keyHint = { open: true, host, user, sshConsole, message, publicKey };
         },
-        closeKeyHint() { this.keyHint = { open: false, host: '', user: '', sshConsole: false, message: '', publicKey: '', path: '' }; },
+        closeKeyHint() { this.keyHint = { open: false, host: '', user: '', sshConsole: false, message: '', publicKey: '' }; },
         async copyKeyHint() {
-            const text = this.keyHint.publicKey || this.keyHint.path;
+            const text = this.keyHint.publicKey;
             if (!text) return;
             try { await navigator.clipboard.writeText(text); this.ok('Copied to clipboard.'); }
             catch (_) { /* clipboard may be unavailable over plain HTTP; the key is selectable in the dialog */ }

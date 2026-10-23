@@ -1303,6 +1303,37 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/proxpass-ssh-public-key:
+    get:
+      tags: [admin]
+      summary: proxpass's SSH public key.
+      description: |
+        Returns the public half of the deployment's SSH key -- the
+        authorized_keys line the administrator installs on each Proxmox host
+        so proxpass can log in over SSH. The private key never leaves the
+        server, and the key file's location on the server is not exposed.
+
+        key is empty when the deployment has no SSH key yet (a termproxy-only
+        setup that never logs in over SSH). The admin UI calls this after a
+        node is added so the "finish SSH setup" dialog can show the exact key
+        to install, without the operator needing an admin SSH session.
+      operationId: getProxpassSSHPublicKey
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: The public key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SSHPublicKey"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /v1/ssh-fingerprints:
     post:
       tags: [admin]
@@ -1997,6 +2028,19 @@ components:
         version:
           type: string
           description: The release tag, module version, or "dev".
+
+    SSHPublicKey:
+      type: object
+      description: |
+        The public half of proxpass's deployment SSH key. The private key is
+        never returned, and the key file's path on the server is not exposed.
+      required: [key]
+      properties:
+        key:
+          type: string
+          description: |
+            The authorized_keys line to install on each Proxmox host, or ""
+            when the deployment has no SSH key yet.
 
     SSHFingerprintScan:
       type: object

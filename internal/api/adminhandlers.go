@@ -960,6 +960,37 @@ func (h *SessionHandler) GetVersion(
 	return GetVersion200JSONResponse(Version{Version: v}), nil
 }
 
+// GetProxpassSSHPublicKey returns proxpass's SSH public key.
+//
+// The typed /v1 counterpart of the /admin/rpc GetSSHPublicKey op: it reads the
+// same key, but behind gateAdmin it accepts the static REST API token, not
+// only an admin session. The admin UI signs in with that token, so this is how
+// the "finish SSH setup" dialog shows the exact key to install without the
+// operator needing an admin session. The private key never leaves the server,
+// and the key file's path on the server is not exposed -- only the public
+// authorized_keys line is returned.
+func (h *SessionHandler) GetProxpassSSHPublicKey(
+	ctx context.Context, _ GetProxpassSSHPublicKeyRequestObject,
+) (GetProxpassSSHPublicKeyResponseObject, error) {
+	if denied, ok, err := gateAdmin(ctx, h,
+		func(reason string) GetProxpassSSHPublicKeyResponseObject {
+			return GetProxpassSSHPublicKey401JSONResponse{UnauthorizedJSONResponse{Error: reason}}
+		},
+		func() GetProxpassSSHPublicKeyResponseObject {
+			return GetProxpassSSHPublicKey403JSONResponse{ForbiddenJSONResponse{Error: errNotAdminAPI.Error()}}
+		},
+	); !ok {
+		return denied, err
+	}
+	// The key file's path is deliberately dropped here: the /v1 response
+	// exposes only the public key, not where it lives on the server.
+	key, _, err := readPublicKey()
+	if err != nil {
+		return nil, err
+	}
+	return GetProxpassSSHPublicKey200JSONResponse(SSHPublicKey{Key: key}), nil
+}
+
 // --- Settings ---
 
 // ListSettings returns the effective serve configuration, read-only, with
