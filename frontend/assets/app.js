@@ -108,7 +108,7 @@ function app() {
                             fields: [
                                 { key: 'name', label: 'Name', required: true, help: 'A label for this node, e.g. its hostname.' },
                                 { key: 'api_url', label: 'API URL', required: true, placeholder: 'https://pve:8006', help: 'The Proxmox API endpoint proxpass connects to.' },
-                                { key: 'api_token_id', label: 'API token ID', required: true, placeholder: 'user@pam!token', help: 'Create a token in Proxmox under Datacenter → Permissions → API Tokens.' },
+                                { key: 'api_token_id', label: 'API token ID', required: true, placeholder: 'user@pam!token', help: 'Create a token in Proxmox under Datacenter → Permissions → API Tokens. Uncheck “Privilege Separation” so the token inherits the user’s permissions — otherwise proxpass cannot list guests or open consoles.' },
                                 { key: 'api_token_secret', label: 'API token secret', type: 'password', required: true, help: 'The secret shown once when the token was created. Used to list guests and open consoles.' },
                                 { key: 'insecure_tls', label: 'Skip TLS verification', type: 'switch', help: 'Enable only if the API serves a self-signed certificate you cannot trust otherwise.' },
                             ],

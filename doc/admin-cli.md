@@ -15,6 +15,11 @@ ssh -p 2222 admin@proxpass instance ls
 
 # Add a single instance (termproxy console — the default)
 #
+# Create the token in Proxmox under Datacenter → Permissions → API Tokens and
+# UNCHECK "Privilege Separation" so it inherits the user's permissions —
+# otherwise the token has no rights of its own and proxpass cannot list guests
+# or open consoles.
+#
 # Note the SINGLE quotes around --token-id: a Proxmox API token id contains a
 # "!" (e.g. user@pam!token), and inside double quotes an interactive bash
 # triggers history expansion on it, mangling the value. Single quotes pass it

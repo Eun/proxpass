@@ -74,7 +74,9 @@ In the UI, go to **Proxmox Nodes → New** and fill in:
 
 - the **API URL** (e.g. `https://pve:8006`),
 - an **API token ID** and **secret** — create one in Proxmox under
-  *Datacenter → Permissions → API Tokens*.
+  *Datacenter → Permissions → API Tokens*. Uncheck **Privilege Separation**
+  so the token inherits the user's permissions; otherwise it has no rights of
+  its own and proxpass cannot list guests or open consoles.
 
 The node must be reachable: proxpass calls the API to learn the node name and
 to list guests. Once added, proxpass discovers the running guests and keeps the
