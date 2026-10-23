@@ -302,6 +302,46 @@ func TestStatusBarReservesExactlyOneRow(t *testing.T) {
 	}
 }
 
+// Start must clear the screen (ED) and home before the region, so a console
+// attached over a dirty main screen -- the picker's alternate-screen exit
+// restores the user's old screen with the cursor partway down -- begins clean.
+// Without this, a quiet serial console (qm terminal) draws its first line at
+// the stale cursor row.
+func TestStatusBarStartClearsTheScreen(t *testing.T) {
+	buf := &lockedBuffer{}
+	b := NewStatusBar(buf, 80, 24)
+	b.Start()
+	defer b.Stop()
+	out := buf.String()
+	if !strings.Contains(out, "\x1b[2J") {
+		t.Errorf("Start did not clear the screen (no ED): %q", out)
+	}
+	// The clear must come before the scroll region, or it would erase the
+	// region's effect / the homed position.
+	clearAt := strings.Index(out, "\x1b[2J")
+	region := strings.Index(out, "\x1b[1;23r")
+	if clearAt == -1 || region == -1 || clearAt > region {
+		t.Errorf("clear must precede the scroll region: clear=%d region=%d in %q", clearAt, region, out)
+	}
+}
+
+// clearScreenNoBar clears a raw terminal (the no-bar path: PROXPASS_DISABLE_STATUSBAR
+// or a too-short terminal) so a serial console still starts on a clean screen,
+// but stays silent on a non-raw terminal where the escape would be noise.
+func TestClearScreenNoBar(t *testing.T) {
+	raw := &lockedBuffer{}
+	clearScreenNoBar(&Terminal{Out: raw, Raw: true, Width: 80, Height: 24})
+	if got := raw.String(); !strings.Contains(got, "\x1b[2J") || !strings.Contains(got, "\x1b[H") {
+		t.Errorf("raw terminal was not cleared/homed: %q", got)
+	}
+
+	notRaw := &lockedBuffer{}
+	clearScreenNoBar(&Terminal{Out: notRaw, Raw: false, Width: 80, Height: 24})
+	if got := notRaw.String(); got != "" {
+		t.Errorf("non-raw terminal must not receive escapes, got %q", got)
+	}
+}
+
 // Stop must reset the scroll region, or the user's shell is left with a
 // restricted scrolling area after disconnecting.
 func TestStatusBarStopResetsScrollRegion(t *testing.T) {

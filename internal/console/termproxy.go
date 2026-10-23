@@ -142,6 +142,9 @@ func connectTermProxy(
 	bar, guestOut, guestRows := startBar(term, label, EscapeHint)
 	if bar != nil {
 		defer bar.Stop()
+	} else {
+		// Parity with the ssh path: clear the screen when no bar does it for us.
+		clearScreenNoBar(term)
 	}
 	if err := conn.Write(ctx, websocket.MessageBinary,
 		[]byte(fmt.Sprintf("1:%d:%d:", term.Width, guestRows))); err != nil {

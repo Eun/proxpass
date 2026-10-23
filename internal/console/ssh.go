@@ -126,6 +126,11 @@ func runSSHConsole(
 	bar, guestOut, guestRows := startBar(term, label, EscapeHint)
 	if bar != nil {
 		defer bar.Stop()
+	} else {
+		// No bar clears the screen for us, so do it here -- otherwise a
+		// quiet serial console draws its first line at the cursor's current
+		// row (e.g. row 80). See clearScreenNoBar.
+		clearScreenNoBar(term)
 	}
 	// Under a PTY, stderr and stdout are the same device. With a bar, stderr
 	// has to take the same write lock as everything else; without one there
