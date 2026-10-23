@@ -638,8 +638,8 @@
                                 <pre class="bg-gray-50 border rounded p-3 text-xs overflow-x-auto whitespace-pre-wrap break-all select-all" x-text="keyHint.publicKey"></pre>
                                 <p class="text-xs text-gray-500 mt-2">Install it on the node. On a cluster, append it to the replicated file so every node gets it:</p>
                                 <pre class="bg-gray-50 border rounded p-3 text-xs overflow-x-auto whitespace-pre-wrap break-all select-all" x-text="'echo ' + JSON.stringify(keyHint.publicKey) + ' >> /etc/pve/priv/authorized_keys'"></pre>
-                                <p class="text-xs text-gray-500 mt-2">Standalone node (no cluster):</p>
-                                <pre class="bg-gray-50 border rounded p-3 text-xs overflow-x-auto whitespace-pre-wrap break-all select-all" x-text="'ssh-copy-id -f ' + keyHint.user + '@' + keyHint.host + '   # or append the key to ~/.ssh/authorized_keys'"></pre>
+                                <p class="text-xs text-gray-500 mt-2">Standalone node (no cluster) — run on the node as <span x-text="keyHint.user"></span>:</p>
+                                <pre class="bg-gray-50 border rounded p-3 text-xs overflow-x-auto whitespace-pre-wrap break-all select-all" x-text="'mkdir -p ~/.ssh && echo ' + JSON.stringify(keyHint.publicKey) + ' >> ~/.ssh/authorized_keys'"></pre>
                             </div>
                         </div>
                         <div class="flex justify-end gap-3 p-4 border-t">
