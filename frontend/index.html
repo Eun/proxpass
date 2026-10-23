@@ -321,7 +321,6 @@
                                                     :checked="policyForm.clients.includes(c.id)"
                                                     @change="togglePolicy('clients', c.id)">
                                                 <span class="text-sm" x-text="c.name"></span>
-                                                <span class="text-xs text-gray-400 ml-2" x-text="'#' + c.id"></span>
                                             </label>
                                         </template>
                                     </div>
@@ -338,7 +337,6 @@
                                                     :checked="policyForm.groups.includes(g.id)"
                                                     @change="togglePolicy('groups', g.id)">
                                                 <span class="text-sm" x-text="g.name"></span>
-                                                <span class="text-xs text-gray-400 ml-2" x-text="'#' + g.id"></span>
                                             </label>
                                         </template>
                                     </div>
@@ -450,6 +448,17 @@
                                             </template>
                                         </select>
                                     </template>
+                                    <!-- nameselect: pick an object by NAME; the field stores its id.
+                                         Options come from a cache (nameSelectOptions), which may depend
+                                         on another field (e.g. the access subject switches clients/groups). -->
+                                    <template x-if="field.type === 'nameselect'">
+                                        <select x-model.number="modal.data[field.key]" class="form-select w-full rounded border-gray-300">
+                                            <option value="" x-text="'Select a ' + field.label.toLowerCase() + '…'"></option>
+                                            <template x-for="opt in nameSelectOptions(field)" :key="opt.id">
+                                                <option :value="opt.id" x-text="opt.name"></option>
+                                            </template>
+                                        </select>
+                                    </template>
                                     <template x-if="field.type === 'checkbox'">
                                         <input type="checkbox" x-model="modal.data[field.key]" class="form-checkbox rounded border-gray-300 text-primary focus:ring-primary">
                                     </template>
@@ -490,7 +499,6 @@
                                                         @change="toggleMulti(field.key, opt.id)"
                                                     >
                                                     <span class="text-sm" x-text="opt.name"></span>
-                                                    <span class="text-xs text-gray-400 ml-2" x-text="'#' + opt.id"></span>
                                                 </label>
                                             </template>
                                         </div>

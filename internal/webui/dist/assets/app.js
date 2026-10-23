@@ -89,7 +89,6 @@ function app() {
                     singular: 'Proxmox Node', path: '/instances',
                     create: true, edit: true, remove: true,
                     columns: [
-                        { key: 'id', label: 'ID' },
                         { key: 'name', label: 'Name' },
                         { key: 'api_url', label: 'API URL' },
                         { key: 'node', label: 'Node' },
@@ -148,23 +147,26 @@ function app() {
                 },
                 guests: {
                     singular: 'guest', path: '/guests',
+                    // The Instance column renders the node NAME, so the instances
+                    // cache must be present.
+                    needsCaches: ['instances'],
                     columns: [
-                        { key: 'id', label: 'ID' },
                         { key: 'type', label: 'Type' },
                         { key: 'name', label: 'Name' },
                         { key: 'proxmox_id', label: 'VMID' },
                         { key: 'status', label: 'Status', render: (v) => badge(v, v === 'running' ? 'green' : 'gray') },
-                        { key: 'instance_id', label: 'Instance', render: (v) => self.instanceName(v) },
+                        { key: 'instance_id', label: 'Node', render: (v) => self.instanceName(v) },
                     ],
                 },
                 clients: {
                     singular: 'client', path: '/clients',
                     create: true, edit: true, remove: true,
+                    // The Groups column renders group NAMES.
+                    needsCaches: ['groups'],
                     columns: [
-                        { key: 'id', label: 'ID' },
                         { key: 'name', label: 'Name' },
                         { key: 'public_keys', label: 'Keys', render: (v) => (v || []).length + ' key(s)' },
-                        { key: 'group_ids', label: 'Groups', render: (v) => (v || []).join(', ') || '—' },
+                        { key: 'group_ids', label: 'Groups', render: (v) => self.namesFromList('groups', v) },
                     ],
                     fields: [
                         { key: 'name', label: 'Name', required: true },
@@ -178,10 +180,11 @@ function app() {
                 groups: {
                     singular: 'group', path: '/groups',
                     create: true, edit: true, remove: true,
+                    // The Members column renders client NAMES.
+                    needsCaches: ['clients'],
                     columns: [
-                        { key: 'id', label: 'ID' },
                         { key: 'name', label: 'Name' },
-                        { key: 'client_ids', label: 'Members', render: (v) => (v || []).join(', ') || '—' },
+                        { key: 'client_ids', label: 'Members', render: (v) => self.namesFromList('clients', v) },
                     ],
                     fields: [
                         { key: 'name', label: 'Name', required: true },
@@ -295,6 +298,11 @@ function app() {
             const r = this.resources[id];
             this.loading = true; this.rows = [];
             try {
+                // Load any referenced caches first so columns that render FK
+                // names (e.g. a client's groups, a guest's node) resolve to
+                // names rather than ids. needsCaches lists the other resources
+                // whose names this table shows.
+                if (r.needsCaches) await this.ensureCaches(...r.needsCaches);
                 let data = await this.request('GET', r.path);
                 if (r.unwrap) data = r.unwrap(data);
                 this.rows = Array.isArray(data) ? data : [];
@@ -349,15 +357,43 @@ function app() {
         },
 
         // ---- helpers for cross-resource display ----
-        async ensureInstances() {
-            if (!this.cache.instances) {
-                try { this.cache.instances = await this.request('GET', '/instances') || []; }
-                catch (e) { this.fail(e); }
-            }
+        // The UI shows object NAMES, never raw numeric ids. The *Name helpers
+        // resolve an id against the matching cache (loaded by ensureCaches);
+        // tables and dialogs reference names only. A yet-unloaded cache falls
+        // back to a neutral placeholder rather than leaking the id.
+        async ensureInstances() { await this.ensureCaches('instances'); },
+        // ensureCaches loads any of the named list caches that are not present
+        // yet, in parallel. Views that display cross-resource names (access
+        // rules, client/group membership, guests) call this before rendering so
+        // the *Name helpers can resolve. Mirrors loadPolicy/loadDashboard.
+        async ensureCaches(...names) {
+            const missing = names.filter((n) => !this.cache[n]);
+            if (missing.length === 0) return;
+            try {
+                const lists = await Promise.all(
+                    missing.map((n) => this.request('GET', '/' + n)));
+                missing.forEach((n, i) => { this.cache[n] = lists[i] || []; });
+            } catch (e) { this.fail(e); }
         },
-        instanceName(id) {
-            const inst = (this.cache.instances || []).find((i) => i.id === id);
-            return inst ? esc(inst.name) : ('#' + id);
+        // nameFrom resolves an id to its object's name within a named cache.
+        nameFrom(cacheKey, id) {
+            const row = (this.cache[cacheKey] || []).find((x) => x.id === id);
+            return row ? esc(row.name) : '—';
+        },
+        instanceName(id) { return this.nameFrom('instances', id); },
+        clientName(id) { return this.nameFrom('clients', id); },
+        groupName(id) { return this.nameFrom('groups', id); },
+        guestName(id) { return this.nameFrom('guests', id); },
+        // subjectName resolves an access-rule subject, whose cache depends on the
+        // rule's type (client vs group).
+        subjectName(type, id) {
+            return type === 'group' ? this.groupName(id) : this.clientName(id);
+        },
+        // namesFromList renders an id array as a comma-separated list of names
+        // (used for client.group_ids and group.client_ids table columns).
+        namesFromList(cacheKey, ids) {
+            if (!ids || ids.length === 0) return '—';
+            return ids.map((id) => this.nameFrom(cacheKey, id)).join(', ');
         },
 
         // ---- filtering / rendering ----
@@ -591,9 +627,18 @@ function app() {
 
             // Access rules: POST grant with {subject, *_ids}
             if (r.access) {
+                // The subject and target are name-selects; require a real pick
+                // rather than silently granting against id 0 when left blank.
+                const subjectId = Number(d.subject_id);
+                const targetId = Number(d.target_id);
+                if (!subjectId || !targetId) {
+                    this.error = 'Pick both a subject and a ' +
+                        (this.accessKind === 'guest' ? 'guest' : 'node') + '.';
+                    return;
+                }
                 const targetIds = this.accessKind === 'guest'
-                    ? { guest_ids: [Number(d.target_id)] }
-                    : { instance_ids: [Number(d.target_id)] };
+                    ? { guest_ids: [targetId] }
+                    : { instance_ids: [targetId] };
                 this.busy = true;
                 try {
                     await this.request('POST', this.accessPath + '/grant', {
@@ -694,7 +739,11 @@ function app() {
         async loadAccess(path, kind) {
             this.accessPath = path; this.accessKind = kind;
             this.loading = true; this.rows = [];
-            await this.ensureInstances();
+            // The table and the grant form show NAMES: subjects are clients or
+            // groups, the target is a guest or a node. Load every cache those
+            // names come from before rendering.
+            await this.ensureCaches('clients', 'groups',
+                kind === 'guest' ? 'guests' : 'instances');
             try {
                 const data = await this.request('GET', path);
                 this.rows = (data || []).map((row) => ({ ...row, id: row.id }));
@@ -709,34 +758,56 @@ function app() {
         },
         accessResource() {
             const self = this;
-            const targetKey = self.accessKind === 'guest' ? 'guest_id' : 'instance_id';
-            const targetLabel = self.accessKind === 'guest' ? 'Guest' : 'Instance';
+            const isGuest = self.accessKind === 'guest';
+            const targetKey = isGuest ? 'guest_id' : 'instance_id';
+            const targetLabel = isGuest ? 'Guest' : 'Node';
+            const targetCache = isGuest ? 'guests' : 'instances';
             return {
                 singular: 'access rule',
                 path: self.accessPath,
                 columns: [
-                    { key: 'id', label: 'ID' },
+                    // Subject and target are shown by NAME. The subject's cache
+                    // depends on the rule type (client vs group).
                     { key: 'type', label: 'Subject type', render: (v) => badge(v, 'gray') },
-                    { key: 'subject_id', label: 'Subject ID' },
-                    { key: targetKey, label: targetLabel, render: (v) => self.accessKind === 'instance' ? self.instanceName(v) : String(v) },
+                    { key: 'subject_id', label: 'Subject', render: (v, row) => self.subjectName(row.type, v) },
+                    { key: targetKey, label: targetLabel, render: (v) => self.nameFrom(targetCache, v) },
                 ],
                 create: true,
                 // A rule is granted (create) or revoked (delete) via the
                 // grant/revoke sub-paths with a {subject, *_ids} body, so these
                 // flags route submit/remove through the access-specific code.
                 access: true,
-                // The grant form: who (client/group + id) gets access to which
-                // target (guest/instance id).
+                // The grant form picks everything by NAME. subject_type selects
+                // whether the subject list is clients or groups; the name-selects
+                // store the chosen object's id, which submitModal sends as-is.
                 fields: [
                     { key: 'subject_type', label: 'Subject type', type: 'select', options: ['client', 'group'], required: true },
-                    { key: 'subject_id', label: 'Subject ID', type: 'number', required: true, help: 'The client or group ID.' },
-                    { key: 'target_id', label: targetLabel + ' ID', type: 'number', required: true },
+                    {
+                        key: 'subject_id', label: 'Subject', type: 'nameselect', required: true,
+                        optionsCache: (d) => (d.subject_type === 'group' ? 'groups' : 'clients'),
+                        help: 'Pick the client or group to grant access to.',
+                    },
+                    {
+                        key: 'target_id', label: targetLabel, type: 'nameselect', required: true,
+                        optionsCache: targetCache,
+                        help: 'Pick the ' + targetLabel.toLowerCase() + ' to grant access to.',
+                    },
                 ],
                 defaults: { subject_type: 'client' },
                 rowActions: [
                     { label: 'Revoke', run: (row) => self.revokeAccess(row) },
                 ],
             };
+        },
+
+        // nameSelectOptions returns the {id,name} list for a nameselect field,
+        // resolving the field's optionsCache (a cache key, or a function of the
+        // current form data for a dependent picker like the access subject).
+        nameSelectOptions(field) {
+            const key = typeof field.optionsCache === 'function'
+                ? field.optionsCache(this.modal.data)
+                : field.optionsCache;
+            return this.cache[key] || [];
         },
 
         // revokeAccess removes one subject→target rule via the revoke sub-path.
