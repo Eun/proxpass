@@ -88,35 +88,6 @@
                     return data;
                 },
 
-                // rpc calls the /admin/rpc endpoint, which is NOT under /v1 and
-                // requires an admin SESSION (the static REST token is refused).
-                // It is the only way to read the deployment's SSH public key,
-                // which is a root-owned file the /v1 session process cannot see.
-                // Errors come back in the body as {error}, and 401/403 bubble up
-                // typed like request() so the caller can degrade gracefully.
-                async rpc(op, params) {
-                    const headers = {
-                        'Authorization': 'Bearer ' + this.token,
-                        'Content-Type': 'application/json',
-                    };
-                    let res;
-                    try {
-                        res = await fetch('./admin/rpc', {
-                            method: 'POST', headers,
-                            body: JSON.stringify({ op, params: params || null }),
-                        });
-                    } catch (e) {
-                        throw new ApiError(0, 'network error: ' + e.message);
-                    }
-                    let data = null;
-                    const text = await res.text();
-                    if (text) { try { data = JSON.parse(text); } catch (_) { data = text; } }
-                    if (!res.ok || (data && data.error)) {
-                        const msg = (data && data.error) ? data.error : ('HTTP ' + res.status);
-                        throw new ApiError(res.status, msg);
-                    }
-                    return data ? data.result : null;
-                },
             };
         }
 
@@ -669,11 +640,6 @@
                                 <pre class="bg-gray-50 border rounded p-3 text-xs overflow-x-auto whitespace-pre-wrap break-all select-all" x-text="'echo ' + JSON.stringify(keyHint.publicKey) + ' >> /etc/pve/priv/authorized_keys'"></pre>
                                 <p class="text-xs text-gray-500 mt-2">Standalone node (no cluster):</p>
                                 <pre class="bg-gray-50 border rounded p-3 text-xs overflow-x-auto whitespace-pre-wrap break-all select-all" x-text="'ssh-copy-id -f ' + keyHint.user + '@' + keyHint.host + '   # or append the key to ~/.ssh/authorized_keys'"></pre>
-                            </div>
-
-                            <div class="mt-4" x-show="!keyHint.publicKey && keyHint.path">
-                                <span class="text-xs font-medium text-gray-500 uppercase tracking-wide">Key file on the proxpass server</span>
-                                <pre class="bg-gray-50 border rounded p-3 text-xs overflow-x-auto whitespace-pre-wrap break-all select-all" x-text="keyHint.path + '.pub'"></pre>
                             </div>
                         </div>
                         <div class="flex justify-end gap-3 p-4 border-t">
