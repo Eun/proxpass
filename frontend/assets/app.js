@@ -543,6 +543,12 @@ function app() {
         isWizard() { return !!this.currentResource().steps; },
         wizardSteps() { return this.currentResource().steps || []; },
         isLastStep() { return this.modal.step >= this.wizardSteps().length - 1; },
+        // showSave decides when the footer's Save button is shown. A NEW wizard
+        // shows it only on the last step, so creation walks the steps in order;
+        // an EDIT wizard shows it on every step, since the record is already
+        // complete and any change should be committable at once. A non-wizard
+        // dialog always shows it.
+        showSave() { return !this.isWizard() || this.modal.mode === 'edit' || this.isLastStep(); },
         // The visible fields of the current step (hidden ones excluded), used to
         // decide whether Next can proceed.
         stepFields(i) {
