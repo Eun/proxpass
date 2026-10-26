@@ -431,9 +431,12 @@
                                         <template x-if="field.required"><span class="text-red-500">*</span></template>
                                     </label>
                                     <template x-if="field.type === 'select'">
+                                        <!-- :selected pins the option to the bound value so the control reflects
+                                             modal.data even though the <option>s mount via a nested x-for after the
+                                             <select> (without it the select snaps to the first option on edit). -->
                                         <select x-model="modal.data[field.key]" class="form-select w-full rounded border-gray-300">
                                             <template x-for="opt in field.options" :key="opt">
-                                                <option :value="opt" x-text="opt"></option>
+                                                <option :value="opt" x-text="opt" :selected="opt === modal.data[field.key]"></option>
                                             </template>
                                         </select>
                                     </template>
@@ -441,10 +444,13 @@
                                          Options come from a cache (nameSelectOptions), which may depend
                                          on another field (e.g. the access subject switches clients/groups). -->
                                     <template x-if="field.type === 'nameselect'">
+                                        <!-- :selected pins the option to the bound id so the control reflects
+                                             modal.data when the options mount via x-for after the <select>
+                                             (same reactivity fix as the plain select above). -->
                                         <select x-model.number="modal.data[field.key]" class="form-select w-full rounded border-gray-300">
                                             <option value="" x-text="'Select a ' + field.label.toLowerCase() + '…'"></option>
                                             <template x-for="opt in nameSelectOptions(field)" :key="opt.id">
-                                                <option :value="opt.id" x-text="opt.name"></option>
+                                                <option :value="opt.id" x-text="opt.name" :selected="opt.id === modal.data[field.key]"></option>
                                             </template>
                                         </select>
                                     </template>
