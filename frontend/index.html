@@ -175,9 +175,19 @@
                         </a>
                     </template>
                 </nav>
-                <!-- Version, fetched once on load; pinned to the bottom. -->
+                <!-- Version, fetched once on load; pinned to the bottom. The
+                     "update available" link appears only when the server's
+                     GitHub check reports a newer release, and links to it. -->
                 <div class="flex-shrink-0 px-6 py-3 border-t border-white border-opacity-10 text-xs text-gray-500">
                     <span x-text="'proxpass ' + (version || '…')"></span>
+                    <template x-if="latest && latest.update_available">
+                        <a :href="latest.html_url" target="_blank" rel="noopener"
+                            class="mt-1 inline-flex items-center gap-1 text-amber-400 hover:text-amber-300"
+                            :title="'Latest release: ' + latest.latest">
+                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"/></svg>
+                            <span x-text="'update available → ' + latest.latest"></span>
+                        </a>
+                    </template>
                 </div>
             </aside>
 

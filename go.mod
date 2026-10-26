@@ -13,6 +13,7 @@ require (
 	github.com/pressly/goose/v3 v3.29.0
 	github.com/urfave/cli/v3 v3.14.0
 	golang.org/x/crypto v0.58.0
+	golang.org/x/mod v0.42.0
 	golang.org/x/term v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.61.0

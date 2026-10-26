@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"proxpass/internal/db"
@@ -67,6 +68,21 @@ type SessionHandler struct {
 	// version is the build version GetVersion reports. Empty answers "dev".
 	// Set with WithVersion.
 	version string
+
+	// updateCheck enables the GitHub latest-release check GetLatestVersion
+	// serves. Left false by NewSessionHandler; serve sets it from
+	// PROXPASS_UPDATE_CHECK (default on) via WithUpdateCheck. When false the
+	// handler never calls GitHub and reports "no update".
+	updateCheck bool
+
+	// fetchLatest fetches the latest GitHub release. Left nil by
+	// NewSessionHandler, in which case latestResult uses the real GitHub
+	// fetch; tests inject a fake with WithLatestFetcher. The cache below holds
+	// the last successful answer for latestVersionTTL (see latestversion.go).
+	fetchLatest   func(context.Context) (latestRelease, error)
+	latestMu      sync.Mutex
+	latestCache   *latestRelease
+	latestFetched time.Time
 }
 
 // NewSessionHandler returns a handler reading identities from repo.
@@ -108,6 +124,23 @@ func (h *SessionHandler) WithSettings(s *SettingsSnapshot) *SessionHandler {
 // WithVersion records the build version GetVersion reports. Chainable.
 func (h *SessionHandler) WithVersion(v string) *SessionHandler {
 	h.version = v
+	return h
+}
+
+// WithUpdateCheck enables or disables the GitHub latest-release check
+// GetLatestVersion serves. Chainable. Disabled, the handler never reaches out
+// and reports "no update" -- the setting an air-gapped deployment uses.
+func (h *SessionHandler) WithUpdateCheck(enabled bool) *SessionHandler {
+	h.updateCheck = enabled
+	return h
+}
+
+// WithLatestFetcher overrides how the latest GitHub release is fetched, for
+// tests. Chainable. Nil restores the default GitHub fetch.
+func (h *SessionHandler) WithLatestFetcher(
+	f func(context.Context) (latestRelease, error),
+) *SessionHandler {
+	h.fetchLatest = f
 	return h
 }
 

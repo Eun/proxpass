@@ -955,9 +955,42 @@ func (h *SessionHandler) GetVersion(
 	}
 	v := h.version
 	if v == "" {
-		v = "dev"
+		v = devVersion
 	}
 	return GetVersion200JSONResponse(Version{Version: v}), nil
+}
+
+// GetLatestVersion compares the running build against the latest GitHub release.
+//
+// It is best-effort: when the update check is disabled, the build is "dev", or
+// GitHub cannot be reached, it returns the current version with an empty latest
+// and update_available=false, so the UI simply shows no hint. The GitHub result
+// is cached (see latestResult / latestVersionTTL), so polling it is cheap.
+func (h *SessionHandler) GetLatestVersion(
+	ctx context.Context, _ GetLatestVersionRequestObject,
+) (GetLatestVersionResponseObject, error) {
+	if denied, ok, err := gateAdmin(ctx, h,
+		func(reason string) GetLatestVersionResponseObject {
+			return GetLatestVersion401JSONResponse{UnauthorizedJSONResponse{Error: reason}}
+		},
+		func() GetLatestVersionResponseObject {
+			return GetLatestVersion403JSONResponse{ForbiddenJSONResponse{Error: errNotAdminAPI.Error()}}
+		},
+	); !ok {
+		return denied, err
+	}
+	current := h.version
+	if current == "" {
+		current = devVersion
+	}
+	out := LatestVersion{Current: current}
+	if h.updateCheck {
+		rel := h.latestResult(ctx)
+		out.Latest = rel.TagName
+		out.HTMLURL = rel.HTMLURL
+		out.UpdateAvailable = updateAvailable(current, rel.TagName)
+	}
+	return GetLatestVersion200JSONResponse(out), nil
 }
 
 // GetProxpassSSHPublicKey returns proxpass's SSH public key.
