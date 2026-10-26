@@ -17,6 +17,11 @@ function app() {
         // ---- shell state ----
         view: 'dashboard',
         version: '',
+        // latest backs the "update available" hint in the sidebar footer. It is
+        // {current, latest, update_available, html_url} from GET /latest-version,
+        // or null until loaded / when the check is off. Cosmetic: errors are
+        // swallowed and simply leave the hint hidden.
+        latest: null,
         tokenInput: '',
         authError: '',
         error: '',
@@ -267,6 +272,7 @@ function app() {
                 await this.request('GET', '/instances');
                 this.authed = true;
                 this.loadVersion();
+                this.loadLatestVersion();
                 // Honour a bookmarked route (e.g. /#clients); default dashboard.
                 this.go(this.viewFromHash());
             } catch (_) {
@@ -295,6 +301,15 @@ function app() {
             } catch (_) { /* version is cosmetic; ignore */ }
         },
 
+        // loadLatestVersion asks the server whether a newer release exists (the
+        // server caches the GitHub result, so this is cheap to call). A failure
+        // or a disabled check just leaves the hint hidden.
+        async loadLatestVersion() {
+            try {
+                this.latest = await this.request('GET', '/latest-version');
+            } catch (_) { /* update hint is cosmetic; ignore */ }
+        },
+
         async signIn() {
             const t = (this.tokenInput || '').trim();
             if (!t) { this.authError = 'Enter a token.'; return; }
@@ -306,6 +321,7 @@ function app() {
                 this.authed = true;
                 this.tokenInput = '';
                 this.loadVersion();
+                this.loadLatestVersion();
                 // Honour a bookmarked hash (e.g. someone opened /#clients then
                 // signed in) rather than always landing on the dashboard.
                 this.go(this.viewFromHash());

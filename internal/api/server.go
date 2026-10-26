@@ -192,6 +192,16 @@ type Server struct {
 	// version is the build version, passed through to the SessionHandler for
 	// GetVersion. Empty answers "dev". Set with WithVersion.
 	version string
+
+	// updateCheck enables the GitHub latest-release check, passed through to
+	// the SessionHandler for GetLatestVersion. Defaults on; serve sets it from
+	// PROXPASS_UPDATE_CHECK. Set with WithUpdateCheck.
+	updateCheck bool
+
+	// latestFetcher overrides how the latest GitHub release is fetched, for
+	// tests, passed through to the SessionHandler. Nil uses the real fetch.
+	// Set with WithLatestFetcher.
+	latestFetcher func(context.Context) (latestRelease, error)
 }
 
 // NewServer builds the directory server with the default id layout.
@@ -204,6 +214,8 @@ func NewServerWithIDs(repo db.Repository, logger *log.Logger, ids IDLayout) *Ser
 	return &Server{
 		repo: repo, logger: logger, ids: ids,
 		termProxyChecker: checkTermProxySupport,
+		// On by default; serve overrides from PROXPASS_UPDATE_CHECK.
+		updateCheck: true,
 	}
 }
 
@@ -261,6 +273,22 @@ func (s *Server) WithSettings(snap *SettingsSnapshot) *Server {
 // GetVersion. Chainable.
 func (s *Server) WithVersion(v string) *Server {
 	s.version = v
+	return s
+}
+
+// WithUpdateCheck enables or disables the GitHub latest-release check, passed
+// through to the session handler for GetLatestVersion. Chainable.
+func (s *Server) WithUpdateCheck(enabled bool) *Server {
+	s.updateCheck = enabled
+	return s
+}
+
+// WithLatestFetcher overrides how the latest GitHub release is fetched, for
+// tests, passed through to the session handler. Chainable.
+func (s *Server) WithLatestFetcher(
+	f func(context.Context) (latestRelease, error),
+) *Server {
+	s.latestFetcher = f
 	return s
 }
 
@@ -375,7 +403,9 @@ func (s *Server) sessionHandler() *SessionHandler {
 		WithTermProxyChecker(s.termProxyChecker).
 		WithProtectedAdminKey(s.protectedAdminKey).
 		WithSettings(s.settings).
-		WithVersion(s.version)
+		WithVersion(s.version).
+		WithUpdateCheck(s.updateCheck).
+		WithLatestFetcher(s.latestFetcher)
 }
 
 // checkTermProxySupport is the default termProxyChecker wired in production: it

@@ -122,6 +122,14 @@ func serveCommand() *ucli.Command {
 					"minted over an admin SSH login.",
 				Sources: ucli.EnvVars("PROXPASS_REST_API_TOKEN"),
 			},
+			&ucli.BoolFlag{
+				Name: "update-check",
+				Usage: "check GitHub for a newer proxpass release and surface " +
+					"it in the admin UI. On by default; disable it for an " +
+					"air-gapped deployment that must not reach out.",
+				Value:   true,
+				Sources: ucli.EnvVars("PROXPASS_UPDATE_CHECK"),
+			},
 		},
 		Action: runServe,
 	}
@@ -223,7 +231,8 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 		WithDiscoverer(proxmox.DefaultDiscovererFactory).
 		WithProtectedAdminKey(cmd.String("admin-key")).
 		WithSettings(settingsSnapshot).
-		WithVersion(version.String())
+		WithVersion(version.String()).
+		WithUpdateCheck(cmd.Bool("update-check"))
 
 	logger.Printf("serving directory + session + admin API on %s (nss auth: %t)",
 		listenAddr, nssToken != "")

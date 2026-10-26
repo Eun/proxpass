@@ -1303,6 +1303,38 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/latest-version:
+    get:
+      tags: [admin]
+      summary: The latest proxpass release on GitHub.
+      description: |
+        Reports whether a newer proxpass release is available, by comparing the
+        running build version against the latest GitHub release. The result is
+        cached server-side for a few hours, so the admin UI can poll it to show
+        an "update available" hint without each client calling GitHub.
+
+        update_available is false when the deployment is up to date, when the
+        running build has no comparable version (a "dev" build), when the
+        update check is disabled (PROXPASS_UPDATE_CHECK), or when GitHub could
+        not be reached -- in every such case latest may be empty and the hint
+        is simply not shown.
+      operationId: getLatestVersion
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: The latest-version comparison.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LatestVersion"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /v1/proxpass-ssh-public-key:
     get:
       tags: [admin]
@@ -2028,6 +2060,31 @@ components:
         version:
           type: string
           description: The release tag, module version, or "dev".
+
+    LatestVersion:
+      type: object
+      description: |
+        A comparison of the running build against the latest GitHub release.
+      required: [current, latest, update_available, html_url]
+      properties:
+        current:
+          type: string
+          description: The running build version (the release tag, or "dev").
+        latest:
+          type: string
+          description: |
+            The latest release tag on GitHub, or "" when the check is disabled
+            or GitHub could not be reached.
+        update_available:
+          type: boolean
+          description: |
+            True when latest is a newer release than current. Always false for
+            a "dev" build, a disabled check, or an unreachable GitHub.
+        html_url:
+          type: string
+          description: |
+            The GitHub release page for latest, or "" when there is nothing to
+            link to.
 
     SSHPublicKey:
       type: object
