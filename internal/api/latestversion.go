@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"golang.org/x/mod/semver"
@@ -110,12 +111,27 @@ func (h *SessionHandler) latestResult(ctx context.Context) latestRelease {
 
 // compareVersions reports whether latest is a newer release than current.
 //
-// Both are expected to be "vX.Y.Z" tags. A "dev" (or otherwise non-semver)
-// current, or a non-semver latest, yields false: there is nothing meaningful to
-// compare, so no update is offered.
+// The two sides can disagree on the leading "v": GitHub's tag_name keeps it
+// (v0.0.33), but goreleaser injects the build version WITHOUT it (0.0.33, from
+// {{.Version}}). golang.org/x/mod/semver requires the "v", so both are
+// normalized to carry one before comparing -- otherwise the running build
+// would always look non-semver and no update would ever be offered. A "dev"
+// (or otherwise non-semver) current, or a non-semver latest, yields false.
 func updateAvailable(current, latest string) bool {
+	current = ensureVPrefix(current)
+	latest = ensureVPrefix(latest)
 	if !semver.IsValid(current) || !semver.IsValid(latest) {
 		return false
 	}
 	return semver.Compare(latest, current) > 0
+}
+
+// ensureVPrefix adds the leading "v" semver expects when it is missing, so a
+// goreleaser-style "0.0.33" and a GitHub "v0.0.33" compare as equal. An empty
+// or already-prefixed string is returned unchanged.
+func ensureVPrefix(v string) string {
+	if v == "" || strings.HasPrefix(v, "v") {
+		return v
+	}
+	return "v" + v
 }

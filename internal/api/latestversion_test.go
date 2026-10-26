@@ -88,6 +88,23 @@ func TestLatestVersionUpToDate(t *testing.T) {
 	}
 }
 
+// TestLatestVersionNormalizesVPrefix is the production case: goreleaser injects
+// the build version WITHOUT the leading "v" (0.0.33) while GitHub's tag keeps it
+// (v0.0.34). The compare must normalize both, or no update is ever offered.
+func TestLatestVersionNormalizesVPrefix(t *testing.T) {
+	var calls int32
+	// current "0.0.33" (no v, as in prod) vs latest "v0.0.34" -> update.
+	h, ctx := adminHandlerFor(t, "0.0.33", true, fakeFetcher("v0.0.34", "u", &calls))
+	if !getLatest(ctx, t, h).UpdateAvailable {
+		t.Fatal("expected an update when current lacks the v prefix but latest is newer")
+	}
+	// Same version, differing only by the prefix -> NOT an update.
+	h2, ctx2 := adminHandlerFor(t, "0.0.33", true, fakeFetcher("v0.0.33", "u", &calls))
+	if getLatest(ctx2, t, h2).UpdateAvailable {
+		t.Fatal("0.0.33 and v0.0.33 are the same release; expected no update")
+	}
+}
+
 // TestLatestVersionDevBuildNeverUpdates: a "dev" build has no comparable
 // version, so it never claims an update even if GitHub has a release.
 func TestLatestVersionDevBuildNeverUpdates(t *testing.T) {
