@@ -42,7 +42,13 @@ builds:
       # Inject the release tag so `GET /v1/version' and the admin UI report it.
       # Without this -X the custom ldflags above would override goreleaser's
       # default version injection, leaving the binary at its build-info fallback.
-      - -X proxpass/internal/version.value={{.Version}}
+      #
+      # Use {{.Tag}} (the raw git tag, e.g. "v0.0.33"), NOT {{.Version}} (which
+      # strips the leading "v" to "0.0.33"): the version string is compared
+      # against GitHub's tag_name ("v0.0.33") by the update check, and
+      # golang.org/x/mod/semver requires the "v". The Docker image tags below
+      # keep {{.Version}} (v-stripped) -- that is the published tag convention.
+      - -X proxpass/internal/version.value={{.Tag}}
 archives:
   # the image is the only artifact; `binary' means goreleaser does not wrap the
   # binary in a tar.gz it would otherwise have to upload somewhere.
