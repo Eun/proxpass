@@ -20,6 +20,10 @@ function app() {
         tokenInput: '',
         authError: '',
         error: '',
+        // modalError shows a create/edit failure INSIDE the open dialog, so the
+        // message is not hidden on the page behind the modal overlay. fail()
+        // routes here while a modal is open; page-level errors still use `error`.
+        modalError: '',
         notice: '',
         loading: false,
         busy: false,
@@ -488,12 +492,14 @@ function app() {
             const r = this.currentResource();
             await this.loadModalOptions(r);
             this.resetFingerprintScan();
+            this.modalError = '';
             this.modal = { open: true, mode: 'create', step: 0, data: { ...(r.defaults || {}) } };
         },
         async openEdit(row) {
             const r = this.currentResource();
             await this.loadModalOptions(r);
             this.resetFingerprintScan();
+            this.modalError = '';
             const data = { ...row };
             // Convert line-list fields back to their editable string form.
             // Multiselect fields keep their array value as-is.
@@ -510,7 +516,7 @@ function app() {
             });
             this.modal = { open: true, mode: 'edit', step: 0, data };
         },
-        closeModal() { this.modal.open = false; },
+        closeModal() { this.modal.open = false; this.modalError = ''; },
 
         // askConfirm opens the in-app confirmation dialog and returns a promise
         // that resolves to true (confirmed) or false (cancelled). It replaces
@@ -673,7 +679,7 @@ function app() {
             const fp = (this.fingerprintInput || '').trim();
             if (!fp) return;
             if (!fp.startsWith('SHA256:')) {
-                this.error = 'A fingerprint must be in the "SHA256:<base64>" form ssh-keyscan prints.';
+                this.modalError = 'A fingerprint must be in the "SHA256:<base64>" form ssh-keyscan prints.';
                 return;
             }
             if (!this.fingerprintPinned(fieldKey, fp)) {
@@ -687,20 +693,20 @@ function app() {
         // for them: the operator must still confirm out of band.
         async fetchFingerprints() {
             const host = (this.modal.data.ssh_host || '').trim();
-            if (!host) { this.error = 'Enter the SSH host first.'; return; }
+            if (!host) { this.modalError = 'Enter the SSH host first.'; return; }
             const port = Number(this.modal.data.ssh_port) || 22;
-            this.scanning = true; this.error = ''; this.scannedFingerprints = [];
+            this.scanning = true; this.modalError = ''; this.scannedFingerprints = [];
             try {
                 const keys = await this.request('POST', '/ssh-fingerprints', { ssh_host: host, ssh_port: port });
                 this.scannedFingerprints = keys || [];
                 if (this.scannedFingerprints.length === 0) {
-                    this.error = 'The host presented no SSH host keys.';
+                    this.modalError = 'The host presented no SSH host keys.';
                 } else {
                     this.ok('Fetched ' + this.scannedFingerprints.length + ' host key(s). Tick the ones to pin and confirm them out of band.');
                 }
             } catch (e) {
                 // A 502 carries the reason (unreachable, timeout); show it.
-                this.error = 'Could not scan ' + host + ': ' + e.message;
+                this.modalError = 'Could not scan ' + host + ': ' + e.message;
             } finally {
                 this.scanning = false;
             }
@@ -735,7 +741,7 @@ function app() {
                 const subjectId = Number(d.subject_id);
                 const targetId = Number(d.target_id);
                 if (!subjectId || !targetId) {
-                    this.error = 'Pick both a subject and a ' +
+                    this.modalError = 'Pick both a subject and a ' +
                         (this.accessKind === 'guest' ? 'guest' : 'node') + '.';
                     return;
                 }
@@ -979,10 +985,15 @@ function app() {
         },
 
         // ---- flash helpers ----
-        ok(msg) { this.notice = msg; this.error = ''; setTimeout(() => { if (this.notice === msg) this.notice = ''; }, 4000); },
+        ok(msg) { this.notice = msg; this.error = ''; this.modalError = ''; setTimeout(() => { if (this.notice === msg) this.notice = ''; }, 4000); },
         fail(e) {
-            if (e.isAuth) { this.error = 'Not authorized — check your token.'; this.signOut(); return; }
-            this.error = e.message;
+            // An auth failure signs the operator out, so it belongs on the page
+            // (the modal is about to close) -- report it there regardless.
+            if (e.isAuth) { this.modalError = ''; this.error = 'Not authorized — check your token.'; this.signOut(); return; }
+            // While a dialog is open, show the failure INSIDE it so it is not
+            // hidden on the page behind the overlay; otherwise use the page banner.
+            if (this.modal.open) { this.modalError = e.message; }
+            else { this.error = e.message; }
         },
     };
 }
