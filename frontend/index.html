@@ -550,6 +550,14 @@
                                 </div>
                             </template>
                         </div>
+                        <!-- Submit/validation errors show HERE, inside the dialog, so
+                             they are not hidden on the page behind the modal overlay. -->
+                        <template x-if="modalError">
+                            <div class="mx-6 mb-2 bg-red-100 border border-red-300 text-red-700 px-4 py-2 rounded flex justify-between items-start gap-3">
+                                <span class="text-sm" x-text="modalError"></span>
+                                <button @click="modalError = ''" class="font-bold leading-none">&times;</button>
+                            </div>
+                        </template>
                         <!-- Dialog footer guideline (one fixed layout for every dialog):
                              - Cancel is ALWAYS on the far LEFT.
                              - The far RIGHT is ALWAYS Save, the primary action; before Save
