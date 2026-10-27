@@ -259,7 +259,7 @@
                                     <ul class="divide-y divide-gray-100">
                                         <template x-for="e in recentActivity" :key="e.id">
                                             <li class="py-2 flex items-baseline gap-2 text-sm cursor-pointer hover:bg-gray-50 -mx-2 px-2 rounded" @click="openActivityDetail(e)" title="Show details">
-                                                <span class="text-gray-400 whitespace-nowrap text-xs" x-text="formatActivityTime(e.occurred_at)"></span>
+                                                <span class="text-gray-400 whitespace-nowrap text-xs" x-text="formatRelativeTime(e.occurred_at)" :title="formatActivityTime(e.occurred_at)"></span>
                                                 <span class="font-medium" x-text="e.actor"></span>
                                                 <span class="text-gray-600" x-text="formatEvent(e)"></span>
                                                 <code x-show="activityCommand(e)"
@@ -294,7 +294,7 @@
                                     <tbody class="divide-y divide-gray-100">
                                         <template x-for="e in activity.entries" :key="e.id">
                                             <tr class="hover:bg-gray-50 cursor-pointer" @click="openActivityDetail(e)" title="Show details">
-                                                <td class="px-4 py-3 align-top whitespace-nowrap text-gray-500" x-text="formatActivityTime(e.occurred_at)"></td>
+                                                <td class="px-4 py-3 align-top whitespace-nowrap text-gray-500" x-text="formatRelativeTime(e.occurred_at)" :title="formatActivityTime(e.occurred_at)"></td>
                                                 <td class="px-4 py-3 align-top font-medium" x-text="e.actor"></td>
                                                 <td class="px-4 py-3 align-top">
                                                     <span x-text="formatEvent(e)"></span>
@@ -770,7 +770,8 @@
                         <div class="p-6 space-y-4 text-sm" x-show="activityDetail.entry">
                             <div>
                                 <div class="text-xs font-medium text-gray-500 uppercase tracking-wide">When</div>
-                                <div class="mt-0.5 text-gray-800" x-text="formatActivityTime(activityDetail.entry.occurred_at)"></div>
+                                <div class="mt-0.5 text-gray-800" x-text="formatRelativeTime(activityDetail.entry.occurred_at)"></div>
+                                <div class="mt-0.5 text-xs text-gray-400" x-text="formatActivityTime(activityDetail.entry.occurred_at)"></div>
                             </div>
                             <div>
                                 <div class="text-xs font-medium text-gray-500 uppercase tracking-wide">Who</div>

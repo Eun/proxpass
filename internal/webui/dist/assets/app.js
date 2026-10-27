@@ -500,10 +500,33 @@ function app() {
             if (!cmd) return '';
             return cmd.length > max ? cmd.slice(0, max) + '…' : cmd;
         },
-        // formatActivityTime renders the timestamp as a local, readable string.
+        // formatActivityTime renders the timestamp as a local, readable string
+        // (the full absolute time). Used in the detail dialog and as the hover
+        // title on the relative times in the lists.
         formatActivityTime(iso) {
             const d = new Date(iso);
             return isNaN(d.getTime()) ? iso : d.toLocaleString();
+        },
+        // formatRelativeTime renders a timestamp as a short relative string
+        // ("just now", "10 mins ago", "3 hours ago", "2 days ago"). It is what
+        // the activity lists show, since "how long ago" is what an operator scans
+        // for. Past ~7 days a relative string stops being useful (and matches the
+        // default retention window), so it falls back to the absolute date; a
+        // future timestamp (clock skew) also falls back rather than read oddly.
+        formatRelativeTime(iso) {
+            const d = new Date(iso);
+            if (isNaN(d.getTime())) return iso;
+            const secs = Math.round((Date.now() - d.getTime()) / 1000);
+            if (secs < 0) return this.formatActivityTime(iso); // future: avoid "in -5s"
+            if (secs < 45) return 'just now';
+            const mins = Math.round(secs / 60);
+            if (mins < 60) return mins + (mins === 1 ? ' min ago' : ' mins ago');
+            const hours = Math.round(mins / 60);
+            if (hours < 24) return hours + (hours === 1 ? ' hour ago' : ' hours ago');
+            const days = Math.round(hours / 24);
+            if (days <= 7) return days + (days === 1 ? ' day ago' : ' days ago');
+            // Beyond a week, the date itself is more informative than "12 days ago".
+            return d.toLocaleDateString();
         },
 
         // ---- dashboard ----
