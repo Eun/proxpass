@@ -12,13 +12,15 @@ const testListenAddr = "127.0.0.1:8080"
 // and shows the admin key (a public key) in cleartext.
 func TestBuildSettings(t *testing.T) {
 	snap := SettingsSnapshot{
-		Data:              "/var/lib/proxpass/proxpass.db",
-		LogLevel:          "info",
-		DiscoveryInterval: "5m0s",
-		Listen:            testListenAddr,
-		AdminKey:          "ssh-ed25519 AAAA admin",
-		NSSTokenSet:       true,
-		RESTAPITokenSet:   true,
+		Data:                  "/var/lib/proxpass/proxpass.db",
+		LogLevel:              "info",
+		DiscoveryInterval:     "5m0s",
+		Listen:                testListenAddr,
+		AdminKey:              "ssh-ed25519 AAAA admin",
+		NSSTokenSet:           true,
+		RESTAPITokenSet:       true,
+		ActivityRetention:     "168h0m0s",
+		ActivityPruneInterval: "1h0m0s",
 	}
 	got := map[string]string{}
 	for _, s := range buildSettings(&snap, "proxpass.example") {
@@ -35,6 +37,15 @@ func TestBuildSettings(t *testing.T) {
 	// The admin key is PUBLIC: shown as given, not masked.
 	if got["PROXPASS_ADMIN_KEY"] != "ssh-ed25519 AAAA admin" {
 		t.Errorf("PROXPASS_ADMIN_KEY = %q, want the key in cleartext", got["PROXPASS_ADMIN_KEY"])
+	}
+
+	// The activity-log cadence settings are reported verbatim so an operator
+	// can see the configured retention window and pruner interval.
+	if got["PROXPASS_ACTIVITY_RETENTION"] != "168h0m0s" {
+		t.Errorf("PROXPASS_ACTIVITY_RETENTION = %q, want the configured window", got["PROXPASS_ACTIVITY_RETENTION"])
+	}
+	if got["PROXPASS_ACTIVITY_PRUNE_INTERVAL"] != "1h0m0s" {
+		t.Errorf("PROXPASS_ACTIVITY_PRUNE_INTERVAL = %q, want the configured interval", got["PROXPASS_ACTIVITY_PRUNE_INTERVAL"])
 	}
 
 	// The two tokens are masked: a set marker, never the token itself.

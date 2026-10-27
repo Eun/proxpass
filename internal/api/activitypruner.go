@@ -14,8 +14,8 @@ import (
 //
 // When retention is zero, activity logging is disabled, so the pruner is a
 // no-op -- Run returns immediately. The cadence is independent of the window:
-// pruning hourly keeps the table bounded without a tight loop, the same shape
-// as the discovery poller.
+// pruning on an interval keeps the table bounded without a tight loop, the same
+// shape as the discovery poller.
 type ActivityPruner struct {
 	repo      db.Repository
 	retention time.Duration
@@ -23,16 +23,25 @@ type ActivityPruner struct {
 	logger    *log.Logger
 }
 
-// activityPruneInterval is how often retention is enforced. Hourly: the table
-// only needs to be kept roughly bounded, not trimmed to the second.
-const activityPruneInterval = time.Hour
+// defaultActivityPruneInterval is the cadence used when none is configured.
+// Hourly: the table only needs to be kept roughly bounded, not trimmed to the
+// second.
+const defaultActivityPruneInterval = time.Hour
 
-// NewActivityPruner builds a pruner. A zero retention disables it.
-func NewActivityPruner(repo db.Repository, retention time.Duration, logger *log.Logger) *ActivityPruner {
+// NewActivityPruner builds a pruner. A zero retention disables it. A
+// non-positive interval falls back to defaultActivityPruneInterval, so a
+// misconfigured or unset cadence can never produce a zero-duration ticker
+// (which would panic) or a tight pruning loop.
+func NewActivityPruner(
+	repo db.Repository, retention, interval time.Duration, logger *log.Logger,
+) *ActivityPruner {
+	if interval <= 0 {
+		interval = defaultActivityPruneInterval
+	}
 	return &ActivityPruner{
 		repo:      repo,
 		retention: retention,
-		interval:  activityPruneInterval,
+		interval:  interval,
 		logger:    logger,
 	}
 }

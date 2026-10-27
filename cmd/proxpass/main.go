@@ -139,6 +139,15 @@ func serveCommand() *ucli.Command {
 				Value:   7 * 24 * time.Hour,
 				Sources: ucli.EnvVars("PROXPASS_ACTIVITY_RETENTION"),
 			},
+			&ucli.DurationFlag{
+				Name: "activity-prune-interval",
+				Usage: "how often the activity-log pruner runs to delete " +
+					"entries older than --activity-retention. The table only " +
+					"needs to stay roughly bounded, so the default is ample; " +
+					"a non-positive value falls back to the default.",
+				Value:   time.Hour,
+				Sources: ucli.EnvVars("PROXPASS_ACTIVITY_PRUNE_INTERVAL"),
+			},
 		},
 		Action: runServe,
 	}
@@ -222,23 +231,26 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	go discovery.Run(ctx)
 
 	// Activity-log retention runs in the background too, pruning rows older
-	// than the window. A zero retention disables activity logging, and the
-	// pruner then returns at once.
+	// than the window on a configurable interval. A zero retention disables
+	// activity logging, and the pruner then returns at once.
 	activityRetention := cmd.Duration("activity-retention")
-	go api.NewActivityPruner(repo, activityRetention, logger).Run(ctx)
+	activityPruneInterval := cmd.Duration("activity-prune-interval")
+	go api.NewActivityPruner(
+		repo, activityRetention, activityPruneInterval, logger).Run(ctx)
 
 	// A read-only snapshot of the effective configuration for the admin
 	// Settings view. Only set/unset is recorded for the secrets, never their
 	// values; the handler masks them further before they leave the process.
 	settingsSnapshot := &api.SettingsSnapshot{
-		Data:              dataPath,
-		LogLevel:          level.String(),
-		DiscoveryInterval: interval.String(),
-		Listen:            listenAddr,
-		AdminKey:          strings.TrimSpace(cmd.String("admin-key")),
-		NSSTokenSet:       nssToken != "",
-		RESTAPITokenSet:   restAPIToken != "",
-		ActivityRetention: activityRetention.String(),
+		Data:                  dataPath,
+		LogLevel:              level.String(),
+		DiscoveryInterval:     interval.String(),
+		Listen:                listenAddr,
+		AdminKey:              strings.TrimSpace(cmd.String("admin-key")),
+		NSSTokenSet:           nssToken != "",
+		RESTAPITokenSet:       restAPIToken != "",
+		ActivityRetention:     activityRetention.String(),
+		ActivityPruneInterval: activityPruneInterval.String(),
 	}
 
 	server := api.NewServerWithIDs(repo, logger, ids).

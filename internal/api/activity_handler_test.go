@@ -6,6 +6,8 @@ package api
 
 import (
 	"context"
+	"io"
+	"log"
 	"testing"
 	"time"
 )
@@ -177,6 +179,31 @@ func TestBoundedCommand(t *testing.T) {
 	got := boundedCommand(string(long))
 	if len([]rune(got)) != maxActivityCommand+1 { // +1 for the ellipsis rune
 		t.Fatalf("bounded length = %d runes", len([]rune(got)))
+	}
+}
+
+// TestNewActivityPrunerInterval verifies the pruner cadence is configurable:
+// a positive interval is honored verbatim, and a non-positive one falls back to
+// the default rather than producing a zero-duration ticker (which would panic).
+func TestNewActivityPrunerInterval(t *testing.T) {
+	_, repo, _ := newAdminHandler(t)
+	logger := log.New(io.Discard, "", 0)
+
+	for _, tc := range []struct {
+		name     string
+		interval time.Duration
+		want     time.Duration
+	}{
+		{"configured value honored", 15 * time.Minute, 15 * time.Minute},
+		{"zero falls back to default", 0, defaultActivityPruneInterval},
+		{"negative falls back to default", -time.Second, defaultActivityPruneInterval},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewActivityPruner(repo, time.Hour, tc.interval, logger)
+			if p.interval != tc.want {
+				t.Errorf("interval = %s, want %s", p.interval, tc.want)
+			}
+		})
 	}
 }
 
