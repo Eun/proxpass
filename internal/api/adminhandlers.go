@@ -251,6 +251,20 @@ func (h *SessionHandler) UpdateInstance(
 	}
 	inst := fromAPIInstance(request.Body)
 	inst.ID = request.ID
+
+	// Re-run the termproxy support check on update, exactly as AddInstance does,
+	// so an edit that switches an instance TO the termproxy console transport is
+	// rejected when the node does not support it -- e.g. a node added over ssh
+	// precisely because termproxy was incompatible must not be silently flipped
+	// back to termproxy. A too-old or unreachable node is a 400 with the reason,
+	// and nothing is stored. The checker is nil in tests / an unwired deployment,
+	// which skips the check; the ssh transport is never checked.
+	if inst.ConsoleTransport == models.ConsoleTransportTermProxy && h.termProxyChecker != nil {
+		if err := h.termProxyChecker(ctx, inst); err != nil {
+			return UpdateInstance400JSONResponse{BadRequestJSONResponse{Error: err.Error()}}, nil
+		}
+	}
+
 	if err := h.repo.UpdateProxmoxInstance(ctx, inst); err != nil {
 		if isConflict(err) {
 			return UpdateInstance409JSONResponse{ConflictJSONResponse{Error: err.Error()}}, nil
@@ -261,6 +275,8 @@ func (h *SessionHandler) UpdateInstance(
 }
 
 // RemoveInstance deletes an instance by id.
+//
+//nolint:dupl // parallel REST delete across entity types; the symmetry is the point
 func (h *SessionHandler) RemoveInstance(
 	ctx context.Context, request RemoveInstanceRequestObject,
 ) (RemoveInstanceResponseObject, error) {
@@ -420,6 +436,8 @@ func (h *SessionHandler) UpdateClient(
 }
 
 // RemoveClient deletes a client by id.
+//
+//nolint:dupl // parallel REST delete across entity types; the symmetry is the point
 func (h *SessionHandler) RemoveClient(
 	ctx context.Context, request RemoveClientRequestObject,
 ) (RemoveClientResponseObject, error) {
@@ -581,6 +599,8 @@ func (h *SessionHandler) UpdateGroup(
 }
 
 // RemoveGroup deletes a group by id.
+//
+//nolint:dupl // parallel REST delete across entity types; the symmetry is the point
 func (h *SessionHandler) RemoveGroup(
 	ctx context.Context, request RemoveGroupRequestObject,
 ) (RemoveGroupResponseObject, error) {

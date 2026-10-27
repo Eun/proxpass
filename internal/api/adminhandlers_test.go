@@ -22,6 +22,7 @@ const (
 	testAdminKey    = "ssh-ed25519 AAAA admin"
 	testEndpoint    = "proxpass.example"
 	testClientAlice = "alice"
+	testSSHHost     = "pve.example"
 )
 
 // newAdminHandler returns a handler over a fresh in-memory repo plus a
@@ -83,7 +84,7 @@ func TestAddInstanceRoundTrips(t *testing.T) {
 		Node:             "pve1",
 		InsecureTLS:      true,
 		InsecureSSH:      true,
-		SSHHost:          "pve.example",
+		SSHHost:          testSSHHost,
 		SSHPort:          2222,
 		SSHUser:          "root",
 		SSHFingerprints:  []string{"SHA256:abc"},
