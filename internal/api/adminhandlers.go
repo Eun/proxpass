@@ -768,7 +768,7 @@ func (h *SessionHandler) GrantAccess(
 		return GrantAccess400JSONResponse{BadRequestJSONResponse{Error: errUnknownSubject}}, nil
 	}
 	h.recordAdmin(ctx, EventAccessGranted, map[string]any{
-		"subject_kind": string(subject.Kind), paramSubjectID: subject.ID, "guest_ids": guestIDs,
+		paramSubjectKind: string(subject.Kind), paramSubjectID: subject.ID, "guest_ids": guestIDs,
 	})
 	return GrantAccess204Response{}, nil
 }
@@ -812,7 +812,7 @@ func (h *SessionHandler) RevokeAccess(
 		return RevokeAccess400JSONResponse{BadRequestJSONResponse{Error: errUnknownSubject}}, nil
 	}
 	h.recordAdmin(ctx, EventAccessRevoked, map[string]any{
-		"subject_kind": string(subject.Kind), paramSubjectID: subject.ID, "guest_ids": request.Body.GuestIds,
+		paramSubjectKind: string(subject.Kind), paramSubjectID: subject.ID, "guest_ids": request.Body.GuestIds,
 	})
 	return RevokeAccess204Response{}, nil
 }
@@ -882,7 +882,7 @@ func (h *SessionHandler) GrantInstanceAccess(
 		return GrantInstanceAccess400JSONResponse{BadRequestJSONResponse{Error: errUnknownSubject}}, nil
 	}
 	h.recordAdmin(ctx, EventInstanceAccessGranted, map[string]any{
-		"subject_kind": string(subject.Kind), paramSubjectID: subject.ID, "instance_ids": instanceIDs,
+		paramSubjectKind: string(subject.Kind), paramSubjectID: subject.ID, "instance_ids": instanceIDs,
 	})
 	return GrantInstanceAccess204Response{}, nil
 }
@@ -925,7 +925,7 @@ func (h *SessionHandler) RevokeInstanceAccess(
 		return RevokeInstanceAccess400JSONResponse{BadRequestJSONResponse{Error: errUnknownSubject}}, nil
 	}
 	h.recordAdmin(ctx, EventInstanceAccessRevoked, map[string]any{
-		"subject_kind": string(subject.Kind), paramSubjectID: subject.ID, "instance_ids": request.Body.InstanceIds,
+		paramSubjectKind: string(subject.Kind), paramSubjectID: subject.ID, "instance_ids": request.Body.InstanceIds,
 	})
 	return RevokeInstanceAccess204Response{}, nil
 }

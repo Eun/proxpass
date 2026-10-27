@@ -18,6 +18,7 @@ const (
 	testKey          = "key"
 	testClientName   = "alice"
 	testInstanceName = "pve1"
+	testActor        = "admin"
 	testTokenID      = "user@pam!token"
 	testTokenSecret  = "secret"
 	// testGrantee is the client used wherever a test needs a subject to
@@ -976,7 +977,7 @@ func TestTokensKeepTheAdminFlag(t *testing.T) {
 			repo := newTestRepo(t)
 			now := time.Now()
 			kind.store(t, repo, "hash",
-				&models.SessionIdentity{LoginName: "u", IdentityName: "admin", IsAdmin: true},
+				&models.SessionIdentity{LoginName: "u", IdentityName: testActor, IsAdmin: true},
 				now, now.Add(time.Hour))
 
 			got, err := kind.lookup(t, repo, "hash", now)

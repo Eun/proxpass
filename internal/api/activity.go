@@ -27,10 +27,11 @@ const maxActivityCommand = 200
 // Activity param keys, named so the same JSON key is not repeated across the
 // instrumented handlers (goconst). The UI's formatEvent reads these.
 const (
-	paramName      = "name"
-	paramID        = "id"
-	paramKey       = "key"
-	paramSubjectID = "subject_id"
+	paramName        = "name"
+	paramID          = "id"
+	paramKey         = "key"
+	paramSubjectID   = "subject_id"
+	paramSubjectKind = "subject_kind"
 )
 
 // activityEnabled reports whether events should be recorded. Disabled when the

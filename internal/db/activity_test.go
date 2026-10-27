@@ -9,16 +9,17 @@ import (
 
 // addEvent is a small helper to append one event at a given time. Every test
 // uses the same actor, so it is fixed here rather than taken as a parameter.
-func addEvent(t *testing.T, r Repository, eventID string, at time.Time, params map[string]any) *models.ActivityEvent {
+// It does not return the event: callers assert via ListActivity, not the
+// inserted value.
+func addEvent(t *testing.T, r Repository, eventID string, at time.Time, params map[string]any) {
 	t.Helper()
-	e := &models.ActivityEvent{EventID: eventID, Actor: "admin", OccurredAt: at, Params: params}
+	e := &models.ActivityEvent{EventID: eventID, Actor: testActor, OccurredAt: at, Params: params}
 	if err := r.AddActivityEvent(t.Context(), e); err != nil {
 		t.Fatalf("AddActivityEvent: %v", err)
 	}
 	if e.ID == 0 {
 		t.Fatal("AddActivityEvent did not assign an id")
 	}
-	return e
 }
 
 // AddActivityEvent round-trips the event id, actor, time and params.
@@ -35,7 +36,7 @@ func TestActivityRoundTrips(t *testing.T) {
 		t.Fatalf("got %d events, want 1", len(list))
 	}
 	e := list[0]
-	if e.EventID != "instance.added" || e.Actor != "admin" {
+	if e.EventID != "instance.added" || e.Actor != testActor {
 		t.Errorf("event = %+v", e)
 	}
 	if !e.OccurredAt.Equal(at.UTC()) {
