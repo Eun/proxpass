@@ -191,3 +191,16 @@ func (c *APIClient) get(ctx context.Context, path string, out any) error {
 func (c *APIClient) post(ctx context.Context, path string, out any) error {
 	return c.do(ctx, http.MethodPost, path, c.credential, out)
 }
+
+// ReportActivity tells the server what this session is doing, for the activity
+// log. The server resolves who from the credential and records the row; the
+// session never touches the database. command is sent only for the "command"
+// kind. Best-effort: callers ignore the error so a reporting hiccup never
+// affects the session. The endpoint returns 204 with no body, so out is nil.
+func (d *APIDirectory) ReportActivity(ctx context.Context, kind, command string) error {
+	body := api.SessionActivityReport{Kind: api.SessionActivityReportKind(kind)}
+	if command != "" {
+		body.Command = &command
+	}
+	return d.Client.postJSON(ctx, "/session/activity", body, nil)
+}

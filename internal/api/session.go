@@ -83,6 +83,13 @@ type SessionHandler struct {
 	latestMu      sync.Mutex
 	latestCache   *latestRelease
 	latestFetched time.Time
+
+	// activityRetention is how long activity-log rows are kept
+	// (PROXPASS_ACTIVITY_RETENTION, default 7d). Zero DISABLES activity
+	// logging: record() writes nothing and the truncator does nothing. Set
+	// with WithActivityRetention; left zero by NewSessionHandler so tests opt
+	// in explicitly. See activity.go.
+	activityRetention time.Duration
 }
 
 // NewSessionHandler returns a handler reading identities from repo.
@@ -144,6 +151,14 @@ func (h *SessionHandler) WithLatestFetcher(
 	return h
 }
 
+// WithActivityRetention sets how long activity-log rows are kept. Zero disables
+// activity logging entirely (nothing is recorded, nothing is truncated).
+// Chainable.
+func (h *SessionHandler) WithActivityRetention(d time.Duration) *SessionHandler {
+	h.activityRetention = d
+	return h
+}
+
 // GetHealth answers the liveness probe.
 func (h *SessionHandler) GetHealth(
 	_ context.Context, _ GetHealthRequestObject,
@@ -192,6 +207,11 @@ func (h *SessionHandler) ExchangeSessionToken(
 	if err := h.repo.CreateAPISession(ctx, hash, identity, now, expiresAt); err != nil {
 		return nil, err
 	}
+
+	// A token exchange is a login: record it under the resolved identity (never
+	// the login name the caller picked). Best-effort, after the session is
+	// stored so a login that succeeds is the one that is logged.
+	h.record(ctx, EventSessionLogin, identity.IdentityName, map[string]any{})
 
 	return ExchangeSessionToken200JSONResponse(SessionCredential{
 		Token:     credential,

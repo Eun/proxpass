@@ -130,6 +130,15 @@ func serveCommand() *ucli.Command {
 				Value:   true,
 				Sources: ucli.EnvVars("PROXPASS_UPDATE_CHECK"),
 			},
+			&ucli.DurationFlag{
+				Name: "activity-retention",
+				Usage: "how long to keep activity-log entries (admin mutations " +
+					"and session logins/consoles/commands). A periodic pruner " +
+					"removes older rows. Set to 0 to disable activity logging " +
+					"entirely.",
+				Value:   7 * 24 * time.Hour,
+				Sources: ucli.EnvVars("PROXPASS_ACTIVITY_RETENTION"),
+			},
 		},
 		Action: runServe,
 	}
@@ -212,6 +221,12 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 		repo, interval, logger, proxmox.DefaultDiscovererFactory)
 	go discovery.Run(ctx)
 
+	// Activity-log retention runs in the background too, pruning rows older
+	// than the window. A zero retention disables activity logging, and the
+	// pruner then returns at once.
+	activityRetention := cmd.Duration("activity-retention")
+	go api.NewActivityPruner(repo, activityRetention, logger).Run(ctx)
+
 	// A read-only snapshot of the effective configuration for the admin
 	// Settings view. Only set/unset is recorded for the secrets, never their
 	// values; the handler masks them further before they leave the process.
@@ -223,6 +238,7 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 		AdminKey:          strings.TrimSpace(cmd.String("admin-key")),
 		NSSTokenSet:       nssToken != "",
 		RESTAPITokenSet:   restAPIToken != "",
+		ActivityRetention: activityRetention.String(),
 	}
 
 	server := api.NewServerWithIDs(repo, logger, ids).
@@ -232,7 +248,8 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 		WithProtectedAdminKey(cmd.String("admin-key")).
 		WithSettings(settingsSnapshot).
 		WithVersion(version.String()).
-		WithUpdateCheck(cmd.Bool("update-check"))
+		WithUpdateCheck(cmd.Bool("update-check")).
+		WithActivityRetention(activityRetention)
 
 	logger.Printf("serving directory + session + admin API on %s (nss auth: %t)",
 		listenAddr, nssToken != "")

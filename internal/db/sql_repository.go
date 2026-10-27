@@ -957,6 +957,87 @@ func (r *sqlRepo) RevokeAPISession(ctx context.Context, tokenHash string) error 
 	return nil
 }
 
+// --- Activity Log ---
+
+// AddActivityEvent appends one audited action. Params is marshalled to JSON
+// TEXT (the clients convention); occurred_at is stored as a Unix epoch so one
+// scan path serves both backends. On a nil Params, "{}" is stored so the row
+// always round-trips to a (possibly empty) object rather than null.
+func (r *sqlRepo) AddActivityEvent(ctx context.Context, event *models.ActivityEvent) error {
+	params := event.Params
+	if params == nil {
+		params = map[string]any{}
+	}
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		return fmt.Errorf("marshalling activity params: %w", err)
+	}
+	return r.queryRow(ctx,
+		`INSERT INTO activity_log (event_id, actor, occurred_at, params)
+		 VALUES (?, ?, ?, ?) RETURNING id`,
+		event.EventID, event.Actor, event.OccurredAt.Unix(), string(paramsJSON),
+	).Scan(&event.ID)
+}
+
+// ListActivity returns a newest-first page of events. A non-positive limit
+// falls back to a sane default so a caller cannot ask for an unbounded scan;
+// offset is clamped to >= 0. occurred_at ties are broken by id DESC so the
+// order is stable across pages even when several events share a second.
+func (r *sqlRepo) ListActivity(ctx context.Context, limit, offset int) ([]*models.ActivityEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := r.db.QueryContext(ctx, r.d.rebind(
+		`SELECT id, event_id, actor, occurred_at, params
+		 FROM activity_log
+		 ORDER BY occurred_at DESC, id DESC
+		 LIMIT ? OFFSET ?`), limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var list []*models.ActivityEvent
+	for rows.Next() {
+		e := &models.ActivityEvent{}
+		var occurred int64
+		var paramsStr string
+		if err := rows.Scan(&e.ID, &e.EventID, &e.Actor, &occurred, &paramsStr); err != nil {
+			return nil, err
+		}
+		e.OccurredAt = time.Unix(occurred, 0).UTC()
+		_ = json.Unmarshal([]byte(paramsStr), &e.Params)
+		list = append(list, e)
+	}
+	return list, rows.Err()
+}
+
+// CountActivity returns the total number of events, for pagination.
+func (r *sqlRepo) CountActivity(ctx context.Context) (int, error) {
+	var n int
+	if err := r.queryRow(ctx, "SELECT COUNT(*) FROM activity_log").Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// DeleteActivityOlderThan removes events older than cutoff and returns how many
+// rows were deleted, so the retention loop can log what it pruned.
+func (r *sqlRepo) DeleteActivityOlderThan(ctx context.Context, cutoff time.Time) (int, error) {
+	res, err := r.exec(ctx,
+		"DELETE FROM activity_log WHERE occurred_at < ?", cutoff.Unix())
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, nil // deletion succeeded; the count is best-effort
+	}
+	return int(n), nil
+}
+
 // --- Access Control Check ---
 
 // HasAccess returns true if clientID is allowed to reach guestID.

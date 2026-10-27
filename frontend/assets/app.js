@@ -47,6 +47,12 @@ function app() {
         // currentResource() and go() consult this map alongside `resources`.
         dynamicResources: {},
 
+        // Activity log (the dedicated Activity view). entries is the current
+        // page newest-first; total backs pagination; recent is the small set
+        // shown on the dashboard panel. limit/offset drive paging.
+        activity: { entries: [], total: 0, limit: 25, offset: 0 },
+        recentActivity: [],
+
         modal: { open: false, mode: 'create', step: 0, data: {} },
 
         // In-app confirmation dialog (replaces the browser's native confirm()).
@@ -75,6 +81,7 @@ function app() {
         get nav() {
             return [
                 { id: 'dashboard', label: 'Dashboard', icon: icon.home },
+                { id: 'activity', label: 'Activity', icon: icon.clock },
                 { id: 'instances', label: 'Proxmox Nodes', icon: icon.server },
                 { id: 'guests', label: 'Proxmox Guests', icon: icon.desktop },
                 { id: 'clients', label: 'Clients', icon: icon.users },
@@ -362,6 +369,7 @@ function app() {
                 window.location.hash = id;
             }
             if (id === 'dashboard') return this.loadDashboard();
+            if (id === 'activity') { this.activity.offset = 0; return this.loadActivity(); }
             if (id === 'access') return this.loadAccess('/access-rules', 'guest');
             if (id === 'instanceAccess') return this.loadAccess('/instance-access-rules', 'instance');
             if (id === 'policy') return this.loadPolicy();
@@ -389,6 +397,91 @@ function app() {
             finally { this.loading = false; }
         },
 
+        // ---- activity log ----
+        // loadActivity fetches the current page of the activity log (newest
+        // first). The server paginates with limit/offset and returns the total,
+        // which drives the pager. A failure is non-fatal: the view just shows
+        // nothing.
+        async loadActivity() {
+            this.loading = true;
+            try {
+                const q = '?limit=' + this.activity.limit + '&offset=' + this.activity.offset;
+                const page = await this.request('GET', '/activity' + q);
+                this.activity.entries = (page && page.entries) || [];
+                this.activity.total = (page && page.total) || 0;
+            } catch (e) { this.fail(e); }
+            finally { this.loading = false; }
+        },
+        activityPageCount() {
+            return Math.max(1, Math.ceil(this.activity.total / this.activity.limit));
+        },
+        activityPageIndex() {
+            return Math.floor(this.activity.offset / this.activity.limit) + 1;
+        },
+        activityHasPrev() { return this.activity.offset > 0; },
+        activityHasNext() {
+            return this.activity.offset + this.activity.limit < this.activity.total;
+        },
+        activityPrev() {
+            if (!this.activityHasPrev()) return;
+            this.activity.offset = Math.max(0, this.activity.offset - this.activity.limit);
+            this.loadActivity();
+        },
+        activityNext() {
+            if (!this.activityHasNext()) return;
+            this.activity.offset += this.activity.limit;
+            this.loadActivity();
+        },
+
+        // loadRecentActivity fetches the newest few entries for the dashboard
+        // panel. Cheap (a small limit) and best-effort.
+        async loadRecentActivity() {
+            try {
+                const page = await this.request('GET', '/activity?limit=8&offset=0');
+                this.recentActivity = (page && page.entries) || [];
+            } catch (_) { /* dashboard panel is cosmetic; ignore */ }
+        },
+
+        // formatEvent renders one activity entry as a human-readable line, chosen
+        // by its event_id and filled from its params. The server stores data, not
+        // prose, so the wording lives here and can change without a migration. An
+        // unknown event id degrades to the raw id rather than throwing.
+        formatEvent(entry) {
+            const p = entry.params || {};
+            const name = p.name || ('#' + (p.id ?? '?'));
+            const subj = (p.subject_kind ? p.subject_kind : 'subject') + ' #' + (p.subject_id ?? '?');
+            switch (entry.event_id) {
+                case 'instance.added': return 'added Proxmox node ' + name;
+                case 'instance.updated': return 'updated Proxmox node ' + name;
+                case 'instance.removed': return 'removed Proxmox node ' + name;
+                case 'client.added': return 'added client ' + name;
+                case 'client.updated': return 'updated client ' + name;
+                case 'client.removed': return 'removed client ' + name;
+                case 'group.added': return 'added group ' + name;
+                case 'group.updated': return 'updated group ' + name;
+                case 'group.removed': return 'removed group ' + name;
+                case 'admin_key.added': return 'added admin key ' + (p.key || '');
+                case 'admin_key.removed': return 'removed admin key ' + (p.key || '');
+                case 'access.granted': return 'granted ' + subj + ' access to ' + countOf(p.guest_ids) + ' guest(s)';
+                case 'access.revoked': return 'revoked ' + subj + ' access to ' + countOf(p.guest_ids) + ' guest(s)';
+                case 'instance_access.granted': return 'granted ' + subj + ' access to ' + countOf(p.instance_ids) + ' node(s)';
+                case 'instance_access.revoked': return 'revoked ' + subj + ' access to ' + countOf(p.instance_ids) + ' node(s)';
+                case 'policy.set': return 'set the default access policy (' + (p.client_count ?? 0) + ' client(s), ' + (p.group_count ?? 0) + ' group(s))';
+                case 'setting.changed': return 'changed setting ' + (p.key || '');
+                case 'discovery.ran': return 'ran discovery (' + (p.instance_count ?? 0) + ' node(s), ' + (p.guests_found ?? 0) + ' guest(s))';
+                case 'session.login': return 'signed in';
+                case 'session.console.opened': return 'opened a console';
+                case 'session.command.run': return 'ran a command: ' + (p.command || '');
+                case 'session.sftp.opened': return 'started an SFTP session';
+                default: return entry.event_id;
+            }
+        },
+        // formatActivityTime renders the timestamp as a local, readable string.
+        formatActivityTime(iso) {
+            const d = new Date(iso);
+            return isNaN(d.getTime()) ? iso : d.toLocaleString();
+        },
+
         // ---- dashboard ----
         async loadDashboard() {
             this.loading = true;
@@ -403,6 +496,7 @@ function app() {
                 this.cache.guests = guests || [];
                 this.cache.clients = clients || [];
                 this.cache.groups = groups || [];
+                this.loadRecentActivity();
                 this.$nextTick(() => this.drawChart());
             } catch (e) { this.fail(e); }
             finally { this.loading = false; }
@@ -1015,6 +1109,12 @@ function app() {
 }
 
 // ---- small utilities ----
+// countOf returns the length of an array param, or 0 when absent, for the
+// activity formatter's "N guest(s)" style summaries.
+function countOf(v) {
+    return Array.isArray(v) ? v.length : 0;
+}
+
 function parseList(v, kind) {
     if (Array.isArray(v)) return v;
     const s = (v || '').trim();
@@ -1043,4 +1143,5 @@ const icon = {
     shield: '<svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>',
     cog: '<svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>',
     refresh: '<svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>',
+    clock: '<svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>',
 };

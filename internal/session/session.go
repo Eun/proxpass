@@ -79,6 +79,7 @@ type Deps struct {
 func Run(ctx context.Context, d *Deps) int {
 	cmd := strings.TrimSpace(d.Command)
 	d.logDispatch(cmd)
+	d.reportActivity(ctx, cmd)
 
 	switch {
 	case isHelp(cmd):
@@ -156,6 +157,43 @@ func (d *Deps) logDispatch(cmd string) {
 	}
 	d.Logger.Printf("%s: session: kind=%s command=%s",
 		d.IdentityName, dispatchKind(cmd), quoteForLog(cmd))
+}
+
+// reportActivity reports this session's action to the server for the activity
+// log, best-effort. The server records who from the credential; the session
+// only says WHAT. help and the admin/CLI browsing paths are not activity worth
+// logging, so they report nothing. The command text is sent only for a command,
+// length-bounded, and NEVER the login name (which the caller picks) -- the same
+// rule logDispatch follows.
+//
+// Errors are ignored: a failed report (e.g. logging disabled server-side) must
+// never affect the session.
+func (d *Deps) reportActivity(ctx context.Context, cmd string) {
+	if d.Dir == nil {
+		return
+	}
+	kind, command, ok := activityReport(cmd)
+	if !ok {
+		return
+	}
+	_ = d.Dir.ReportActivity(ctx, kind, command)
+}
+
+// activityReport maps a dispatch to the activity kind + command to report, and
+// whether it should be reported at all. Kept beside dispatchKind so the two
+// agree on what a command means.
+func activityReport(cmd string) (kind, command string, ok bool) {
+	switch dispatchKind(cmd) {
+	case "sftp":
+		return "sftp", "", true
+	case "command":
+		return "command", quoteForLog(cmd), true
+	case "login-name":
+		// A bare login (ssh ct100@host) opens a console/connection.
+		return "console", "", true
+	default: // help, and anything else: not activity to log.
+		return "", "", false
+	}
 }
 
 // dispatchKind names the branch Run will take for cmd.

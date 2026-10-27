@@ -202,6 +202,11 @@ type Server struct {
 	// tests, passed through to the SessionHandler. Nil uses the real fetch.
 	// Set with WithLatestFetcher.
 	latestFetcher func(context.Context) (latestRelease, error)
+
+	// activityRetention is how long activity-log rows are kept, passed through
+	// to the SessionHandler. Zero disables activity logging. Set from
+	// PROXPASS_ACTIVITY_RETENTION with WithActivityRetention.
+	activityRetention time.Duration
 }
 
 // NewServer builds the directory server with the default id layout.
@@ -289,6 +294,13 @@ func (s *Server) WithLatestFetcher(
 	f func(context.Context) (latestRelease, error),
 ) *Server {
 	s.latestFetcher = f
+	return s
+}
+
+// WithActivityRetention sets how long activity-log rows are kept, passed
+// through to the session handler. Zero disables activity logging. Chainable.
+func (s *Server) WithActivityRetention(d time.Duration) *Server {
+	s.activityRetention = d
 	return s
 }
 
@@ -405,7 +417,8 @@ func (s *Server) sessionHandler() *SessionHandler {
 		WithSettings(s.settings).
 		WithVersion(s.version).
 		WithUpdateCheck(s.updateCheck).
-		WithLatestFetcher(s.latestFetcher)
+		WithLatestFetcher(s.latestFetcher).
+		WithActivityRetention(s.activityRetention)
 }
 
 // checkTermProxySupport is the default termProxyChecker wired in production: it
