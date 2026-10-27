@@ -102,17 +102,29 @@ if [ -n "${PROXPASS_REST_API_TOKEN:-}" ]; then
 fi
 
 serve_pid=""
+sshd_pid=""
 
-# Forward SIGTERM/SIGINT to both children so `docker stop' is a clean shutdown
-# and not a 10 second wait followed by SIGKILL.
+# Forward SIGTERM/SIGINT to both children so `docker stop' AND CTRL+C are a
+# clean shutdown, not a 10 second wait followed by SIGKILL.
+#
+# This shell stays PID 1 for the container's whole life -- it does NOT `exec'
+# sshd away (see the launch block below), which is what keeps this trap
+# installed. If sshd replaced the shell, PID 1 would be sshd, whose -D listener
+# ignores SIGINT, so CTRL+C left the container running while only the
+# backgrounded serve exited.
 terminate() {
 	trap - TERM INT
-	if [ -n "${serve_pid}" ]; then
-		kill -TERM "${serve_pid}" 2>/dev/null || true
-	fi
-	# sshd is this shell's foreground child until we exec it away; killing the
-	# whole process group covers both cases.
-	kill -TERM 0 2>/dev/null || true
+	for pid in "${serve_pid}" "${sshd_pid}"; do
+		[ -n "${pid}" ] || continue
+		kill -TERM "${pid}" 2>/dev/null || true
+	done
+	# Give the children a moment to exit on their own SIGTERM handlers (serve
+	# shuts down gracefully) before the container goes away.
+	for pid in "${serve_pid}" "${sshd_pid}"; do
+		[ -n "${pid}" ] || continue
+		wait "${pid}" 2>/dev/null || true
+	done
+	exit 0
 }
 trap terminate TERM INT
 
@@ -359,8 +371,25 @@ if [ "$#" -eq 0 ]; then
 	log "proxpass nss api is up"
 	fix_db_mode
 
-	# -D: stay in the foreground, -e: log to stderr so `docker logs' works.
-	exec /usr/sbin/sshd -D -e
+	# Run sshd in the BACKGROUND rather than exec'ing it, so this shell stays
+	# PID 1 and its SIGINT/SIGTERM trap keeps working for the container's whole
+	# life. -D: stay in the foreground (of its own process), -e: log to stderr
+	# so `docker logs' works.
+	/usr/sbin/sshd -D -e &
+	sshd_pid=$!
+
+	# Supervise both children. We poll rather than `wait' because a bare `wait'
+	# only returns once ALL children exit, and dash has no `wait -n' (0.5.12) to
+	# wake on the first one -- so a single dead daemon would go unnoticed. The
+	# `sleep' is interrupted by a trapped SIGINT/SIGTERM, so CTRL+C / docker stop
+	# still run terminate() promptly (within the poll interval at worst), and if
+	# either serve or sshd dies on its own we tear the other down and exit, so
+	# the container never lingers half-alive with one daemon gone.
+	while kill -0 "${serve_pid}" 2>/dev/null && kill -0 "${sshd_pid}" 2>/dev/null; do
+		sleep 1
+	done
+	log "a managed process exited; shutting the container down"
+	terminate
 fi
 
 exec "$@"
