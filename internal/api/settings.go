@@ -17,14 +17,15 @@ import (
 // from the database at request time (it can change without a restart, unlike
 // the rest), so ListSettings fetches it from the repo.
 type SettingsSnapshot struct {
-	Data              string // --data (PROXPASS_DATA): sqlite path or postgres DSN
-	LogLevel          string // --log-level
-	DiscoveryInterval string // --discovery-interval
-	Listen            string // --listen (the one API listener)
-	AdminKey          string // --admin-key: a PUBLIC key, so shown in cleartext
-	NSSTokenSet       bool   // whether --nss-token was supplied (secret)
-	RESTAPITokenSet   bool   // whether --rest-api-token was supplied (secret)
-	ActivityRetention string // --activity-retention (0 = logging disabled)
+	Data                  string // --data (PROXPASS_DATA): sqlite path or postgres DSN
+	LogLevel              string // --log-level
+	DiscoveryInterval     string // --discovery-interval
+	Listen                string // --listen (the one API listener)
+	AdminKey              string // --admin-key: a PUBLIC key, so shown in cleartext
+	NSSTokenSet           bool   // whether --nss-token was supplied (secret)
+	RESTAPITokenSet       bool   // whether --rest-api-token was supplied (secret)
+	ActivityRetention     string // --activity-retention (0 = logging disabled)
+	ActivityPruneInterval string // --activity-prune-interval (pruner cadence)
 }
 
 // maskSecretSet renders a secret as its set/unset status without revealing it.
@@ -77,6 +78,7 @@ func buildSettings(s *SettingsSnapshot, publicEndpoint string) []SettingEntry {
 		entry("PROXPASS_NSS_TOKEN", maskSecretSet(s.NSSTokenSet)),
 		entry("PROXPASS_REST_API_TOKEN", maskSecretSet(s.RESTAPITokenSet)),
 		entry("PROXPASS_ACTIVITY_RETENTION", activityRetentionDisplay(s.ActivityRetention)),
+		entry("PROXPASS_ACTIVITY_PRUNE_INTERVAL", s.ActivityPruneInterval),
 	}
 }
 
