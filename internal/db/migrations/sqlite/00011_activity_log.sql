@@ -7,12 +7,14 @@
 -- render the line later -- the UI formats the human-readable text from the
 -- event_id + params, so the log stores data, not prose.
 --
--- params is a JSON object stored as TEXT, the same convention clients use for
--- public_keys/group_ids: one column type that scans identically on both
--- backends. occurred_at is a Unix epoch INTEGER rather than a TIMESTAMP, for
--- the same reason api_sessions uses INTEGER -- one scan path serves SQLite and
--- Postgres alike. The index on occurred_at backs the newest-first list and the
--- retention delete (DeleteActivityOlderThan).
+-- params is a JSON object stored as TEXT here, the same convention clients use
+-- for public_keys/group_ids. SQLite has no distinct JSONB storage type, so TEXT
+-- is the natural choice; the Postgres migration uses JSONB instead so Postgres
+-- can validate and index it, but the Go scan path is identical either way (a
+-- string <-> json.Marshal/Unmarshal round-trip). occurred_at is a Unix epoch
+-- INTEGER rather than a TIMESTAMP, for the same reason api_sessions uses INTEGER
+-- -- one scan path serves SQLite and Postgres alike. The index on occurred_at
+-- backs the newest-first list and the retention delete (DeleteActivityOlderThan).
 CREATE TABLE IF NOT EXISTS activity_log (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id    TEXT    NOT NULL,
