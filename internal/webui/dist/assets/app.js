@@ -68,6 +68,11 @@ function app() {
         // file's path on the server is deliberately not exposed to the UI.
         keyHint: { open: false, host: '', user: '', sshConsole: false, message: '', publicKey: '' },
 
+        // activityDetail backs the read-only dialog opened by clicking an
+        // activity row: it holds the whole entry so the dialog can show the full
+        // command, the raw params, and the event metadata.
+        activityDetail: { open: false, entry: null },
+
         // policy + discovery view state. policyForm holds arrays of selected
         // client/group IDs; the clients/groups lists to pick from come from
         // cache.clients / cache.groups (loaded by loadPolicy).
@@ -471,10 +476,29 @@ function app() {
                 case 'discovery.ran': return 'ran discovery (' + (p.instance_count ?? 0) + ' node(s), ' + (p.guests_found ?? 0) + ' guest(s))';
                 case 'session.login': return 'signed in';
                 case 'session.console.opened': return 'opened a console';
-                case 'session.command.run': return 'ran a command: ' + (p.command || '');
+                // The command itself is NOT concatenated here: an empty command
+                // would leave a dangling "ran a command: ", and a long one would
+                // blow out the line. The Activity table renders the command in a
+                // code block next to this text (truncated, with the full text in
+                // the details dialog); callers that want only prose get a clean
+                // "ran a command".
+                case 'session.command.run': return 'ran a command';
                 case 'session.sftp.opened': return 'started an SFTP session';
                 default: return entry.event_id;
             }
+        },
+        // activityCommand returns the command string for a command event, or ''
+        // for anything else. Used to decide whether to render the code block.
+        activityCommand(entry) {
+            if (!entry || entry.event_id !== 'session.command.run') return '';
+            return (entry.params && entry.params.command) || '';
+        },
+        // truncateCommand shortens a command for the one-line table cell; the
+        // full text is always available in the details dialog.
+        truncateCommand(cmd) {
+            const max = 60;
+            if (!cmd) return '';
+            return cmd.length > max ? cmd.slice(0, max) + '…' : cmd;
         },
         // formatActivityTime renders the timestamp as a local, readable string.
         formatActivityTime(iso) {
@@ -668,6 +692,20 @@ function app() {
             this.keyHint = { open: true, host, user, sshConsole, message, publicKey };
         },
         closeKeyHint() { this.keyHint = { open: false, host: '', user: '', sshConsole: false, message: '', publicKey: '' }; },
+
+        // ---- activity detail dialog ----
+        // openActivityDetail shows the full record for one activity row, including
+        // the complete command (never truncated here) and the raw params.
+        openActivityDetail(entry) { this.activityDetail = { open: true, entry }; },
+        closeActivityDetail() { this.activityDetail = { open: false, entry: null }; },
+        // activityDetailParams renders the entry's params as pretty JSON for the
+        // dialog, so nothing recorded is hidden from an operator.
+        activityDetailParams() {
+            const e = this.activityDetail.entry;
+            if (!e || !e.params || Object.keys(e.params).length === 0) return '';
+            try { return JSON.stringify(e.params, null, 2); }
+            catch (_) { return String(e.params); }
+        },
         async copyKeyHint() {
             const text = this.keyHint.publicKey;
             if (!text) return;
