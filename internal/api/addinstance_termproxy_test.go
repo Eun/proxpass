@@ -61,7 +61,7 @@ func TestAddInstanceSkipsTermproxyCheckForSSH(t *testing.T) {
 
 	body := addInstanceBody()
 	body.ConsoleTransport = ProxmoxInstanceConsoleTransportSSH
-	body.SSHHost = "pve.example"
+	body.SSHHost = testSSHHost
 	resp, err := h.AddInstance(ctx, AddInstanceRequestObject{Body: &body})
 	if err != nil {
 		t.Fatalf("AddInstance: %v", err)
