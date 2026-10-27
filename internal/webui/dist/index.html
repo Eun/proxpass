@@ -237,29 +237,35 @@
                                     </div>
                                 </template>
                             </div>
-                            <div class="bg-white rounded-lg shadow p-6 mt-6">
-                                <h3 class="font-semibold text-secondary mb-4">Guests by status</h3>
-                                <canvas id="guestChart" height="90"></canvas>
-                            </div>
-                            <!-- Recent activity: the newest few audited actions,
-                                 newest at the top, each formatted from its event. -->
-                            <div class="bg-white rounded-lg shadow p-6 mt-6">
-                                <div class="flex items-center justify-between mb-4">
-                                    <h3 class="font-semibold text-secondary">Recent activity</h3>
-                                    <button @click="go('activity')" class="text-sm text-primary hover:underline">View all</button>
+                            <!-- Guests by status and Recent activity sit side by
+                                 side on wide screens (two columns), stacking only
+                                 on narrow ones. The grid gap replaces the old
+                                 mt-6 stacking margins. -->
+                            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+                                <div class="bg-white rounded-lg shadow p-6">
+                                    <h3 class="font-semibold text-secondary mb-4">Guests by status</h3>
+                                    <canvas id="guestChart" height="90"></canvas>
                                 </div>
-                                <template x-if="recentActivity.length === 0">
-                                    <p class="text-sm text-gray-400">No activity recorded.</p>
-                                </template>
-                                <ul class="divide-y divide-gray-100">
-                                    <template x-for="e in recentActivity" :key="e.id">
-                                        <li class="py-2 flex items-baseline gap-3 text-sm">
-                                            <span class="text-gray-400 whitespace-nowrap text-xs" x-text="formatActivityTime(e.occurred_at)"></span>
-                                            <span class="font-medium" x-text="e.actor"></span>
-                                            <span class="text-gray-600" x-text="formatEvent(e)"></span>
-                                        </li>
+                                <!-- Recent activity: the newest few audited actions,
+                                     newest at the top, each formatted from its event. -->
+                                <div class="bg-white rounded-lg shadow p-6">
+                                    <div class="flex items-center justify-between mb-4">
+                                        <h3 class="font-semibold text-secondary">Recent activity</h3>
+                                        <button @click="go('activity')" class="text-sm text-primary hover:underline">View all</button>
+                                    </div>
+                                    <template x-if="recentActivity.length === 0">
+                                        <p class="text-sm text-gray-400">No activity recorded.</p>
                                     </template>
-                                </ul>
+                                    <ul class="divide-y divide-gray-100">
+                                        <template x-for="e in recentActivity" :key="e.id">
+                                            <li class="py-2 flex items-baseline gap-3 text-sm">
+                                                <span class="text-gray-400 whitespace-nowrap text-xs" x-text="formatActivityTime(e.occurred_at)"></span>
+                                                <span class="font-medium" x-text="e.actor"></span>
+                                                <span class="text-gray-600" x-text="formatEvent(e)"></span>
+                                            </li>
+                                        </template>
+                                    </ul>
+                                </div>
                             </div>
                         </div>
                     </template>
