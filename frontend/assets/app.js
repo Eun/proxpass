@@ -52,6 +52,11 @@ function app() {
         // shown on the dashboard panel. limit/offset drive paging.
         activity: { entries: [], total: 0, limit: 25, offset: 0 },
         recentActivity: [],
+        // activityTimeAbsolute toggles ALL activity-list timestamps between the
+        // relative form ("10 mins ago", the default) and the absolute form.
+        // Clicking any one timestamp flips this shared flag, so every row in the
+        // Activity table and the dashboard panel switches together.
+        activityTimeAbsolute: false,
 
         modal: { open: false, mode: 'create', step: 0, data: {} },
 
@@ -67,6 +72,11 @@ function app() {
         // deployment has no key yet, or when it could not be fetched). The key
         // file's path on the server is deliberately not exposed to the UI.
         keyHint: { open: false, host: '', user: '', sshConsole: false, message: '', publicKey: '' },
+
+        // activityDetail backs the read-only dialog opened by clicking an
+        // activity row: it holds the whole entry so the dialog can show the full
+        // command, the raw params, and the event metadata.
+        activityDetail: { open: false, entry: null },
 
         // policy + discovery view state. policyForm holds arrays of selected
         // client/group IDs; the clients/groups lists to pick from come from
@@ -471,15 +481,71 @@ function app() {
                 case 'discovery.ran': return 'ran discovery (' + (p.instance_count ?? 0) + ' node(s), ' + (p.guests_found ?? 0) + ' guest(s))';
                 case 'session.login': return 'signed in';
                 case 'session.console.opened': return 'opened a console';
-                case 'session.command.run': return 'ran a command: ' + (p.command || '');
+                // The command itself is NOT concatenated here: an empty command
+                // would leave a dangling "ran a command: ", and a long one would
+                // blow out the line. The Activity table renders the command in a
+                // code block next to this text (truncated, with the full text in
+                // the details dialog); callers that want only prose get a clean
+                // "ran a command".
+                case 'session.command.run': return 'ran a command';
                 case 'session.sftp.opened': return 'started an SFTP session';
                 default: return entry.event_id;
             }
         },
-        // formatActivityTime renders the timestamp as a local, readable string.
+        // activityCommand returns the command string for a command event, or ''
+        // for anything else. Used to decide whether to render the code block.
+        activityCommand(entry) {
+            if (!entry || entry.event_id !== 'session.command.run') return '';
+            return (entry.params && entry.params.command) || '';
+        },
+        // truncateCommand shortens a command for the one-line table cell; the
+        // full text is always available in the details dialog.
+        truncateCommand(cmd) {
+            const max = 60;
+            if (!cmd) return '';
+            return cmd.length > max ? cmd.slice(0, max) + '…' : cmd;
+        },
+        // formatActivityTime renders the timestamp as a local, readable string
+        // (the full absolute time). Used in the detail dialog and as the hover
+        // title on the relative times in the lists.
         formatActivityTime(iso) {
             const d = new Date(iso);
             return isNaN(d.getTime()) ? iso : d.toLocaleString();
+        },
+        // formatRelativeTime renders a timestamp as a short relative string
+        // ("just now", "10 mins ago", "3 hours ago", "2 days ago"). It is what
+        // the activity lists show, since "how long ago" is what an operator scans
+        // for. Past ~7 days a relative string stops being useful (and matches the
+        // default retention window), so it falls back to the absolute date; a
+        // future timestamp (clock skew) also falls back rather than read oddly.
+        formatRelativeTime(iso) {
+            const d = new Date(iso);
+            if (isNaN(d.getTime())) return iso;
+            const secs = Math.round((Date.now() - d.getTime()) / 1000);
+            if (secs < 0) return this.formatActivityTime(iso); // future: avoid "in -5s"
+            if (secs < 45) return 'just now';
+            const mins = Math.round(secs / 60);
+            if (mins < 60) return mins + (mins === 1 ? ' min ago' : ' mins ago');
+            const hours = Math.round(mins / 60);
+            if (hours < 24) return hours + (hours === 1 ? ' hour ago' : ' hours ago');
+            const days = Math.round(hours / 24);
+            if (days <= 7) return days + (days === 1 ? ' day ago' : ' days ago');
+            // Beyond a week, the date itself is more informative than "12 days ago".
+            return d.toLocaleDateString();
+        },
+        // toggleActivityTime flips every activity-list timestamp between relative
+        // and absolute. It is bound to a click on any one timestamp, so the whole
+        // list switches together rather than one row at a time.
+        toggleActivityTime() { this.activityTimeAbsolute = !this.activityTimeAbsolute; },
+        // activityTimeText is what a list timestamp SHOWS: the absolute time when
+        // toggled on, the relative time otherwise.
+        activityTimeText(iso) {
+            return this.activityTimeAbsolute ? this.formatActivityTime(iso) : this.formatRelativeTime(iso);
+        },
+        // activityTimeTitle is the hover tooltip: always the OTHER form, so the
+        // full information is one hover (or one click) away in either mode.
+        activityTimeTitle(iso) {
+            return this.activityTimeAbsolute ? this.formatRelativeTime(iso) : this.formatActivityTime(iso);
         },
 
         // ---- dashboard ----
@@ -668,6 +734,20 @@ function app() {
             this.keyHint = { open: true, host, user, sshConsole, message, publicKey };
         },
         closeKeyHint() { this.keyHint = { open: false, host: '', user: '', sshConsole: false, message: '', publicKey: '' }; },
+
+        // ---- activity detail dialog ----
+        // openActivityDetail shows the full record for one activity row, including
+        // the complete command (never truncated here) and the raw params.
+        openActivityDetail(entry) { this.activityDetail = { open: true, entry }; },
+        closeActivityDetail() { this.activityDetail = { open: false, entry: null }; },
+        // activityDetailParams renders the entry's params as pretty JSON for the
+        // dialog, so nothing recorded is hidden from an operator.
+        activityDetailParams() {
+            const e = this.activityDetail.entry;
+            if (!e || !e.params || Object.keys(e.params).length === 0) return '';
+            try { return JSON.stringify(e.params, null, 2); }
+            catch (_) { return String(e.params); }
+        },
         async copyKeyHint() {
             const text = this.keyHint.publicKey;
             if (!text) return;

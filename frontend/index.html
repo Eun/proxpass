@@ -258,10 +258,15 @@
                                     </template>
                                     <ul class="divide-y divide-gray-100">
                                         <template x-for="e in recentActivity" :key="e.id">
-                                            <li class="py-2 flex items-baseline gap-3 text-sm">
-                                                <span class="text-gray-400 whitespace-nowrap text-xs" x-text="formatActivityTime(e.occurred_at)"></span>
+                                            <li class="py-2 flex items-baseline gap-2 text-sm cursor-pointer hover:bg-gray-50 -mx-2 px-2 rounded" @click="openActivityDetail(e)" title="Show details">
+                                                <span class="text-gray-400 whitespace-nowrap text-xs cursor-pointer underline decoration-dotted decoration-gray-400 underline-offset-2 hover:text-gray-600"
+                                                    @click.stop="toggleActivityTime()"
+                                                    x-text="activityTimeText(e.occurred_at)" :title="activityTimeTitle(e.occurred_at)"></span>
                                                 <span class="font-medium" x-text="e.actor"></span>
                                                 <span class="text-gray-600" x-text="formatEvent(e)"></span>
+                                                <code x-show="activityCommand(e)"
+                                                    class="min-w-0 truncate bg-gray-100 text-gray-800 rounded px-1.5 py-0.5 text-xs font-mono"
+                                                    x-text="truncateCommand(activityCommand(e))"></code>
                                             </li>
                                         </template>
                                     </ul>
@@ -290,10 +295,21 @@
                                     </thead>
                                     <tbody class="divide-y divide-gray-100">
                                         <template x-for="e in activity.entries" :key="e.id">
-                                            <tr class="hover:bg-gray-50">
-                                                <td class="px-4 py-3 align-top whitespace-nowrap text-gray-500" x-text="formatActivityTime(e.occurred_at)"></td>
+                                            <tr class="hover:bg-gray-50 cursor-pointer" @click="openActivityDetail(e)" title="Show details">
+                                                <td class="px-4 py-3 align-top whitespace-nowrap text-gray-500">
+                                                    <span class="cursor-pointer underline decoration-dotted decoration-gray-400 underline-offset-2 hover:text-gray-700"
+                                                        @click.stop="toggleActivityTime()"
+                                                        x-text="activityTimeText(e.occurred_at)" :title="activityTimeTitle(e.occurred_at)"></span>
+                                                </td>
                                                 <td class="px-4 py-3 align-top font-medium" x-text="e.actor"></td>
-                                                <td class="px-4 py-3 align-top" x-text="formatEvent(e)"></td>
+                                                <td class="px-4 py-3 align-top">
+                                                    <span x-text="formatEvent(e)"></span>
+                                                    <!-- A run command renders in a code block beside the text,
+                                                         truncated for the row; the full text is in the dialog. -->
+                                                    <code x-show="activityCommand(e)"
+                                                        class="ml-2 inline-block max-w-full align-bottom truncate bg-gray-100 text-gray-800 rounded px-1.5 py-0.5 text-xs font-mono"
+                                                        x-text="truncateCommand(activityCommand(e))"></code>
+                                                </td>
                                             </tr>
                                         </template>
                                         <template x-if="!loading && activity.entries.length === 0">
@@ -741,6 +757,50 @@
                         </div>
                         <div class="flex justify-end gap-3 p-4 border-t">
                             <button @click="closeKeyHint()" class="bg-primary hover:opacity-90 text-white font-medium px-4 py-2 rounded transition">Got it</button>
+                        </div>
+                    </div>
+                </div>
+            </template>
+
+            <!-- Activity detail dialog: the read-only record for one activity
+                 row, opened by clicking it. Shows the event metadata, the full
+                 command (never truncated here), and the raw recorded params. -->
+            <template x-if="activityDetail.open">
+                <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
+                    <div class="fixed inset-0 bg-black opacity-50" @click="closeActivityDetail()"></div>
+                    <div class="relative bg-white rounded-lg shadow-xl w-full max-w-xl max-h-[90vh] overflow-y-auto custom-scrollbar">
+                        <div class="flex items-center justify-between p-4 border-b">
+                            <h3 class="font-semibold text-secondary">Activity details</h3>
+                            <button @click="closeActivityDetail()" class="text-gray-400 hover:text-gray-700 text-xl">&times;</button>
+                        </div>
+                        <div class="p-6 space-y-4 text-sm" x-show="activityDetail.entry">
+                            <div>
+                                <div class="text-xs font-medium text-gray-500 uppercase tracking-wide">When</div>
+                                <div class="mt-0.5 text-gray-800" x-text="formatRelativeTime(activityDetail.entry.occurred_at)"></div>
+                                <div class="mt-0.5 text-xs text-gray-400" x-text="formatActivityTime(activityDetail.entry.occurred_at)"></div>
+                            </div>
+                            <div>
+                                <div class="text-xs font-medium text-gray-500 uppercase tracking-wide">Who</div>
+                                <div class="mt-0.5 text-gray-800 font-medium" x-text="activityDetail.entry.actor"></div>
+                            </div>
+                            <div>
+                                <div class="text-xs font-medium text-gray-500 uppercase tracking-wide">Activity</div>
+                                <div class="mt-0.5 text-gray-800" x-text="formatEvent(activityDetail.entry)"></div>
+                                <div class="mt-0.5 text-xs text-gray-400 font-mono" x-text="activityDetail.entry.event_id"></div>
+                            </div>
+                            <!-- The full command, verbatim, for a run command event. -->
+                            <div x-show="activityCommand(activityDetail.entry)">
+                                <div class="text-xs font-medium text-gray-500 uppercase tracking-wide">Command</div>
+                                <pre class="mt-1 bg-gray-50 border rounded p-3 text-xs overflow-x-auto whitespace-pre-wrap break-all select-all font-mono" x-text="activityCommand(activityDetail.entry)"></pre>
+                            </div>
+                            <!-- Everything recorded, so nothing is hidden. -->
+                            <div x-show="activityDetailParams()">
+                                <div class="text-xs font-medium text-gray-500 uppercase tracking-wide">Parameters</div>
+                                <pre class="mt-1 bg-gray-50 border rounded p-3 text-xs overflow-x-auto whitespace-pre-wrap break-all select-all font-mono" x-text="activityDetailParams()"></pre>
+                            </div>
+                        </div>
+                        <div class="flex justify-end gap-3 p-4 border-t">
+                            <button @click="closeActivityDetail()" class="bg-primary hover:opacity-90 text-white font-medium px-4 py-2 rounded transition">Close</button>
                         </div>
                     </div>
                 </div>
