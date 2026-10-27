@@ -52,6 +52,11 @@ function app() {
         // shown on the dashboard panel. limit/offset drive paging.
         activity: { entries: [], total: 0, limit: 25, offset: 0 },
         recentActivity: [],
+        // activityTimeAbsolute toggles ALL activity-list timestamps between the
+        // relative form ("10 mins ago", the default) and the absolute form.
+        // Clicking any one timestamp flips this shared flag, so every row in the
+        // Activity table and the dashboard panel switches together.
+        activityTimeAbsolute: false,
 
         modal: { open: false, mode: 'create', step: 0, data: {} },
 
@@ -527,6 +532,20 @@ function app() {
             if (days <= 7) return days + (days === 1 ? ' day ago' : ' days ago');
             // Beyond a week, the date itself is more informative than "12 days ago".
             return d.toLocaleDateString();
+        },
+        // toggleActivityTime flips every activity-list timestamp between relative
+        // and absolute. It is bound to a click on any one timestamp, so the whole
+        // list switches together rather than one row at a time.
+        toggleActivityTime() { this.activityTimeAbsolute = !this.activityTimeAbsolute; },
+        // activityTimeText is what a list timestamp SHOWS: the absolute time when
+        // toggled on, the relative time otherwise.
+        activityTimeText(iso) {
+            return this.activityTimeAbsolute ? this.formatActivityTime(iso) : this.formatRelativeTime(iso);
+        },
+        // activityTimeTitle is the hover tooltip: always the OTHER form, so the
+        // full information is one hover (or one click) away in either mode.
+        activityTimeTitle(iso) {
+            return this.activityTimeAbsolute ? this.formatRelativeTime(iso) : this.formatActivityTime(iso);
         },
 
         // ---- dashboard ----

@@ -259,7 +259,9 @@
                                     <ul class="divide-y divide-gray-100">
                                         <template x-for="e in recentActivity" :key="e.id">
                                             <li class="py-2 flex items-baseline gap-2 text-sm cursor-pointer hover:bg-gray-50 -mx-2 px-2 rounded" @click="openActivityDetail(e)" title="Show details">
-                                                <span class="text-gray-400 whitespace-nowrap text-xs" x-text="formatRelativeTime(e.occurred_at)" :title="formatActivityTime(e.occurred_at)"></span>
+                                                <span class="text-gray-400 whitespace-nowrap text-xs cursor-pointer underline decoration-dotted decoration-gray-400 underline-offset-2 hover:text-gray-600"
+                                                    @click.stop="toggleActivityTime()"
+                                                    x-text="activityTimeText(e.occurred_at)" :title="activityTimeTitle(e.occurred_at)"></span>
                                                 <span class="font-medium" x-text="e.actor"></span>
                                                 <span class="text-gray-600" x-text="formatEvent(e)"></span>
                                                 <code x-show="activityCommand(e)"
@@ -294,7 +296,11 @@
                                     <tbody class="divide-y divide-gray-100">
                                         <template x-for="e in activity.entries" :key="e.id">
                                             <tr class="hover:bg-gray-50 cursor-pointer" @click="openActivityDetail(e)" title="Show details">
-                                                <td class="px-4 py-3 align-top whitespace-nowrap text-gray-500" x-text="formatRelativeTime(e.occurred_at)" :title="formatActivityTime(e.occurred_at)"></td>
+                                                <td class="px-4 py-3 align-top whitespace-nowrap text-gray-500">
+                                                    <span class="cursor-pointer underline decoration-dotted decoration-gray-400 underline-offset-2 hover:text-gray-700"
+                                                        @click.stop="toggleActivityTime()"
+                                                        x-text="activityTimeText(e.occurred_at)" :title="activityTimeTitle(e.occurred_at)"></span>
+                                                </td>
                                                 <td class="px-4 py-3 align-top font-medium" x-text="e.actor"></td>
                                                 <td class="px-4 py-3 align-top">
                                                     <span x-text="formatEvent(e)"></span>
