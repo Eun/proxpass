@@ -24,6 +24,7 @@ type SettingsSnapshot struct {
 	AdminKey          string // --admin-key: a PUBLIC key, so shown in cleartext
 	NSSTokenSet       bool   // whether --nss-token was supplied (secret)
 	RESTAPITokenSet   bool   // whether --rest-api-token was supplied (secret)
+	ActivityRetention string // --activity-retention (0 = logging disabled)
 }
 
 // maskSecretSet renders a secret as its set/unset status without revealing it.
@@ -75,7 +76,17 @@ func buildSettings(s *SettingsSnapshot, publicEndpoint string) []SettingEntry {
 		entry("PROXPASS_ADMIN_KEY", valueOrUnset(s.AdminKey)),
 		entry("PROXPASS_NSS_TOKEN", maskSecretSet(s.NSSTokenSet)),
 		entry("PROXPASS_REST_API_TOKEN", maskSecretSet(s.RESTAPITokenSet)),
+		entry("PROXPASS_ACTIVITY_RETENTION", activityRetentionDisplay(s.ActivityRetention)),
 	}
+}
+
+// activityRetentionDisplay renders the retention value, making the "disabled"
+// case explicit rather than showing a bare "0s".
+func activityRetentionDisplay(v string) string {
+	if v == "" || v == "0s" || v == "0" {
+		return "0s (activity logging disabled)"
+	}
+	return v
 }
 
 // valueOrUnset renders an empty optional value as an explicit "(not set)" so a

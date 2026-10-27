@@ -79,6 +79,7 @@ type Deps struct {
 func Run(ctx context.Context, d *Deps) int {
 	cmd := strings.TrimSpace(d.Command)
 	d.logDispatch(cmd)
+	d.reportActivity(ctx, cmd)
 
 	switch {
 	case isHelp(cmd):
@@ -158,6 +159,52 @@ func (d *Deps) logDispatch(cmd string) {
 		d.IdentityName, dispatchKind(cmd), quoteForLog(cmd))
 }
 
+// reportActivity reports this session's action to the server for the activity
+// log, best-effort. The server records who from the credential; the session
+// only says WHAT. help and the admin/CLI browsing paths are not activity worth
+// logging, so they report nothing. The command text is sent only for a command,
+// length-bounded, and NEVER the login name (which the caller picks) -- the same
+// rule logDispatch follows.
+//
+// Errors are ignored: a failed report (e.g. logging disabled server-side) must
+// never affect the session.
+func (d *Deps) reportActivity(ctx context.Context, cmd string) {
+	if d.Dir == nil {
+		return
+	}
+	kind, command, ok := activityReport(cmd)
+	if !ok {
+		return
+	}
+	_ = d.Dir.ReportActivity(ctx, kind, command)
+}
+
+// The dispatch-kind labels, named so the same string is not repeated across
+// dispatchKind and activityReport (goconst) and the two cannot drift.
+const (
+	dispatchKindHelp      = "help"
+	dispatchKindSFTP      = "sftp"
+	dispatchKindLoginName = "login-name"
+	dispatchKindCommand   = "command"
+)
+
+// activityReport maps a dispatch to the activity kind + command to report, and
+// whether it should be reported at all. Kept beside dispatchKind so the two
+// agree on what a command means.
+func activityReport(cmd string) (kind, command string, ok bool) {
+	switch dispatchKind(cmd) {
+	case dispatchKindSFTP:
+		return "sftp", "", true
+	case dispatchKindCommand:
+		return "command", quoteForLog(cmd), true
+	case dispatchKindLoginName:
+		// A bare login (ssh ct100@host) opens a console/connection.
+		return "console", "", true
+	default: // help, and anything else: not activity to log.
+		return "", "", false
+	}
+}
+
 // dispatchKind names the branch Run will take for cmd.
 //
 // Kept beside Run's switch and in the same order, so the two cannot
@@ -165,13 +212,13 @@ func (d *Deps) logDispatch(cmd string) {
 func dispatchKind(cmd string) string {
 	switch {
 	case isHelp(cmd):
-		return "help"
+		return dispatchKindHelp
 	case isSFTPRequest(cmd):
-		return "sftp"
+		return dispatchKindSFTP
 	case cmd == "":
-		return "login-name"
+		return dispatchKindLoginName
 	default:
-		return "command"
+		return dispatchKindCommand
 	}
 }
 

@@ -630,6 +630,22 @@ func (r *AdminRepository) RevokeAPISession(context.Context, string) error {
 	panic(unsupported("RevokeAPISession"))
 }
 
+func (r *AdminRepository) AddActivityEvent(context.Context, *models.ActivityEvent) error {
+	panic(unsupported("AddActivityEvent"))
+}
+
+func (r *AdminRepository) ListActivity(context.Context, int, int) ([]*models.ActivityEvent, error) {
+	panic(unsupported("ListActivity"))
+}
+
+func (r *AdminRepository) CountActivity(context.Context) (int, error) {
+	panic(unsupported("CountActivity"))
+}
+
+func (r *AdminRepository) DeleteActivityOlderThan(context.Context, time.Time) (int, error) {
+	panic(unsupported("DeleteActivityOlderThan"))
+}
+
 // unsupported explains why a method is missing rather than just that it is.
 func unsupported(method string) string {
 	return "session: " + method + " is not available over the admin API; " +

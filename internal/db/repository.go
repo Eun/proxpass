@@ -95,6 +95,18 @@ type Repository interface {
 	LookupAPISession(ctx context.Context, tokenHash string, now time.Time) (*models.SessionIdentity, error)
 	RevokeAPISession(ctx context.Context, tokenHash string) error
 
+	// Activity Log
+	//
+	// The audit trail of state-changing admin mutations and session
+	// logins/console/sftp/commands. AddActivityEvent appends one row;
+	// ListActivity returns a newest-first page; CountActivity backs
+	// limit/offset pagination; DeleteActivityOlderThan enforces retention
+	// and returns how many rows it removed.
+	AddActivityEvent(ctx context.Context, event *models.ActivityEvent) error
+	ListActivity(ctx context.Context, limit, offset int) ([]*models.ActivityEvent, error)
+	CountActivity(ctx context.Context) (int, error)
+	DeleteActivityOlderThan(ctx context.Context, cutoff time.Time) (int, error)
+
 	// Access check (used by the proxy)
 	HasAccess(ctx context.Context, clientID, guestID int64) (bool, error)
 

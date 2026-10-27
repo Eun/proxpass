@@ -237,15 +237,88 @@
                                     </div>
                                 </template>
                             </div>
-                            <div class="bg-white rounded-lg shadow p-6 mt-6">
-                                <h3 class="font-semibold text-secondary mb-4">Guests by status</h3>
-                                <canvas id="guestChart" height="90"></canvas>
+                            <!-- Guests by status and Recent activity sit side by
+                                 side on wide screens (two columns), stacking only
+                                 on narrow ones. The grid gap replaces the old
+                                 mt-6 stacking margins. -->
+                            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+                                <div class="bg-white rounded-lg shadow p-6">
+                                    <h3 class="font-semibold text-secondary mb-4">Guests by status</h3>
+                                    <canvas id="guestChart" height="90"></canvas>
+                                </div>
+                                <!-- Recent activity: the newest few audited actions,
+                                     newest at the top, each formatted from its event. -->
+                                <div class="bg-white rounded-lg shadow p-6">
+                                    <div class="flex items-center justify-between mb-4">
+                                        <h3 class="font-semibold text-secondary">Recent activity</h3>
+                                        <button @click="go('activity')" class="text-sm text-primary hover:underline">View all</button>
+                                    </div>
+                                    <template x-if="recentActivity.length === 0">
+                                        <p class="text-sm text-gray-400">No activity recorded.</p>
+                                    </template>
+                                    <ul class="divide-y divide-gray-100">
+                                        <template x-for="e in recentActivity" :key="e.id">
+                                            <li class="py-2 flex items-baseline gap-3 text-sm">
+                                                <span class="text-gray-400 whitespace-nowrap text-xs" x-text="formatActivityTime(e.occurred_at)"></span>
+                                                <span class="font-medium" x-text="e.actor"></span>
+                                                <span class="text-gray-600" x-text="formatEvent(e)"></span>
+                                            </li>
+                                        </template>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+
+                    <!-- Activity log: a dedicated read-only, paginated view
+                         (the generic table does not paginate). Each row is
+                         formatted from its event_id + params by formatEvent. -->
+                    <template x-if="view === 'activity'">
+                        <div class="bg-white rounded-lg shadow">
+                            <div class="flex items-center justify-between p-4 border-b">
+                                <h3 class="font-semibold text-secondary">Activity log</h3>
+                                <button @click="loadActivity()" class="text-sm text-primary hover:underline">Refresh</button>
+                            </div>
+                            <div class="overflow-x-auto custom-scrollbar">
+                                <table class="min-w-full text-sm">
+                                    <thead class="bg-gray-50 text-gray-500 uppercase text-xs">
+                                        <tr>
+                                            <th class="text-left font-medium px-4 py-3">When</th>
+                                            <th class="text-left font-medium px-4 py-3">Who</th>
+                                            <th class="text-left font-medium px-4 py-3">Activity</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-gray-100">
+                                        <template x-for="e in activity.entries" :key="e.id">
+                                            <tr class="hover:bg-gray-50">
+                                                <td class="px-4 py-3 align-top whitespace-nowrap text-gray-500" x-text="formatActivityTime(e.occurred_at)"></td>
+                                                <td class="px-4 py-3 align-top font-medium" x-text="e.actor"></td>
+                                                <td class="px-4 py-3 align-top" x-text="formatEvent(e)"></td>
+                                            </tr>
+                                        </template>
+                                        <template x-if="!loading && activity.entries.length === 0">
+                                            <tr><td colspan="3" class="px-4 py-8 text-center text-gray-400">No activity recorded.</td></tr>
+                                        </template>
+                                        <template x-if="loading">
+                                            <tr><td colspan="3" class="px-4 py-8 text-center text-gray-400">Loading…</td></tr>
+                                        </template>
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div class="flex items-center justify-between p-4 border-t text-sm text-gray-500">
+                                <span x-text="'Page ' + activityPageIndex() + ' of ' + activityPageCount() + ' · ' + activity.total + ' total'"></span>
+                                <div class="flex gap-2">
+                                    <button @click="activityPrev()" :disabled="!activityHasPrev()"
+                                        class="px-3 py-1 rounded border border-gray-300 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">Previous</button>
+                                    <button @click="activityNext()" :disabled="!activityHasNext()"
+                                        class="px-3 py-1 rounded border border-gray-300 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">Next</button>
+                                </div>
                             </div>
                         </div>
                     </template>
 
                     <!-- Generic resource table -->
-                    <template x-if="view !== 'dashboard' && view !== 'discover' && view !== 'policy'">
+                    <template x-if="view !== 'dashboard' && view !== 'discover' && view !== 'policy' && view !== 'activity'">
                         <div class="bg-white rounded-lg shadow">
                             <div class="flex items-center justify-between p-4 border-b">
                                 <div class="relative w-64 max-w-full">

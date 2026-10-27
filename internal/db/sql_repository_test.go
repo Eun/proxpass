@@ -15,10 +15,12 @@ import (
 )
 
 const (
-	testKey         = "key"
-	testClientName  = "alice"
-	testTokenID     = "user@pam!token"
-	testTokenSecret = "secret"
+	testKey          = "key"
+	testClientName   = "alice"
+	testInstanceName = "pve1"
+	testActor        = "admin"
+	testTokenID      = "user@pam!token"
+	testTokenSecret  = "secret"
 	// testGrantee is the client used wherever a test needs a subject to
 	// grant something to, as distinct from testClientName.
 	testGrantee = "bob"
@@ -112,7 +114,7 @@ func TestProxmoxInstances(t *testing.T) {
 
 	const fingerprint = "SHA256:abc123+/pinnedhostkey"
 	inst := &models.ProxmoxInstance{
-		Name:           "pve1",
+		Name:           testInstanceName,
 		APIURL:         "https://pve1.local:8006",
 		APITokenID:     testTokenID,
 		APITokenSecret: testTokenSecret,
@@ -136,7 +138,7 @@ func TestProxmoxInstances(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 1 || list[0].Name != "pve1" {
+	if len(list) != 1 || list[0].Name != testInstanceName {
 		t.Fatalf("unexpected list: %+v", list)
 	}
 	// The new security fields must survive the round-trip, independently.
@@ -975,7 +977,7 @@ func TestTokensKeepTheAdminFlag(t *testing.T) {
 			repo := newTestRepo(t)
 			now := time.Now()
 			kind.store(t, repo, "hash",
-				&models.SessionIdentity{LoginName: "u", IdentityName: "admin", IsAdmin: true},
+				&models.SessionIdentity{LoginName: "u", IdentityName: testActor, IsAdmin: true},
 				now, now.Add(time.Hour))
 
 			got, err := kind.lookup(t, repo, "hash", now)

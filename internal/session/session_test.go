@@ -410,6 +410,10 @@ func (l *lazyAPIDirectory) PublicEndpoint(ctx context.Context) (string, error) {
 	return l.resolve().PublicEndpoint(ctx)
 }
 
+func (l *lazyAPIDirectory) ReportActivity(ctx context.Context, kind, command string) error {
+	return l.resolve().ReportActivity(ctx, kind, command)
+}
+
 func seedGuest(t *testing.T, repo db.Repository) *models.Guest {
 	t.Helper()
 	inst := &models.ProxmoxInstance{

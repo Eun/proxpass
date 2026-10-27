@@ -1,5 +1,7 @@
 package models
 
+import "time"
+
 type GuestType string
 
 const (
@@ -115,6 +117,22 @@ type Group struct {
 	ID        int64   `json:"id"`
 	Name      string  `json:"name"`
 	ClientIDs []int64 `json:"client_ids"`
+}
+
+// ActivityEvent is one audited action in the activity log.
+//
+// EventID names the KIND of event (an EventID enum value, dotted, e.g.
+// "instance.added"); Actor is the resolved identity that performed it (never
+// anything the request carried); OccurredAt is when; Params carries the
+// structured data the UI needs to render the line -- the log stores data, and
+// the client formats the prose from EventID + Params. ID is the row's
+// auto-increment primary key.
+type ActivityEvent struct {
+	ID         int64
+	EventID    string
+	Actor      string
+	OccurredAt time.Time
+	Params     map[string]any
 }
 
 type RuleType string

@@ -124,6 +124,32 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
+  /session/activity:
+    post:
+      tags: [session]
+      summary: Report what this session is doing, for the activity log.
+      description: |
+        The session reports the kind of thing it is about to do (a console,
+        an sftp transfer, a command) and -- for a command -- the command text,
+        so the server can record it in the activity log. The server resolves
+        WHO from the caller's own credential (never the login name, which the
+        caller picks), decides the event id from the reported kind, and writes
+        the row itself: the session never touches the database. Best-effort --
+        a failure here never affects the session, so it returns 204 regardless
+        of whether anything was stored (e.g. when activity logging is disabled).
+      operationId: reportSessionActivity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SessionActivityReport"
+      responses:
+        "204":
+          description: The report was accepted (and recorded if logging is on).
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
   /session/guests:
     get:
       tags: [session]
@@ -376,6 +402,51 @@ paths:
   # maps onto a db.Repository method. The session routes above and the NSS
   # directory routes keep their own authentication and are unaffected.
   # ---------------------------------------------------------------------------
+
+  /v1/activity:
+    get:
+      tags: [admin]
+      summary: The activity log.
+      description: |
+        A newest-first page of audited actions -- state-changing admin
+        mutations and session logins/consoles/sftp/commands. Each entry carries
+        the event id (the KIND of event) and its structured params, NOT a
+        rendered line: the client formats the text from the event id. Paginated
+        with limit/offset; total lets a client show how many there are.
+
+        Admin-only. Returns an empty page when activity logging is disabled
+        (retention set to 0).
+      operationId: listActivity
+      security:
+        - adminToken: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Maximum entries to return (default 100, capped server-side).
+          schema:
+            type: integer
+            minimum: 1
+        - name: offset
+          in: query
+          required: false
+          description: Entries to skip from the newest, for pagination.
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        "200":
+          description: A newest-first page of activity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActivityPage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/instances:
     get:
@@ -1886,6 +1957,131 @@ components:
       description: |
         Whether an access rule's subject is a client or a group; mirrors
         models.RuleType.
+
+    EventID:
+      type: string
+      description: |
+        The KIND of an activity-log event. Every audited action maps to exactly
+        one of these values -- they are unique per kind, so an entry's event id
+        both identifies the action and selects how the UI renders it. Dotted,
+        "<area>.<verb>".
+      enum:
+        - instance.added
+        - instance.updated
+        - instance.removed
+        - client.added
+        - client.updated
+        - client.removed
+        - group.added
+        - group.updated
+        - group.removed
+        - admin_key.added
+        - admin_key.removed
+        - access.granted
+        - access.revoked
+        - instance_access.granted
+        - instance_access.revoked
+        - policy.set
+        - setting.changed
+        - discovery.ran
+        - session.login
+        - session.console.opened
+        - session.command.run
+        - session.sftp.opened
+      x-enum-varnames:
+        - EventInstanceAdded
+        - EventInstanceUpdated
+        - EventInstanceRemoved
+        - EventClientAdded
+        - EventClientUpdated
+        - EventClientRemoved
+        - EventGroupAdded
+        - EventGroupUpdated
+        - EventGroupRemoved
+        - EventAdminKeyAdded
+        - EventAdminKeyRemoved
+        - EventAccessGranted
+        - EventAccessRevoked
+        - EventInstanceAccessGranted
+        - EventInstanceAccessRevoked
+        - EventPolicySet
+        - EventSettingChanged
+        - EventDiscoveryRan
+        - EventSessionLogin
+        - EventSessionConsoleOpened
+        - EventSessionCommandRun
+        - EventSessionSftpOpened
+
+    ActivityEntry:
+      type: object
+      description: One row of the activity log.
+      required: [id, event_id, actor, occurred_at, params]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: The row's id; also the cursor for stable ordering.
+        event_id:
+          $ref: "#/components/schemas/EventID"
+        actor:
+          type: string
+          description: |
+            The resolved identity that performed the action -- the name of the
+            client or administrator, server-resolved and not something the
+            request carried.
+        occurred_at:
+          type: string
+          format: date-time
+          description: When the action happened.
+        params:
+          type: object
+          additionalProperties: true
+          description: |
+            Structured data for rendering the line (e.g. the affected object's
+            name/id, or a command). The client formats the human-readable text
+            from event_id + these params; the server never stores rendered prose.
+
+    ActivityPage:
+      type: object
+      description: A newest-first page of activity entries with the total count.
+      required: [entries, total, limit, offset]
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/ActivityEntry"
+        total:
+          type: integer
+          description: Total entries available, for pagination.
+        limit:
+          type: integer
+          description: The page size that was applied.
+        offset:
+          type: integer
+          description: The offset that was applied.
+
+    SessionActivityReport:
+      type: object
+      description: |
+        A session's report of what it is doing, for the activity log. The
+        server maps kind to an EventID and resolves the actor from the caller's
+        credential; command is the client's command text, recorded only for the
+        "command" kind.
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum: [console, command, sftp]
+          x-enum-varnames:
+            - SessionActivityKindConsole
+            - SessionActivityKindCommand
+            - SessionActivityKindSftp
+          description: What the session is doing.
+        command:
+          type: string
+          description: |
+            The command text, for the "command" kind. Length-bounded and
+            otherwise ignored for other kinds.
 
     DefaultAccessPolicy:
       type: object
