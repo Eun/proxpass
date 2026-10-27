@@ -37,7 +37,7 @@ func NewActivityPruner(repo db.Repository, retention time.Duration, logger *log.
 	}
 }
 
-// Run prunes once immediately, then every interval, until ctx is cancelled.
+// Run prunes once immediately, then every interval, until ctx is canceled.
 // A no-op when retention is zero (logging disabled).
 func (p *ActivityPruner) Run(ctx context.Context) {
 	if p.retention <= 0 {

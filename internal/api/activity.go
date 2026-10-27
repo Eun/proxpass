@@ -24,6 +24,15 @@ import (
 // maxLoggedCommand.
 const maxActivityCommand = 200
 
+// Activity param keys, named so the same JSON key is not repeated across the
+// instrumented handlers (goconst). The UI's formatEvent reads these.
+const (
+	paramName      = "name"
+	paramID        = "id"
+	paramKey       = "key"
+	paramSubjectID = "subject_id"
+)
+
 // activityEnabled reports whether events should be recorded. Disabled when the
 // retention is zero (the "off" setting) -- then record() writes nothing.
 func (h *SessionHandler) activityEnabled() bool {

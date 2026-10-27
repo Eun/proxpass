@@ -179,16 +179,25 @@ func (d *Deps) reportActivity(ctx context.Context, cmd string) {
 	_ = d.Dir.ReportActivity(ctx, kind, command)
 }
 
+// The dispatch-kind labels, named so the same string is not repeated across
+// dispatchKind and activityReport (goconst) and the two cannot drift.
+const (
+	dispatchKindHelp      = "help"
+	dispatchKindSFTP      = "sftp"
+	dispatchKindLoginName = "login-name"
+	dispatchKindCommand   = "command"
+)
+
 // activityReport maps a dispatch to the activity kind + command to report, and
 // whether it should be reported at all. Kept beside dispatchKind so the two
 // agree on what a command means.
 func activityReport(cmd string) (kind, command string, ok bool) {
 	switch dispatchKind(cmd) {
-	case "sftp":
+	case dispatchKindSFTP:
 		return "sftp", "", true
-	case "command":
+	case dispatchKindCommand:
 		return "command", quoteForLog(cmd), true
-	case "login-name":
+	case dispatchKindLoginName:
 		// A bare login (ssh ct100@host) opens a console/connection.
 		return "console", "", true
 	default: // help, and anything else: not activity to log.
@@ -203,13 +212,13 @@ func activityReport(cmd string) (kind, command string, ok bool) {
 func dispatchKind(cmd string) string {
 	switch {
 	case isHelp(cmd):
-		return "help"
+		return dispatchKindHelp
 	case isSFTPRequest(cmd):
-		return "sftp"
+		return dispatchKindSFTP
 	case cmd == "":
-		return "login-name"
+		return dispatchKindLoginName
 	default:
-		return "command"
+		return dispatchKindCommand
 	}
 }
 

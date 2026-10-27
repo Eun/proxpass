@@ -7,10 +7,11 @@ import (
 	"proxpass/internal/models"
 )
 
-// addEvent is a small helper to append one event at a given time.
-func addEvent(t *testing.T, r Repository, eventID, actor string, at time.Time, params map[string]any) *models.ActivityEvent {
+// addEvent is a small helper to append one event at a given time. Every test
+// uses the same actor, so it is fixed here rather than taken as a parameter.
+func addEvent(t *testing.T, r Repository, eventID string, at time.Time, params map[string]any) *models.ActivityEvent {
 	t.Helper()
-	e := &models.ActivityEvent{EventID: eventID, Actor: actor, OccurredAt: at, Params: params}
+	e := &models.ActivityEvent{EventID: eventID, Actor: "admin", OccurredAt: at, Params: params}
 	if err := r.AddActivityEvent(t.Context(), e); err != nil {
 		t.Fatalf("AddActivityEvent: %v", err)
 	}
@@ -24,7 +25,7 @@ func addEvent(t *testing.T, r Repository, eventID, actor string, at time.Time, p
 func TestActivityRoundTrips(t *testing.T) {
 	r := newTestRepo(t)
 	at := time.Now().Truncate(time.Second)
-	addEvent(t, r, "instance.added", "admin", at, map[string]any{"name": "pve1", "id": float64(7)})
+	addEvent(t, r, "instance.added", at, map[string]any{"name": testInstanceName, "id": float64(7)})
 
 	list, err := r.ListActivity(t.Context(), 10, 0)
 	if err != nil {
@@ -40,8 +41,8 @@ func TestActivityRoundTrips(t *testing.T) {
 	if !e.OccurredAt.Equal(at.UTC()) {
 		t.Errorf("occurred_at = %v, want %v", e.OccurredAt, at.UTC())
 	}
-	if e.Params["name"] != "pve1" {
-		t.Errorf("params = %v, want name=pve1", e.Params)
+	if e.Params["name"] != testInstanceName {
+		t.Errorf("params = %v, want name=the instance", e.Params)
 	}
 }
 
@@ -51,7 +52,7 @@ func TestActivityNewestFirstAndPagination(t *testing.T) {
 	base := time.Now().Truncate(time.Second)
 	// Insert oldest..newest; expect newest first out.
 	for i := 0; i < 5; i++ {
-		addEvent(t, r, "client.added", "admin", base.Add(time.Duration(i)*time.Second),
+		addEvent(t, r, "client.added", base.Add(time.Duration(i)*time.Second),
 			map[string]any{"n": float64(i)})
 	}
 
@@ -94,9 +95,9 @@ func summarize(es []*models.ActivityEvent) []any {
 func TestActivityDeleteOlderThan(t *testing.T) {
 	r := newTestRepo(t)
 	now := time.Now().Truncate(time.Second)
-	addEvent(t, r, "old.event", "admin", now.Add(-48*time.Hour), nil)
-	addEvent(t, r, "mid.event", "admin", now.Add(-12*time.Hour), nil)
-	addEvent(t, r, "new.event", "admin", now, nil)
+	addEvent(t, r, "old.event", now.Add(-48*time.Hour), nil)
+	addEvent(t, r, "mid.event", now.Add(-12*time.Hour), nil)
+	addEvent(t, r, "new.event", now, nil)
 
 	cutoff := now.Add(-24 * time.Hour)
 	removed, err := r.DeleteActivityOlderThan(t.Context(), cutoff)
@@ -120,7 +121,7 @@ func TestActivityDeleteOlderThan(t *testing.T) {
 // An empty params map round-trips as a non-nil empty object, not null.
 func TestActivityEmptyParams(t *testing.T) {
 	r := newTestRepo(t)
-	addEvent(t, r, "discovery.ran", "admin", time.Now(), nil)
+	addEvent(t, r, "discovery.ran", time.Now(), nil)
 	list, err := r.ListActivity(t.Context(), 10, 0)
 	if err != nil || len(list) != 1 {
 		t.Fatalf("ListActivity = %d, %v", len(list), err)

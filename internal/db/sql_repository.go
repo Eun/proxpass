@@ -959,7 +959,7 @@ func (r *sqlRepo) RevokeAPISession(ctx context.Context, tokenHash string) error 
 
 // --- Activity Log ---
 
-// AddActivityEvent appends one audited action. Params is marshalled to JSON
+// AddActivityEvent appends one audited action. Params is marshaled to JSON
 // TEXT (the clients convention); occurred_at is stored as a Unix epoch so one
 // scan path serves both backends. On a nil Params, "{}" is stored so the row
 // always round-trips to a (possibly empty) object rather than null.
@@ -970,7 +970,7 @@ func (r *sqlRepo) AddActivityEvent(ctx context.Context, event *models.ActivityEv
 	}
 	paramsJSON, err := json.Marshal(params)
 	if err != nil {
-		return fmt.Errorf("marshalling activity params: %w", err)
+		return fmt.Errorf("marshaling activity params: %w", err)
 	}
 	return r.queryRow(ctx,
 		`INSERT INTO activity_log (event_id, actor, occurred_at, params)

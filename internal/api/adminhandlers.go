@@ -192,7 +192,7 @@ func (h *SessionHandler) AddInstance(
 		}
 	}
 
-	h.recordAdmin(ctx, EventInstanceAdded, map[string]any{"name": inst.Name, "id": inst.ID})
+	h.recordAdmin(ctx, EventInstanceAdded, map[string]any{paramName: inst.Name, paramID: inst.ID})
 	return AddInstance201JSONResponse(toAPIInstance(inst)), nil
 }
 
@@ -272,7 +272,7 @@ func (h *SessionHandler) UpdateInstance(
 		}
 		return nil, err
 	}
-	h.recordAdmin(ctx, EventInstanceUpdated, map[string]any{"name": inst.Name, "id": inst.ID})
+	h.recordAdmin(ctx, EventInstanceUpdated, map[string]any{paramName: inst.Name, paramID: inst.ID})
 	return UpdateInstance200JSONResponse(toAPIInstance(inst)), nil
 }
 
@@ -302,7 +302,7 @@ func (h *SessionHandler) RemoveInstance(
 	if err := h.repo.RemoveProxmoxInstance(ctx, request.ID); err != nil {
 		return nil, err
 	}
-	h.recordAdmin(ctx, EventInstanceRemoved, map[string]any{"name": existing.Name, "id": request.ID})
+	h.recordAdmin(ctx, EventInstanceRemoved, map[string]any{paramName: existing.Name, paramID: request.ID})
 	return RemoveInstance204Response{}, nil
 }
 
@@ -371,7 +371,7 @@ func (h *SessionHandler) AddClient(
 		}
 		return nil, err
 	}
-	h.recordAdmin(ctx, EventClientAdded, map[string]any{"name": client.Name, "id": client.ID})
+	h.recordAdmin(ctx, EventClientAdded, map[string]any{paramName: client.Name, paramID: client.ID})
 	return AddClient201JSONResponse(toAPIClient(client)), nil
 }
 
@@ -436,7 +436,7 @@ func (h *SessionHandler) UpdateClient(
 		}
 		return nil, err
 	}
-	h.recordAdmin(ctx, EventClientUpdated, map[string]any{"name": client.Name, "id": client.ID})
+	h.recordAdmin(ctx, EventClientUpdated, map[string]any{paramName: client.Name, paramID: client.ID})
 	return UpdateClient200JSONResponse(toAPIClient(client)), nil
 }
 
@@ -466,7 +466,7 @@ func (h *SessionHandler) RemoveClient(
 	if err := h.repo.RemoveClient(ctx, request.ID); err != nil {
 		return nil, err
 	}
-	h.recordAdmin(ctx, EventClientRemoved, map[string]any{"name": existing.Name, "id": request.ID})
+	h.recordAdmin(ctx, EventClientRemoved, map[string]any{paramName: existing.Name, paramID: request.ID})
 	return RemoveClient204Response{}, nil
 }
 
@@ -537,7 +537,7 @@ func (h *SessionHandler) AddGroup(
 		}
 		return nil, err
 	}
-	h.recordAdmin(ctx, EventGroupAdded, map[string]any{"name": group.Name, "id": group.ID})
+	h.recordAdmin(ctx, EventGroupAdded, map[string]any{paramName: group.Name, paramID: group.ID})
 	return AddGroup201JSONResponse(toAPIGroup(group)), nil
 }
 
@@ -602,7 +602,7 @@ func (h *SessionHandler) UpdateGroup(
 		}
 		return nil, err
 	}
-	h.recordAdmin(ctx, EventGroupUpdated, map[string]any{"name": group.Name, "id": group.ID})
+	h.recordAdmin(ctx, EventGroupUpdated, map[string]any{paramName: group.Name, paramID: group.ID})
 	return UpdateGroup200JSONResponse(toAPIGroup(group)), nil
 }
 
@@ -632,7 +632,7 @@ func (h *SessionHandler) RemoveGroup(
 	if err := h.repo.RemoveGroup(ctx, request.ID); err != nil {
 		return nil, err
 	}
-	h.recordAdmin(ctx, EventGroupRemoved, map[string]any{"name": existing.Name, "id": request.ID})
+	h.recordAdmin(ctx, EventGroupRemoved, map[string]any{paramName: existing.Name, paramID: request.ID})
 	return RemoveGroup204Response{}, nil
 }
 
@@ -768,7 +768,7 @@ func (h *SessionHandler) GrantAccess(
 		return GrantAccess400JSONResponse{BadRequestJSONResponse{Error: errUnknownSubject}}, nil
 	}
 	h.recordAdmin(ctx, EventAccessGranted, map[string]any{
-		"subject_kind": string(subject.Kind), "subject_id": subject.ID, "guest_ids": guestIDs,
+		"subject_kind": string(subject.Kind), paramSubjectID: subject.ID, "guest_ids": guestIDs,
 	})
 	return GrantAccess204Response{}, nil
 }
@@ -812,7 +812,7 @@ func (h *SessionHandler) RevokeAccess(
 		return RevokeAccess400JSONResponse{BadRequestJSONResponse{Error: errUnknownSubject}}, nil
 	}
 	h.recordAdmin(ctx, EventAccessRevoked, map[string]any{
-		"subject_kind": string(subject.Kind), "subject_id": subject.ID, "guest_ids": request.Body.GuestIds,
+		"subject_kind": string(subject.Kind), paramSubjectID: subject.ID, "guest_ids": request.Body.GuestIds,
 	})
 	return RevokeAccess204Response{}, nil
 }
@@ -882,7 +882,7 @@ func (h *SessionHandler) GrantInstanceAccess(
 		return GrantInstanceAccess400JSONResponse{BadRequestJSONResponse{Error: errUnknownSubject}}, nil
 	}
 	h.recordAdmin(ctx, EventInstanceAccessGranted, map[string]any{
-		"subject_kind": string(subject.Kind), "subject_id": subject.ID, "instance_ids": instanceIDs,
+		"subject_kind": string(subject.Kind), paramSubjectID: subject.ID, "instance_ids": instanceIDs,
 	})
 	return GrantInstanceAccess204Response{}, nil
 }
@@ -925,7 +925,7 @@ func (h *SessionHandler) RevokeInstanceAccess(
 		return RevokeInstanceAccess400JSONResponse{BadRequestJSONResponse{Error: errUnknownSubject}}, nil
 	}
 	h.recordAdmin(ctx, EventInstanceAccessRevoked, map[string]any{
-		"subject_kind": string(subject.Kind), "subject_id": subject.ID, "instance_ids": request.Body.InstanceIds,
+		"subject_kind": string(subject.Kind), paramSubjectID: subject.ID, "instance_ids": request.Body.InstanceIds,
 	})
 	return RevokeInstanceAccess204Response{}, nil
 }
@@ -1147,7 +1147,7 @@ func (h *SessionHandler) SetSetting(
 	if err := h.repo.SetSetting(ctx, request.Key, request.Body.Value); err != nil {
 		return nil, err
 	}
-	h.recordAdmin(ctx, EventSettingChanged, map[string]any{"key": request.Key, "value": request.Body.Value})
+	h.recordAdmin(ctx, EventSettingChanged, map[string]any{paramKey: request.Key, "value": request.Body.Value})
 	return SetSetting200JSONResponse(Setting{Key: request.Key, Value: request.Body.Value}), nil
 }
 
@@ -1197,7 +1197,7 @@ func (h *SessionHandler) AddAdminKey(
 		}
 		return nil, err
 	}
-	h.recordAdmin(ctx, EventAdminKeyAdded, map[string]any{"key": adminKeySummary(request.Body.PublicKey)})
+	h.recordAdmin(ctx, EventAdminKeyAdded, map[string]any{paramKey: adminKeySummary(request.Body.PublicKey)})
 	return AddAdminKey204Response{}, nil
 }
 
@@ -1233,7 +1233,7 @@ func (h *SessionHandler) RemoveAdminKey(
 	if err := h.repo.RemoveAdminKey(ctx, request.Body.PublicKey); err != nil {
 		return nil, err
 	}
-	h.recordAdmin(ctx, EventAdminKeyRemoved, map[string]any{"key": adminKeySummary(request.Body.PublicKey)})
+	h.recordAdmin(ctx, EventAdminKeyRemoved, map[string]any{paramKey: adminKeySummary(request.Body.PublicKey)})
 	return RemoveAdminKey204Response{}, nil
 }
 
