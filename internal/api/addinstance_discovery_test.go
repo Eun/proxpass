@@ -38,7 +38,7 @@ func TestAddInstanceDiscoversGuestsImmediately(t *testing.T) {
 	// handed; StoreGuests will persist it against the new instance's id.
 	h.WithDiscoverer(func(inst *models.ProxmoxInstance) proxmox.GuestDiscoverer {
 		return fakeDiscoverer{guests: []*models.Guest{
-			{Type: models.GuestTypeCT, Name: "ct100", Status: models.StatusRunning, ProxmoxID: 100, InstanceID: inst.ID},
+			{Type: models.GuestTypeCT, Name: testGuestName, Status: models.StatusRunning, ProxmoxID: 100, InstanceID: inst.ID},
 		}}
 	})
 
@@ -57,7 +57,7 @@ func TestAddInstanceDiscoversGuestsImmediately(t *testing.T) {
 	if !ok {
 		t.Fatalf("ListGuests returned %T, want 200", resp)
 	}
-	if len(guests) != 1 || guests[0].Name != "ct100" {
+	if len(guests) != 1 || guests[0].Name != testGuestName {
 		t.Fatalf("ListGuests after add = %+v, want the discovered ct100", guests)
 	}
 }

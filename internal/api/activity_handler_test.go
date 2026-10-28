@@ -162,7 +162,7 @@ func TestReportSessionActivityStoresHostGuestAndRawCommand(t *testing.T) {
 	// unchanged, proving the value is not quoted anywhere in the path.
 	cmd := `echo "hi"	world`
 	host := "rome"
-	guest := "ct100"
+	guest := testGuestName
 	body := SessionActivityReport{
 		Kind: SessionActivityKindCommand, Command: &cmd, Host: &host, Guest: &guest,
 	}

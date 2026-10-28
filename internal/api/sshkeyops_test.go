@@ -15,6 +15,10 @@ const (
 	testInstanceName = "pve"
 	testLoopback     = "127.0.0.1"
 	testSSHUser      = "root"
+	// testGuestName is a sample container name reused across activity and
+	// discovery tests (named to satisfy goconst, which flags the repeated
+	// literal once a third occurrence appears).
+	testGuestName = "ct100"
 )
 
 // instanceFor builds an instance pointing at the mock Proxmox host.
