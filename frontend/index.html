@@ -192,7 +192,12 @@
             </aside>
 
             <!-- Main column -->
-            <div class="flex-1 flex flex-col lg:ml-64 min-w-0">
+            <!-- When the activity detail sidebar is open, reserve space for it on
+                 large screens (the drawer is w-96 = 24rem) so it reflows the
+                 content instead of covering it. On smaller screens the drawer is
+                 full-width, so no reservation is made. -->
+            <div class="flex-1 flex flex-col lg:ml-64 min-w-0 transition-all duration-300"
+                 :class="activityDetail.open ? 'lg:pr-96' : ''">
                 <!-- Header -->
                 <header class="flex items-center justify-between h-16 bg-white border-b px-6">
                     <div class="flex items-center">
@@ -258,7 +263,8 @@
                                     </template>
                                     <ul class="divide-y divide-gray-100">
                                         <template x-for="e in recentActivity" :key="e.id">
-                                            <li class="py-2 flex items-baseline gap-2 text-sm cursor-pointer hover:bg-gray-50 -mx-2 px-2 rounded" @click="openActivityDetail(e)" title="Show details">
+                                            <li class="py-2 flex items-baseline gap-2 text-sm cursor-pointer -mx-2 px-2 rounded" @click="openActivityDetail(e)" title="Show details"
+                                                :class="activityDetail.open && activityDetail.entry && activityDetail.entry.id === e.id ? 'bg-primary/10' : 'hover:bg-gray-50'">
                                                 <span class="text-gray-400 whitespace-nowrap text-xs cursor-pointer underline decoration-dotted decoration-gray-400 underline-offset-2 hover:text-gray-600"
                                                     @click.stop="toggleActivityTime()"
                                                     x-text="activityTimeText(e.occurred_at)" :title="activityTimeTitle(e.occurred_at)"></span>
@@ -297,7 +303,8 @@
                                     </thead>
                                     <tbody class="divide-y divide-gray-100">
                                         <template x-for="e in activity.entries" :key="e.id">
-                                            <tr class="hover:bg-gray-50 cursor-pointer" @click="openActivityDetail(e)" title="Show details">
+                                            <tr class="cursor-pointer" title="Show details" @click="openActivityDetail(e)"
+                                                :class="activityDetail.open && activityDetail.entry && activityDetail.entry.id === e.id ? 'bg-primary/10' : 'hover:bg-gray-50'">
                                                 <td class="px-4 py-3 align-top whitespace-nowrap text-gray-500">
                                                     <span class="cursor-pointer underline decoration-dotted decoration-gray-400 underline-offset-2 hover:text-gray-700"
                                                         @click.stop="toggleActivityTime()"
@@ -772,27 +779,27 @@
                 </div>
             </template>
 
-            <!-- Activity detail SIDEBAR: a right-side drawer with the read-only
-                 record for one activity row, opened by clicking it. A drawer
-                 rather than a centered modal so the events list stays visible
-                 behind it -- the user can click another row to inspect it without
-                 closing first. The backdrop is a thin click-catcher (near
-                 transparent) so it does not obscure the list. Shows the event
-                 metadata, host/guest, the full command (never truncated here),
-                 and the raw recorded params. -->
-            <div x-show="activityDetail.open"
-                 class="fixed inset-0 z-50 bg-black/10"
-                 @click="closeActivityDetail()"
-                 x-transition.opacity></div>
-            <aside x-show="activityDetail.open"
-                   @keydown.escape.window="closeActivityDetail()"
-                   class="fixed z-50 inset-y-0 right-0 w-full max-w-md bg-white shadow-xl flex flex-col"
-                   x-transition:enter="transition ease-out duration-300"
-                   x-transition:enter-start="translate-x-full"
-                   x-transition:enter-end="translate-x-0"
-                   x-transition:leave="transition ease-in duration-200"
-                   x-transition:leave-start="translate-x-0"
-                   x-transition:leave-end="translate-x-full">
+            <!-- Activity detail SIDEBAR -- a NON-MODAL right drawer. There is no
+                 backdrop: the events list behind it stays fully interactive, so
+                 the user can click another row and this panel swaps to it (its
+                 content is just bound to activityDetail.entry). It closes only on
+                 a deliberate close (×, Close, or Escape) or when the user
+                 navigates away from the page (handled in go()). The overflow-only
+                 border keeps the list uncovered where it can. -->
+            <!-- The drawer is ALWAYS in the DOM and slides purely via a CSS
+                 transform toggle (translate-x-0 / translate-x-full), NOT Alpine's
+                 x-show/x-transition. Mount/unmount transitions and an x-if inside
+                 them were the source of intermittent flicker; a plain
+                 transition-transform on a stable element cannot flicker. The
+                 content is never unmounted either -- entry is kept across close,
+                 and every binding is null-safe (the helpers guard; direct fields
+                 use ?.) -- so there is nothing to remount or re-evaluate on close.
+                 When closed it is off-screen and made inert (pointer-events-none,
+                 aria-hidden) so it cannot catch clicks meant for the list. -->
+            <aside @keydown.escape.window="closeActivityDetail()"
+                   :aria-hidden="activityDetail.open ? 'false' : 'true'"
+                   class="fixed z-40 inset-y-0 right-0 w-full lg:w-96 bg-white shadow-xl border-l flex flex-col transition-transform duration-300 ease-in-out"
+                   :class="activityDetail.open ? 'translate-x-0' : 'translate-x-full pointer-events-none'">
                 <div class="flex items-center justify-between p-4 border-b">
                     <h3 class="font-semibold text-secondary">Activity details</h3>
                     <button @click="closeActivityDetail()" class="text-gray-400 hover:text-gray-700 text-xl">&times;</button>
@@ -800,17 +807,17 @@
                 <div class="p-6 space-y-4 text-sm overflow-y-auto custom-scrollbar flex-1" x-show="activityDetail.entry">
                     <div>
                         <div class="text-xs font-medium text-gray-500 uppercase tracking-wide">When</div>
-                        <div class="mt-0.5 text-gray-800" x-text="formatRelativeTime(activityDetail.entry.occurred_at)"></div>
-                        <div class="mt-0.5 text-xs text-gray-400" x-text="formatActivityTime(activityDetail.entry.occurred_at)"></div>
+                        <div class="mt-0.5 text-gray-800" x-text="activityDetail.entry ? formatRelativeTime(activityDetail.entry.occurred_at) : ''"></div>
+                        <div class="mt-0.5 text-xs text-gray-400" x-text="activityDetail.entry ? formatActivityTime(activityDetail.entry.occurred_at) : ''"></div>
                     </div>
                     <div>
                         <div class="text-xs font-medium text-gray-500 uppercase tracking-wide">Who</div>
-                        <div class="mt-0.5 text-gray-800 font-medium" x-text="activityDetail.entry.actor"></div>
+                        <div class="mt-0.5 text-gray-800 font-medium" x-text="activityDetail.entry?.actor || ''"></div>
                     </div>
                     <div>
                         <div class="text-xs font-medium text-gray-500 uppercase tracking-wide">Activity</div>
                         <div class="mt-0.5 text-gray-800" x-text="formatEvent(activityDetail.entry)"></div>
-                        <div class="mt-0.5 text-xs text-gray-400 font-mono" x-text="activityDetail.entry.event_id"></div>
+                        <div class="mt-0.5 text-xs text-gray-400 font-mono" x-text="activityDetail.entry?.event_id || ''"></div>
                     </div>
                     <!-- Host and guest: WHERE a session action happened. Shown only
                          when present (a node action has no guest; an admin event
