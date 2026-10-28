@@ -290,6 +290,8 @@
                                         <tr>
                                             <th class="text-left font-medium px-4 py-3">When</th>
                                             <th class="text-left font-medium px-4 py-3">Who</th>
+                                            <th class="text-left font-medium px-4 py-3">Host</th>
+                                            <th class="text-left font-medium px-4 py-3">Guest</th>
                                             <th class="text-left font-medium px-4 py-3">Activity</th>
                                         </tr>
                                     </thead>
@@ -302,10 +304,18 @@
                                                         x-text="activityTimeText(e.occurred_at)" :title="activityTimeTitle(e.occurred_at)"></span>
                                                 </td>
                                                 <td class="px-4 py-3 align-top font-medium" x-text="e.actor"></td>
+                                                <!-- Host/Guest: dedicated columns, populated for session events
+                                                     that reached a target. A dash reads better than a blank cell. -->
+                                                <td class="px-4 py-3 align-top whitespace-nowrap" :class="activityHost(e) ? 'text-gray-700' : 'text-gray-300'"
+                                                    x-text="activityHost(e) || '—'"></td>
+                                                <td class="px-4 py-3 align-top whitespace-nowrap" :class="activityGuest(e) ? 'text-gray-700' : 'text-gray-300'"
+                                                    x-text="activityGuest(e) || '—'"></td>
                                                 <td class="px-4 py-3 align-top">
-                                                    <span x-text="formatEvent(e)"></span>
+                                                    <!-- Base verb only: Host/Guest are their own columns, so the
+                                                         target suffix is omitted here to avoid duplication. -->
+                                                    <span x-text="formatEventBase(e)"></span>
                                                     <!-- A run command renders in a code block beside the text,
-                                                         truncated for the row; the full text is in the dialog. -->
+                                                         truncated for the row; the full text is in the sidebar. -->
                                                     <code x-show="activityCommand(e)"
                                                         class="ml-2 inline-block max-w-full align-bottom truncate bg-gray-100 text-gray-800 rounded px-1.5 py-0.5 text-xs font-mono"
                                                         x-text="truncateCommand(activityCommand(e))"></code>
@@ -313,10 +323,10 @@
                                             </tr>
                                         </template>
                                         <template x-if="!loading && activity.entries.length === 0">
-                                            <tr><td colspan="3" class="px-4 py-8 text-center text-gray-400">No activity recorded.</td></tr>
+                                            <tr><td colspan="5" class="px-4 py-8 text-center text-gray-400">No activity recorded.</td></tr>
                                         </template>
                                         <template x-if="loading">
-                                            <tr><td colspan="3" class="px-4 py-8 text-center text-gray-400">Loading…</td></tr>
+                                            <tr><td colspan="5" class="px-4 py-8 text-center text-gray-400">Loading…</td></tr>
                                         </template>
                                     </tbody>
                                 </table>
@@ -762,49 +772,74 @@
                 </div>
             </template>
 
-            <!-- Activity detail dialog: the read-only record for one activity
-                 row, opened by clicking it. Shows the event metadata, the full
-                 command (never truncated here), and the raw recorded params. -->
-            <template x-if="activityDetail.open">
-                <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
-                    <div class="fixed inset-0 bg-black opacity-50" @click="closeActivityDetail()"></div>
-                    <div class="relative bg-white rounded-lg shadow-xl w-full max-w-xl max-h-[90vh] overflow-y-auto custom-scrollbar">
-                        <div class="flex items-center justify-between p-4 border-b">
-                            <h3 class="font-semibold text-secondary">Activity details</h3>
-                            <button @click="closeActivityDetail()" class="text-gray-400 hover:text-gray-700 text-xl">&times;</button>
+            <!-- Activity detail SIDEBAR: a right-side drawer with the read-only
+                 record for one activity row, opened by clicking it. A drawer
+                 rather than a centered modal so the events list stays visible
+                 behind it -- the user can click another row to inspect it without
+                 closing first. The backdrop is a thin click-catcher (near
+                 transparent) so it does not obscure the list. Shows the event
+                 metadata, host/guest, the full command (never truncated here),
+                 and the raw recorded params. -->
+            <div x-show="activityDetail.open"
+                 class="fixed inset-0 z-50 bg-black/10"
+                 @click="closeActivityDetail()"
+                 x-transition.opacity></div>
+            <aside x-show="activityDetail.open"
+                   @keydown.escape.window="closeActivityDetail()"
+                   class="fixed z-50 inset-y-0 right-0 w-full max-w-md bg-white shadow-xl flex flex-col"
+                   x-transition:enter="transition ease-out duration-300"
+                   x-transition:enter-start="translate-x-full"
+                   x-transition:enter-end="translate-x-0"
+                   x-transition:leave="transition ease-in duration-200"
+                   x-transition:leave-start="translate-x-0"
+                   x-transition:leave-end="translate-x-full">
+                <div class="flex items-center justify-between p-4 border-b">
+                    <h3 class="font-semibold text-secondary">Activity details</h3>
+                    <button @click="closeActivityDetail()" class="text-gray-400 hover:text-gray-700 text-xl">&times;</button>
+                </div>
+                <div class="p-6 space-y-4 text-sm overflow-y-auto custom-scrollbar flex-1" x-show="activityDetail.entry">
+                    <div>
+                        <div class="text-xs font-medium text-gray-500 uppercase tracking-wide">When</div>
+                        <div class="mt-0.5 text-gray-800" x-text="formatRelativeTime(activityDetail.entry.occurred_at)"></div>
+                        <div class="mt-0.5 text-xs text-gray-400" x-text="formatActivityTime(activityDetail.entry.occurred_at)"></div>
+                    </div>
+                    <div>
+                        <div class="text-xs font-medium text-gray-500 uppercase tracking-wide">Who</div>
+                        <div class="mt-0.5 text-gray-800 font-medium" x-text="activityDetail.entry.actor"></div>
+                    </div>
+                    <div>
+                        <div class="text-xs font-medium text-gray-500 uppercase tracking-wide">Activity</div>
+                        <div class="mt-0.5 text-gray-800" x-text="formatEvent(activityDetail.entry)"></div>
+                        <div class="mt-0.5 text-xs text-gray-400 font-mono" x-text="activityDetail.entry.event_id"></div>
+                    </div>
+                    <!-- Host and guest: WHERE a session action happened. Shown only
+                         when present (a node action has no guest; an admin event
+                         has neither). -->
+                    <div class="flex gap-6">
+                        <div x-show="activityHost(activityDetail.entry)">
+                            <div class="text-xs font-medium text-gray-500 uppercase tracking-wide">Host</div>
+                            <div class="mt-0.5 text-gray-800" x-text="activityHost(activityDetail.entry)"></div>
                         </div>
-                        <div class="p-6 space-y-4 text-sm" x-show="activityDetail.entry">
-                            <div>
-                                <div class="text-xs font-medium text-gray-500 uppercase tracking-wide">When</div>
-                                <div class="mt-0.5 text-gray-800" x-text="formatRelativeTime(activityDetail.entry.occurred_at)"></div>
-                                <div class="mt-0.5 text-xs text-gray-400" x-text="formatActivityTime(activityDetail.entry.occurred_at)"></div>
-                            </div>
-                            <div>
-                                <div class="text-xs font-medium text-gray-500 uppercase tracking-wide">Who</div>
-                                <div class="mt-0.5 text-gray-800 font-medium" x-text="activityDetail.entry.actor"></div>
-                            </div>
-                            <div>
-                                <div class="text-xs font-medium text-gray-500 uppercase tracking-wide">Activity</div>
-                                <div class="mt-0.5 text-gray-800" x-text="formatEvent(activityDetail.entry)"></div>
-                                <div class="mt-0.5 text-xs text-gray-400 font-mono" x-text="activityDetail.entry.event_id"></div>
-                            </div>
-                            <!-- The full command, verbatim, for a run command event. -->
-                            <div x-show="activityCommand(activityDetail.entry)">
-                                <div class="text-xs font-medium text-gray-500 uppercase tracking-wide">Command</div>
-                                <pre class="mt-1 bg-gray-50 border rounded p-3 text-xs overflow-x-auto whitespace-pre-wrap break-all select-all font-mono" x-text="activityCommand(activityDetail.entry)"></pre>
-                            </div>
-                            <!-- Everything recorded, so nothing is hidden. -->
-                            <div x-show="activityDetailParams()">
-                                <div class="text-xs font-medium text-gray-500 uppercase tracking-wide">Parameters</div>
-                                <pre class="mt-1 bg-gray-50 border rounded p-3 text-xs overflow-x-auto whitespace-pre-wrap break-all select-all font-mono" x-text="activityDetailParams()"></pre>
-                            </div>
-                        </div>
-                        <div class="flex justify-end gap-3 p-4 border-t">
-                            <button @click="closeActivityDetail()" class="bg-primary hover:opacity-90 text-white font-medium px-4 py-2 rounded transition">Close</button>
+                        <div x-show="activityGuest(activityDetail.entry)">
+                            <div class="text-xs font-medium text-gray-500 uppercase tracking-wide">Guest</div>
+                            <div class="mt-0.5 text-gray-800" x-text="activityGuest(activityDetail.entry)"></div>
                         </div>
                     </div>
+                    <!-- The full command, verbatim and NEVER truncated here. -->
+                    <div x-show="activityCommand(activityDetail.entry)">
+                        <div class="text-xs font-medium text-gray-500 uppercase tracking-wide">Command</div>
+                        <pre class="mt-1 bg-gray-50 border rounded p-3 text-xs overflow-x-auto whitespace-pre-wrap break-all select-all font-mono" x-text="activityCommand(activityDetail.entry)"></pre>
+                    </div>
+                    <!-- Everything recorded, so nothing is hidden. -->
+                    <div x-show="activityDetailParams()">
+                        <div class="text-xs font-medium text-gray-500 uppercase tracking-wide">Parameters</div>
+                        <pre class="mt-1 bg-gray-50 border rounded p-3 text-xs overflow-x-auto whitespace-pre-wrap break-all select-all font-mono" x-text="activityDetailParams()"></pre>
+                    </div>
                 </div>
-            </template>
+                <div class="flex justify-end gap-3 p-4 border-t">
+                    <button @click="closeActivityDetail()" class="bg-primary hover:opacity-90 text-white font-medium px-4 py-2 rounded transition">Close</button>
+                </div>
+            </aside>
         </div>
     </template>
 </div>
