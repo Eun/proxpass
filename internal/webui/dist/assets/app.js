@@ -452,11 +452,12 @@ function app() {
             } catch (_) { /* dashboard panel is cosmetic; ignore */ }
         },
 
-        // formatEvent renders one activity entry as a human-readable line, chosen
-        // by its event_id and filled from its params. The server stores data, not
-        // prose, so the wording lives here and can change without a migration. An
-        // unknown event id degrades to the raw id rather than throwing.
-        formatEvent(entry) {
+        // formatEventBase renders the base verb for an activity entry, chosen by
+        // its event_id and filled from its params, WITHOUT the session target
+        // suffix (formatEvent adds that). The server stores data, not prose, so
+        // the wording lives here and can change without a migration. An unknown
+        // event id degrades to the raw id rather than throwing.
+        formatEventBase(entry) {
             const p = entry.params || {};
             const name = p.name || ('#' + (p.id ?? '?'));
             const subj = (p.subject_kind ? p.subject_kind : 'subject') + ' #' + (p.subject_id ?? '?');
@@ -481,16 +482,38 @@ function app() {
                 case 'discovery.ran': return 'ran discovery (' + (p.instance_count ?? 0) + ' node(s), ' + (p.guests_found ?? 0) + ' guest(s))';
                 case 'session.login': return 'signed in';
                 case 'session.console.opened': return 'opened a console';
-                // The command itself is NOT concatenated here: an empty command
-                // would leave a dangling "ran a command: ", and a long one would
-                // blow out the line. The Activity table renders the command in a
-                // code block next to this text (truncated, with the full text in
-                // the details dialog); callers that want only prose get a clean
-                // "ran a command".
+                // The command itself is NOT concatenated here (an empty command
+                // would dangle, a long one would blow out the line) -- the table
+                // renders it in a truncated code block and the detail view shows
+                // it in full.
                 case 'session.command.run': return 'ran a command';
                 case 'session.sftp.opened': return 'started an SFTP session';
                 default: return entry.event_id;
             }
+        },
+        // formatEvent renders the full one-line description: the base verb plus,
+        // for a session event, the " on <guest> @ <host>" target. Used where the
+        // target is NOT already a separate column (the dashboard panel and the
+        // detail sidebar's Activity line). The Activity table omits the suffix
+        // because it has dedicated Host/Guest columns -- see formatEventBase.
+        formatEvent(entry) {
+            return this.formatEventBase(entry) + this.activityTarget(entry);
+        },
+        // activityHost / activityGuest read the WHERE params a session event
+        // carries (empty for non-session events or when the session had no such
+        // target, e.g. session.login). Used by formatEvent and the table columns.
+        activityHost(entry) { return (entry && entry.params && entry.params.host) || ''; },
+        activityGuest(entry) { return (entry && entry.params && entry.params.guest) || ''; },
+        // activityTarget renders the " on <guest> @ <host>" / " on <host>" suffix
+        // for a session event, or '' when no target is known. A guest-targeted
+        // action names both; a node-targeted one names only the host.
+        activityTarget(entry) {
+            const host = this.activityHost(entry);
+            const guest = this.activityGuest(entry);
+            if (guest && host) return ' on ' + guest + ' @ ' + host;
+            if (guest) return ' on ' + guest;
+            if (host) return ' on ' + host;
+            return '';
         },
         // activityCommand returns the command string for a command event, or ''
         // for anything else. Used to decide whether to render the code block.
