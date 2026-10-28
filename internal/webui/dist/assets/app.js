@@ -371,6 +371,10 @@ function app() {
             this.search = '';
             this.error = '';
             this.modal.open = false;
+            // The activity detail is a non-modal sidebar: it stays open while the
+            // user clicks between rows, and only closes on a deliberate close or
+            // when they navigate away from the page -- this is that latter case.
+            this.closeActivityDetail();
             // Reflect the current page in the URL hash. Guard against rewriting
             // it to the same value so navigation triggered BY a hashchange does
             // not loop. history.replaceState keeps Back/Forward meaningful
@@ -458,6 +462,7 @@ function app() {
         // the wording lives here and can change without a migration. An unknown
         // event id degrades to the raw id rather than throwing.
         formatEventBase(entry) {
+            if (!entry) return '';
             const p = entry.params || {};
             const name = p.name || ('#' + (p.id ?? '?'));
             const subj = (p.subject_kind ? p.subject_kind : 'subject') + ' #' + (p.subject_id ?? '?');
@@ -762,7 +767,13 @@ function app() {
         // openActivityDetail shows the full record for one activity row, including
         // the complete command (never truncated here) and the raw params.
         openActivityDetail(entry) { this.activityDetail = { open: true, entry }; },
-        closeActivityDetail() { this.activityDetail = { open: false, entry: null }; },
+        // closeActivityDetail slides the sidebar out. It toggles ONLY `open` and
+        // deliberately keeps `entry` bound -- clearing it would make every inner
+        // binding (entry.occurred_at, entry.actor, ...) read null mid-slide,
+        // throwing and collapsing the panel's content so it visibly jumps. The
+        // entry is harmless to keep: the panel is hidden, and the next open
+        // replaces it. So it just slides away with its content intact.
+        closeActivityDetail() { this.activityDetail.open = false; },
         // activityDetailParams renders the entry's params as pretty JSON for the
         // dialog, so nothing recorded is hidden from an operator.
         activityDetailParams() {
