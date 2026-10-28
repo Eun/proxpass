@@ -410,8 +410,8 @@ func (l *lazyAPIDirectory) PublicEndpoint(ctx context.Context) (string, error) {
 	return l.resolve().PublicEndpoint(ctx)
 }
 
-func (l *lazyAPIDirectory) ReportActivity(ctx context.Context, kind, command string) error {
-	return l.resolve().ReportActivity(ctx, kind, command)
+func (l *lazyAPIDirectory) ReportActivity(ctx context.Context, report session.ActivityReport) error {
+	return l.resolve().ReportActivity(ctx, report)
 }
 
 func seedGuest(t *testing.T, repo db.Repository) *models.Guest {

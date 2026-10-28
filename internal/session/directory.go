@@ -47,14 +47,27 @@ type Directory interface {
 	ConnectNode(ctx context.Context, instanceID int64) (*NodeInfo, error)
 
 	// ReportActivity tells the server what this session is doing (a console,
-	// a command, an sftp transfer), for the activity log. The server resolves
-	// the actor from the credential and records it; the session never touches
-	// the database. Best-effort -- the caller ignores the error.
-	ReportActivity(ctx context.Context, kind, command string) error
+	// a command, an sftp transfer) and WHERE (which host/guest), for the
+	// activity log. The server resolves the actor from the credential and
+	// records it; the session never touches the database. Best-effort -- the
+	// caller ignores the error.
+	ReportActivity(ctx context.Context, report ActivityReport) error
 
 	// PublicEndpoint is the hostname clients use to reach this proxpass,
 	// shown in the status bar. Empty when unset, which is not an error.
 	PublicEndpoint(ctx context.Context) (string, error)
+}
+
+// ActivityReport is one session action to record: WHAT (kind), the command
+// text when it is a command, and WHERE (host/guest) it happened. The server
+// supplies WHO from the credential. host/guest are empty when the action has no
+// such target (e.g. a bare browse), and a node-targeted action leaves guest
+// empty. The command is sent verbatim; the server length-caps it.
+type ActivityReport struct {
+	Kind    string
+	Command string
+	Host    string
+	Guest   string
 }
 
 // NodeInfo is one Proxmox node plus what it takes to reach it.

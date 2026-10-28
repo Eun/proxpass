@@ -101,6 +101,8 @@ func (d *Deps) runSFTP(ctx context.Context) int {
 			d.IdentityName, guest.Name, err)
 		return 1
 	}
+	// Record WHERE: an SFTP transfer into info.Guest on host info.Instance.
+	d.reportSFTP(ctx, info.Instance.Name, info.Guest.Name)
 	return d.serveSFTP(info)
 }
 
@@ -133,6 +135,8 @@ func (d *Deps) serveNodeSFTP(ctx context.Context, inst *models.ProxmoxInstance) 
 	defer func() { _ = runner.Close() }()
 
 	d.Logger.Printf("%s: sftp to node %s", d.IdentityName, info.Instance.Name)
+	// Record WHERE: an SFTP transfer to the node itself (host, no guest).
+	d.reportSFTP(ctx, info.Instance.Name, "")
 
 	// The node's stderr is discarded rather than forwarded. sshd sets
 	// CHAN_EXTENDED_IGNORE for a subsystem session, so the client would

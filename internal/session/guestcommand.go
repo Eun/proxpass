@@ -97,6 +97,8 @@ func (d *Deps) runGuestCommand(ctx context.Context, guest *models.Guest, command
 
 	d.Logger.Printf("%s: command on %s (%s%d) on %s",
 		d.IdentityName, guest.Name, guest.Type, guest.ProxmoxID, inst.Name)
+	// Record WHERE: this command runs inside guest on host inst.
+	d.reportCommand(ctx, command, inst.Name, guest.Name)
 
 	term := d.Terminal
 	// Mirror the client's own request. sshd gave this process a PTY exactly
@@ -144,6 +146,9 @@ func (d *Deps) runNodeCommand(ctx context.Context, inst *models.ProxmoxInstance,
 		d.errf("internal error")
 		return 1
 	}
+
+	// Record WHERE: this command runs on the node itself (no guest).
+	d.reportCommand(ctx, command, info.Instance.Name, "")
 
 	runner, err := console.DialNode(info.Instance, info.SSHKey, d.Logger)
 	if err != nil {

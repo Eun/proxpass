@@ -192,15 +192,22 @@ func (c *APIClient) post(ctx context.Context, path string, out any) error {
 	return c.do(ctx, http.MethodPost, path, c.credential, out)
 }
 
-// ReportActivity tells the server what this session is doing, for the activity
-// log. The server resolves who from the credential and records the row; the
-// session never touches the database. command is sent only for the "command"
-// kind. Best-effort: callers ignore the error so a reporting hiccup never
-// affects the session. The endpoint returns 204 with no body, so out is nil.
-func (d *APIDirectory) ReportActivity(ctx context.Context, kind, command string) error {
-	body := api.SessionActivityReport{Kind: api.SessionActivityReportKind(kind)}
-	if command != "" {
-		body.Command = &command
+// ReportActivity tells the server what this session is doing and where, for the
+// activity log. The server resolves who from the credential and records the row;
+// the session never touches the database. command is sent only for the "command"
+// kind; host/guest are sent whenever known so the log says WHERE. Best-effort:
+// callers ignore the error so a reporting hiccup never affects the session. The
+// endpoint returns 204 with no body, so out is nil.
+func (d *APIDirectory) ReportActivity(ctx context.Context, report ActivityReport) error {
+	body := api.SessionActivityReport{Kind: api.SessionActivityReportKind(report.Kind)}
+	if report.Command != "" {
+		body.Command = &report.Command
+	}
+	if report.Host != "" {
+		body.Host = &report.Host
+	}
+	if report.Guest != "" {
+		body.Guest = &report.Guest
 	}
 	return d.Client.postJSON(ctx, "/session/activity", body, nil)
 }

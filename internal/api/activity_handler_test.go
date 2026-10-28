@@ -153,6 +153,62 @@ func TestReportSessionActivityStoresCommand(t *testing.T) {
 	}
 }
 
+// A command report carries host+guest, which are stored as params so the log
+// says WHERE the command ran. The command is stored VERBATIM (not quoted).
+func TestReportSessionActivityStoresHostGuestAndRawCommand(t *testing.T) {
+	h, _, ctx := newAdminHandler(t)
+	enableActivity(h)
+	// A command with characters strconv.Quote would escape: it must round-trip
+	// unchanged, proving the value is not quoted anywhere in the path.
+	cmd := `echo "hi"	world`
+	host := "rome"
+	guest := testGuestName
+	body := SessionActivityReport{
+		Kind: SessionActivityKindCommand, Command: &cmd, Host: &host, Guest: &guest,
+	}
+	if _, err := h.ReportSessionActivity(ctx, ReportSessionActivityRequestObject{Body: &body}); err != nil {
+		t.Fatalf("ReportSessionActivity: %v", err)
+	}
+	list, _ := h.repo.ListActivity(ctx, 10, 0)
+	if len(list) != 1 {
+		t.Fatalf("want 1 row, got %d", len(list))
+	}
+	p := list[0].Params
+	if p[paramCommand] != cmd {
+		t.Errorf("command = %q, want verbatim %q (not quoted)", p[paramCommand], cmd)
+	}
+	if p[paramHost] != host {
+		t.Errorf("host = %q, want %q", p[paramHost], host)
+	}
+	if p[paramGuest] != guest {
+		t.Errorf("guest = %q, want %q", p[paramGuest], guest)
+	}
+}
+
+// A node-targeted console carries only a host (no guest), and empty host/guest
+// are omitted rather than stored as blank keys.
+func TestReportSessionActivityOmitsEmptyHostGuest(t *testing.T) {
+	h, _, ctx := newAdminHandler(t)
+	enableActivity(h)
+	host := "rome"
+	empty := ""
+	body := SessionActivityReport{Kind: SessionActivityKindConsole, Host: &host, Guest: &empty}
+	if _, err := h.ReportSessionActivity(ctx, ReportSessionActivityRequestObject{Body: &body}); err != nil {
+		t.Fatalf("ReportSessionActivity: %v", err)
+	}
+	list, _ := h.repo.ListActivity(ctx, 10, 0)
+	if len(list) != 1 {
+		t.Fatalf("want 1 row, got %d", len(list))
+	}
+	p := list[0].Params
+	if p[paramHost] != host {
+		t.Errorf("host = %q, want %q", p[paramHost], host)
+	}
+	if _, ok := p[paramGuest]; ok {
+		t.Errorf("empty guest should be omitted, got %v", p[paramGuest])
+	}
+}
+
 // An unknown kind is ignored (204, nothing recorded) rather than erroring.
 func TestReportSessionActivityIgnoresUnknownKind(t *testing.T) {
 	h, _, ctx := newAdminHandler(t)
