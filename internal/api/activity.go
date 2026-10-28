@@ -20,9 +20,12 @@ import (
 // where those reports (and the admin mutations) become rows.
 
 // maxActivityCommand bounds the command text stored for a command event, so a
-// client cannot write an unbounded blob into the log. Mirrors the session's own
-// maxLoggedCommand.
-const maxActivityCommand = 200
+// client cannot write an unbounded blob into the log. It is generous (not the
+// 200-char single-log-line limit): the command lands in a structured param the
+// UI shows in FULL in the detail view and truncates only for the table row, so
+// the stored value must not itself be clipped to a preview length. The cap only
+// guards against an abusive multi-kilobyte blob.
+const maxActivityCommand = 4096
 
 // Activity param keys, named so the same JSON key is not repeated across the
 // instrumented handlers (goconst). The UI's formatEvent reads these.
@@ -32,6 +35,9 @@ const (
 	paramKey         = "key"
 	paramSubjectID   = "subject_id"
 	paramSubjectKind = "subject_kind"
+	paramCommand     = "command"
+	paramHost        = "host"
+	paramGuest       = "guest"
 )
 
 // activityEnabled reports whether events should be recorded. Disabled when the
@@ -199,7 +205,16 @@ func (h *SessionHandler) ReportSessionActivity(
 
 	params := map[string]any{}
 	if request.Body.Kind == SessionActivityKindCommand && request.Body.Command != nil {
-		params["command"] = boundedCommand(*request.Body.Command)
+		params[paramCommand] = boundedCommand(*request.Body.Command)
+	}
+	// host/guest say WHERE the action happened. They are optional: a node action
+	// has only a host, a bare browse has neither, so each is recorded only when
+	// the session supplied it.
+	if request.Body.Host != nil && *request.Body.Host != "" {
+		params[paramHost] = *request.Body.Host
+	}
+	if request.Body.Guest != nil && *request.Body.Guest != "" {
+		params[paramGuest] = *request.Body.Guest
 	}
 	h.record(ctx, eventID, identity.IdentityName, params)
 	return ReportSessionActivity204Response{}, nil

@@ -79,7 +79,9 @@ type Deps struct {
 func Run(ctx context.Context, d *Deps) int {
 	cmd := strings.TrimSpace(d.Command)
 	d.logDispatch(cmd)
-	d.reportActivity(ctx, cmd)
+	// Activity is reported from the dispatch branches below, not here: only
+	// once a branch has resolved its target can the log say WHERE (host/guest).
+	// Browsing/help resolve to no target and are intentionally not logged.
 
 	switch {
 	case isHelp(cmd):
@@ -159,51 +161,62 @@ func (d *Deps) logDispatch(cmd string) {
 		d.IdentityName, dispatchKind(cmd), quoteForLog(cmd))
 }
 
-// reportActivity reports this session's action to the server for the activity
-// log, best-effort. The server records who from the credential; the session
-// only says WHAT. help and the admin/CLI browsing paths are not activity worth
-// logging, so they report nothing. The command text is sent only for a command,
-// length-bounded, and NEVER the login name (which the caller picks) -- the same
-// rule logDispatch follows.
+// The activity kinds reported to the server (the SessionActivityReport enum).
+// Named so the same string is not repeated across the report helpers (goconst).
+const (
+	activityKindConsole = "console"
+	activityKindCommand = "command"
+	activityKindSFTP    = "sftp"
+)
+
+// reportActivity sends one activity report best-effort. The server records who
+// from the credential and maps the kind to an event; the session only says WHAT
+// and WHERE (host/guest). It is called from the dispatch branches once the
+// target has been resolved, NOT at the top of Run -- a bare browse/help resolves
+// to no target and so is never reported, and an action that reaches a guest or
+// node can name it.
+//
+// The command is sent VERBATIM (no quoting): it lands in a structured JSON param
+// the UI renders, not a single log line, so strconv.Quote-style escaping would
+// be wrong. The server length-caps it. The login name is never sent as the
+// command (the caller picks it).
 //
 // Errors are ignored: a failed report (e.g. logging disabled server-side) must
 // never affect the session.
-func (d *Deps) reportActivity(ctx context.Context, cmd string) {
+func (d *Deps) reportActivity(ctx context.Context, report ActivityReport) {
 	if d.Dir == nil {
 		return
 	}
-	kind, command, ok := activityReport(cmd)
-	if !ok {
-		return
-	}
-	_ = d.Dir.ReportActivity(ctx, kind, command)
+	_ = d.Dir.ReportActivity(ctx, report)
+}
+
+// reportConsole records that a console was opened on host (and guest, when the
+// target is a guest rather than the node itself).
+func (d *Deps) reportConsole(ctx context.Context, host, guest string) {
+	d.reportActivity(ctx, ActivityReport{Kind: activityKindConsole, Host: host, Guest: guest})
+}
+
+// reportCommand records that cmd was run on host (and guest, when applicable).
+func (d *Deps) reportCommand(ctx context.Context, cmd, host, guest string) {
+	d.reportActivity(ctx, ActivityReport{
+		Kind: activityKindCommand, Command: cmd, Host: host, Guest: guest,
+	})
+}
+
+// reportSFTP records that an SFTP transfer was opened to host (and guest, when
+// the target is a guest rather than the node itself).
+func (d *Deps) reportSFTP(ctx context.Context, host, guest string) {
+	d.reportActivity(ctx, ActivityReport{Kind: activityKindSFTP, Host: host, Guest: guest})
 }
 
 // The dispatch-kind labels, named so the same string is not repeated across
-// dispatchKind and activityReport (goconst) and the two cannot drift.
+// dispatchKind and logDispatch (goconst) and the two cannot drift.
 const (
 	dispatchKindHelp      = "help"
 	dispatchKindSFTP      = "sftp"
 	dispatchKindLoginName = "login-name"
 	dispatchKindCommand   = "command"
 )
-
-// activityReport maps a dispatch to the activity kind + command to report, and
-// whether it should be reported at all. Kept beside dispatchKind so the two
-// agree on what a command means.
-func activityReport(cmd string) (kind, command string, ok bool) {
-	switch dispatchKind(cmd) {
-	case dispatchKindSFTP:
-		return "sftp", "", true
-	case dispatchKindCommand:
-		return "command", quoteForLog(cmd), true
-	case dispatchKindLoginName:
-		// A bare login (ssh ct100@host) opens a console/connection.
-		return "console", "", true
-	default: // help, and anything else: not activity to log.
-		return "", "", false
-	}
-}
 
 // dispatchKind names the branch Run will take for cmd.
 //
@@ -293,6 +306,9 @@ func (d *Deps) connectChecked(ctx context.Context, guest *models.Guest) int {
 		d.errf("internal error")
 		return 1
 	}
+	// Record WHERE: a console into info.Guest on host info.Instance. This is the
+	// single chokepoint for every guest console (direct, login-name, picker).
+	d.reportConsole(ctx, info.Instance.Name, info.Guest.Name)
 	return d.attach(info.Guest, info.Instance, info.SSHKey)
 }
 
@@ -315,6 +331,9 @@ func (d *Deps) connectNodeChecked(ctx context.Context, inst *models.ProxmoxInsta
 		d.errf("internal error")
 		return 1
 	}
+	// Record WHERE: a console into the node itself (host, no guest). The single
+	// chokepoint for every node console (direct, login-name, picker).
+	d.reportConsole(ctx, info.Instance.Name, "")
 	return d.attachNode(info.Instance, info.SSHKey)
 }
 

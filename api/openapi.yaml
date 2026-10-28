@@ -2066,7 +2066,9 @@ components:
         A session's report of what it is doing, for the activity log. The
         server maps kind to an EventID and resolves the actor from the caller's
         credential; command is the client's command text, recorded only for the
-        "command" kind.
+        "command" kind. host and guest name the target the session reached
+        (resolved server-side-equivalently by the session), so the log says
+        WHERE a console/command/transfer happened, not just that it did.
       required: [kind]
       properties:
         kind:
@@ -2080,8 +2082,19 @@ components:
         command:
           type: string
           description: |
-            The command text, for the "command" kind. Length-bounded and
-            otherwise ignored for other kinds.
+            The command text, for the "command" kind. Recorded verbatim (not
+            quoted); the server length-caps it. Ignored for other kinds.
+        host:
+          type: string
+          description: |
+            The Proxmox node/instance the session reached (its configured name),
+            when known. A node-targeted action has only a host; a guest-targeted
+            action has both host and guest.
+        guest:
+          type: string
+          description: |
+            The guest (container/VM) the session reached (its name), when the
+            action targeted a guest rather than a node itself.
 
     DefaultAccessPolicy:
       type: object
