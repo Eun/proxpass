@@ -67,16 +67,53 @@ const clientTimeout = 15 * time.Second
 // rather than waiting out the full clientTimeout on connection setup alone.
 const dialTimeout = 5 * time.Second
 
-// newHTTPClient builds the *http.Client used for every REST call and the
-// termproxy ticket POST. TLS certificate verification is ON unless insecure is
-// set -- a Proxmox host with a self-signed certificate (the stock config) must
-// either present a trusted certificate or be added with --insecure.
-func newHTTPClient(insecure bool) *http.Client {
+// The two shared transports -- one verifying TLS, one not. They are built ONCE
+// and reused by every client, because a *http.Transport owns the connection
+// pool: a fresh one per call (which is what NewAPIClient used to do on every
+// discovery pass, per instance) leaks an idle keep-alive connection and its
+// reader goroutine every pass, forever, since nothing closes it. Over hours that
+// fd/goroutine/memory creep is what made the appliance go unresponsive even
+// though no single handler was slow. Two transports (not one) because the TLS
+// config differs by the instance's insecure flag, and a Transport's TLSClientConfig
+// must not be mutated after use. Both set connection-pool bounds so idle
+// connections cannot accumulate without limit.
+var (
+	sharedTransportVerify   = newTransport(false)
+	sharedTransportInsecure = newTransport(true)
+)
+
+// newTransport builds one shared *http.Transport. Callers reuse the two package
+// instances above rather than allocating per request.
+func newTransport(insecure bool) *http.Transport {
 	var tlsConfig *tls.Config
 	if insecure {
 		tlsConfig = &tls.Config{
 			InsecureSkipVerify: true, //nolint:gosec // opt-in per instance via --insecure; Proxmox often uses self-signed certs
 		}
+	}
+	return &http.Transport{
+		TLSClientConfig: tlsConfig,
+		// Bound the TCP connect separately so an unreachable host fails in
+		// seconds rather than waiting out the whole clientTimeout.
+		DialContext: (&net.Dialer{Timeout: dialTimeout}).DialContext,
+		// Bound the idle-connection pool so it cannot grow without limit and so a
+		// connection to a node that has gone away is eventually reaped rather than
+		// held open forever.
+		MaxIdleConns:        16,
+		MaxIdleConnsPerHost: 2,
+		IdleConnTimeout:     90 * time.Second,
+	}
+}
+
+// newHTTPClient builds the *http.Client used for every REST call and the
+// termproxy ticket POST. It reuses one of the two shared transports (verifying
+// or insecure) rather than allocating a new one, so repeated calls -- every
+// discovery pass builds a client per instance -- do not leak connection pools.
+// TLS certificate verification is ON unless insecure is set.
+func newHTTPClient(insecure bool) *http.Client {
+	transport := sharedTransportVerify
+	if insecure {
+		transport = sharedTransportInsecure
 	}
 	return &http.Client{
 		// A finite overall timeout so an unreachable or black-holed node can
@@ -90,12 +127,7 @@ func newHTTPClient(insecure bool) *http.Client {
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
-		Transport: &http.Transport{
-			TLSClientConfig: tlsConfig,
-			// Bound the TCP connect separately so an unreachable host fails in
-			// seconds rather than waiting out the whole clientTimeout.
-			DialContext: (&net.Dialer{Timeout: dialTimeout}).DialContext,
-		},
+		Transport: transport,
 	}
 }
 
