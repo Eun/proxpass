@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+	"sync"
+	"time"
 
 	"proxpass/internal/db"
 	"proxpass/internal/models"
@@ -1283,9 +1285,25 @@ func (h *SessionHandler) RunDiscovery(
 		}
 	}
 
+	// Discover instances concurrently so one slow/dead node does not make the
+	// request wait out every node's timeout in series: the whole pass is bounded
+	// by the slowest single node (requestDiscoveryTimeout), not their sum. Each
+	// discoverInstance already bounds and isolates its own node, and StoreGuests
+	// is per-instance scoped, so the rows are independent. The slice is indexed
+	// (not appended) to keep the response order stable.
+	rows := make([]DiscoverInstanceResult, len(instances))
+	var wg sync.WaitGroup
+	for i, inst := range instances {
+		wg.Add(1)
+		go func(i int, inst *models.ProxmoxInstance) {
+			defer wg.Done()
+			rows[i] = h.discoverInstance(ctx, inst)
+		}(i, inst)
+	}
+	wg.Wait()
+
 	result := DiscoverResult{Instances: make([]DiscoverInstanceResult, 0, len(instances))}
-	for _, inst := range instances {
-		row := h.discoverInstance(ctx, inst)
+	for _, row := range rows {
 		result.Total += row.Stored
 		result.Instances = append(result.Instances, row)
 	}
@@ -1333,15 +1351,27 @@ func (h *SessionHandler) ScanSSHFingerprints(
 	return ScanSSHFingerprints200JSONResponse(out), nil
 }
 
+// requestDiscoveryTimeout bounds a single instance's discovery when it runs
+// INSIDE a request (AddInstance, RunDiscovery). The REST client's own timeout is
+// a 15s backstop meant for the background loop; an interactive request must
+// answer faster than that, so a node that accepts the connection but never
+// responds returns a prompt "unreachable" instead of making the UI appear to
+// hang. Shorter than the client timeout on purpose.
+const requestDiscoveryTimeout = 8 * time.Second
+
 // discoverInstance runs one instance's discovery pass and reports its counts.
 //
 // A discovery or store failure is recorded on the row's Error and the pass
 // moves on, exactly as the CLI and background loop do: one bad instance must
-// not fail the others.
+// not fail the others. The network call is bounded by a per-instance deadline
+// so one slow/dead node cannot stall the request past requestDiscoveryTimeout.
 func (h *SessionHandler) discoverInstance(
 	ctx context.Context, inst *models.ProxmoxInstance,
 ) DiscoverInstanceResult {
 	row := DiscoverInstanceResult{InstanceID: inst.ID, Name: inst.Name}
+
+	ctx, cancel := context.WithTimeout(ctx, requestDiscoveryTimeout)
+	defer cancel()
 
 	guests, err := h.discoverer(inst).DiscoverGuests(ctx)
 	if err != nil {
