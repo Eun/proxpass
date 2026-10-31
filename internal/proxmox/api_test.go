@@ -2,6 +2,7 @@ package proxmox_test
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
 
@@ -343,5 +344,39 @@ func TestHTTPClientHasBoundedTimeout(t *testing.T) {
 	}
 	if c.Timeout > 30*time.Second {
 		t.Errorf("REST client timeout %s is too long to keep the appliance responsive", c.Timeout)
+	}
+}
+
+// The REST client must REUSE a shared http.Transport rather than allocating a
+// fresh one per call. A new Transport per call (which is what happened on every
+// discovery pass, per instance) leaks an idle keep-alive connection and its
+// reader goroutine every pass, which is what made the appliance go unresponsive
+// over time. Two clients of the same TLS mode must therefore share one transport.
+func TestHTTPClientReusesSharedTransport(t *testing.T) {
+	a := proxmox.HTTPClient(false)
+	b := proxmox.HTTPClient(false)
+	if a.Transport == nil || a.Transport != b.Transport {
+		t.Fatal("verifying clients do not share one transport; a new transport per call leaks connections")
+	}
+	c := proxmox.HTTPClient(true)
+	d := proxmox.HTTPClient(true)
+	if c.Transport == nil || c.Transport != d.Transport {
+		t.Fatal("insecure clients do not share one transport")
+	}
+	// Verifying and insecure must NOT share a transport (their TLS config differs).
+	if a.Transport == c.Transport {
+		t.Fatal("verifying and insecure clients share a transport; their TLS config must differ")
+	}
+	// The shared transport must bound its idle pool so connections cannot
+	// accumulate without limit.
+	tr, ok := a.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport is %T, want *http.Transport", a.Transport)
+	}
+	if tr.IdleConnTimeout <= 0 {
+		t.Error("shared transport has no IdleConnTimeout; idle connections never get reaped")
+	}
+	if tr.MaxIdleConns <= 0 {
+		t.Error("shared transport has no MaxIdleConns bound")
 	}
 }

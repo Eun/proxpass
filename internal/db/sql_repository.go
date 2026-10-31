@@ -96,6 +96,18 @@ func open(backend Backend, dsn string) (Repository, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
+	if backend == BackendSQLite {
+		// Serialize SQLite access through a single connection. database/sql's
+		// default is an UNBOUNDED pool, and under the concurrent discovery passes
+		// (which each write guests) that let the number of open SQLite handles --
+		// and the writers contending for SQLite's one file-wide write lock -- grow
+		// without limit, spending up to busy_timeout (5s) per collision and adding
+		// fd/memory pressure. SQLite is single-writer anyway and every statement
+		// here is a fast local operation (no network is ever held across a query),
+		// so one connection keeps access predictable, avoids SQLITE_BUSY entirely,
+		// and caps the resource cost. Postgres keeps the default pool.
+		database.SetMaxOpenConns(1)
+	}
 	if err := migrate(database, &d); err != nil {
 		_ = database.Close()
 		return nil, err
