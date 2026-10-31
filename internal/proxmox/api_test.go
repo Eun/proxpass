@@ -3,6 +3,7 @@ package proxmox_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"proxpass/internal/models"
 	"proxpass/internal/proxmox"
@@ -330,4 +331,17 @@ func mustClient(t *testing.T, inst *models.ProxmoxInstance) *proxmox.APIClient {
 		t.Fatalf("NewAPIClient: %v", err)
 	}
 	return client
+}
+
+// The REST client must have a finite timeout so a down/black-holed node cannot
+// hang a request forever -- the bug where one dead node took out the whole
+// appliance. This guards that the timeout is set and sane.
+func TestHTTPClientHasBoundedTimeout(t *testing.T) {
+	c := proxmox.HTTPClient(false)
+	if c.Timeout <= 0 {
+		t.Fatal("REST client has no timeout; a dead node would hang requests forever")
+	}
+	if c.Timeout > 30*time.Second {
+		t.Errorf("REST client timeout %s is too long to keep the appliance responsive", c.Timeout)
+	}
 }

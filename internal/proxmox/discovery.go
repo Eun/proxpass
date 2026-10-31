@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"proxpass/internal/db"
@@ -67,16 +68,33 @@ func (d *Discovery) RunOnce(ctx context.Context) error {
 		return nil
 	}
 
-	var lastErr error
+	// Discover instances CONCURRENTLY. Serially, a single down node would delay
+	// (and with the old no-timeout client, indefinitely stall) the discovery of
+	// every node after it, so one dead host left the whole cluster's guest cache
+	// stale. Running them in parallel means a slow or dead node only affects its
+	// own result -- bounded now by the REST client's timeout -- while the others
+	// refresh normally.
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		lastErr error
+	)
 	for _, inst := range instances {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := d.discoverInstance(ctx, inst); err != nil {
-			d.logger.Printf("discovery: instance %s (id=%d): %v", inst.Name, inst.ID, err)
-			lastErr = err
-		}
+		wg.Add(1)
+		go func(inst *models.ProxmoxInstance) {
+			defer wg.Done()
+			if err := d.discoverInstance(ctx, inst); err != nil {
+				d.logger.Printf("discovery: instance %s (id=%d): %v", inst.Name, inst.ID, err)
+				mu.Lock()
+				lastErr = err
+				mu.Unlock()
+			}
+		}(inst)
 	}
+	wg.Wait()
 	return lastErr
 }
 
