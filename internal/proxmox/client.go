@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"proxpass/internal/models"
 )
@@ -52,6 +53,20 @@ func NewAPIClient(inst *models.ProxmoxInstance) (*APIClient, error) {
 	}, nil
 }
 
+// clientTimeout bounds every REST call (and the termproxy ticket POST) end to
+// end. Without it a black-holed node -- one that accepts no connection and sends
+// no RST -- hangs the caller until the OS TCP stack gives up (minutes). That is
+// what made a single down node take out the whole appliance: discovery and the
+// admin add/discover handlers ran this client with no deadline of their own, so
+// the hung request pinned the handler and the discovery pass indefinitely. A
+// generous but finite cap turns "forever" into a bounded failure the callers
+// already handle (they log the error and move on).
+const clientTimeout = 15 * time.Second
+
+// dialTimeout bounds just the TCP connect, so an unreachable host fails fast
+// rather than waiting out the full clientTimeout on connection setup alone.
+const dialTimeout = 5 * time.Second
+
 // newHTTPClient builds the *http.Client used for every REST call and the
 // termproxy ticket POST. TLS certificate verification is ON unless insecure is
 // set -- a Proxmox host with a self-signed certificate (the stock config) must
@@ -64,6 +79,11 @@ func newHTTPClient(insecure bool) *http.Client {
 		}
 	}
 	return &http.Client{
+		// A finite overall timeout so an unreachable or black-holed node can
+		// never hang a request forever. The per-call context can still cut it
+		// shorter; this is the backstop for callers that pass a context with no
+		// deadline (e.g. the discovery loop on the root context).
+		Timeout: clientTimeout,
 		// Never follow redirects. Proxmox can redirect to a URL that drops the
 		// port (e.g. https://host:8006 → https://host), which would silently
 		// connect to port 443 instead.
@@ -72,6 +92,9 @@ func newHTTPClient(insecure bool) *http.Client {
 		},
 		Transport: &http.Transport{
 			TLSClientConfig: tlsConfig,
+			// Bound the TCP connect separately so an unreachable host fails in
+			// seconds rather than waiting out the whole clientTimeout.
+			DialContext: (&net.Dialer{Timeout: dialTimeout}).DialContext,
 		},
 	}
 }

@@ -107,6 +107,9 @@ func runSSHConsole(
 		User:            inst.SSHUser,
 		Auth:            []gossh.AuthMethod{gossh.PublicKeys(signer)},
 		HostKeyCallback: sshhostkey.Callback(inst.SSHHost, inst.SSHFingerprints, inst.InsecureSSH),
+		// Bound the connect + handshake so a down node fails the acting user in
+		// seconds instead of hanging their session forever.
+		Timeout: sshDialTimeout,
 	})
 	if err != nil {
 		return fmt.Errorf("dialing proxmox %s: %w", addr, err)

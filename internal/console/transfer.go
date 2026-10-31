@@ -9,6 +9,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"time"
 
 	gossh "golang.org/x/crypto/ssh"
 
@@ -47,12 +48,21 @@ func DialNode(inst *models.ProxmoxInstance, sshKey string, logger *log.Logger) (
 		User:            inst.SSHUser,
 		Auth:            []gossh.AuthMethod{gossh.PublicKeys(signer)},
 		HostKeyCallback: sshhostkey.Callback(inst.SSHHost, inst.SSHFingerprints, inst.InsecureSSH),
+		// Bound the connect + handshake so a down node fails the acting user in
+		// seconds instead of hanging their session forever (gossh.Dial has no
+		// timeout of its own).
+		Timeout: sshDialTimeout,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dialing proxmox %s: %w", addr, err)
 	}
 	return &NodeRunner{client: client, logger: logger}, nil
 }
+
+// sshDialTimeout bounds an SSH connect+handshake to a Proxmox node. A node that
+// is down or black-holed must not hang the session that reaches for it: this
+// turns "wait forever" into a prompt, reported failure.
+const sshDialTimeout = 10 * time.Second
 
 // Close drops the connection to the node.
 func (r *NodeRunner) Close() error {
