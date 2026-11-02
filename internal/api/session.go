@@ -208,10 +208,11 @@ func (h *SessionHandler) ExchangeSessionToken(
 		return nil, err
 	}
 
-	// A token exchange is a login: record it under the resolved identity (never
-	// the login name the caller picked). Best-effort, after the session is
-	// stored so a login that succeeds is the one that is logged.
-	h.record(ctx, EventSessionLogin, identity.IdentityName, map[string]any{})
+	// A bare SSH sign-in is deliberately NOT logged to the activity log: on its
+	// own it carries no useful information (no target, no action -- the console,
+	// command or transfer that follows is what gets recorded, with its host and
+	// guest). Logging every token exchange just added noise. The session.login
+	// EventID is kept so any rows written by earlier versions still render.
 
 	return ExchangeSessionToken200JSONResponse(SessionCredential{
 		Token:     credential,

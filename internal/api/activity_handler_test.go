@@ -10,6 +10,8 @@ import (
 	"log"
 	"testing"
 	"time"
+
+	"proxpass/internal/models"
 )
 
 // enableActivity turns on recording with a generous retention.
@@ -260,6 +262,38 @@ func TestNewActivityPrunerInterval(t *testing.T) {
 				t.Errorf("interval = %s, want %s", p.interval, tc.want)
 			}
 		})
+	}
+}
+
+// A bare SSH sign-in (a token exchange) must NOT create an activity-log entry:
+// it carries no useful information on its own and only added noise. The console,
+// command or transfer that follows is what gets logged.
+func TestExchangeSessionTokenDoesNotLogASignIn(t *testing.T) {
+	h, repo, _ := newAdminHandler(t)
+	enableActivity(h)
+
+	// Mint a token for a client identity, then exchange it as that client would
+	// on sign-in.
+	const minted = "minted-token"
+	now := time.Now()
+	identity := &models.SessionIdentity{LoginName: "alice", IdentityName: "alice"}
+	if err := repo.MintSessionToken(
+		context.Background(), HashToken(minted), identity, now, now.Add(time.Minute)); err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	ctx := context.WithValue(context.Background(), bearerTokenKey, minted)
+
+	resp, err := h.ExchangeSessionToken(ctx, ExchangeSessionTokenRequestObject{})
+	if err != nil {
+		t.Fatalf("ExchangeSessionToken: %v", err)
+	}
+	if _, ok := resp.(ExchangeSessionToken200JSONResponse); !ok {
+		t.Fatalf("exchange returned %T, want 200", resp)
+	}
+
+	// No activity row should have been written.
+	if n, _ := repo.CountActivity(context.Background()); n != 0 {
+		t.Fatalf("a sign-in recorded %d activity row(s); it must record none", n)
 	}
 }
 
