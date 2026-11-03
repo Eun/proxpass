@@ -557,6 +557,83 @@ func TestDefaultPolicyGroupAccess(t *testing.T) {
 	}
 }
 
+// Regression: a client added to a group from the GROUP side (groups.client_ids,
+// e.g. the UI's group "Members" field) -- leaving the client's own group_ids
+// empty -- must still reach what the default policy grants that group.
+//
+// This was the production bug: tobias was a member of "admins" via the group's
+// member list, "admins" was authorized by the default policy, yet he could reach
+// nothing, because HasAccess only read clients.group_ids. Naming the CLIENT in
+// the policy worked (a different tier), which is exactly the asymmetry reported.
+func TestDefaultPolicyGroupAccessFromTheGroupSide(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+
+	// A client in NO groups, as far as its own row is concerned.
+	c := &models.Client{Name: "grpmember", PublicKeys: []string{testKey}, GroupIDs: []int64{}}
+	if err := repo.AddClient(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+
+	// The membership is recorded on the GROUP side only.
+	grp := &models.Group{Name: "admins", ClientIDs: []int64{c.ID}}
+	if err := repo.AddGroup(ctx, grp); err != nil {
+		t.Fatal(err)
+	}
+
+	g := &models.Guest{Type: models.GuestTypeCT, Name: "ct10", Status: models.StatusRunning, ProxmoxID: 1000, InstanceID: 1}
+	if err := repo.UpsertGuest(ctx, g); err != nil {
+		t.Fatal(err)
+	}
+
+	// The default policy authorizes the group.
+	if err := repo.SetDefaultPolicy(ctx, &models.DefaultAccessPolicy{
+		AuthorizedGroupIDs: []int64{grp.ID},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ok, err := repo.HasAccess(ctx, c.ID, g.ID)
+	if err != nil {
+		t.Fatalf("HasAccess: %v", err)
+	}
+	if !ok {
+		t.Fatal("client is a group member (group side) and the default policy " +
+			"authorizes the group, but HasAccess denied access")
+	}
+}
+
+// The same asymmetry for a direct GROUP access rule (not the default policy):
+// membership recorded on the group side must satisfy a group access rule too.
+func TestGroupAccessRuleFromTheGroupSide(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+
+	c := &models.Client{Name: "grpmember2", PublicKeys: []string{testKey}, GroupIDs: []int64{}}
+	if err := repo.AddClient(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	grp := &models.Group{Name: "ops", ClientIDs: []int64{c.ID}}
+	if err := repo.AddGroup(ctx, grp); err != nil {
+		t.Fatal(err)
+	}
+	g := &models.Guest{Type: models.GuestTypeCT, Name: "ct11", Status: models.StatusRunning, ProxmoxID: 1100, InstanceID: 1}
+	if err := repo.UpsertGuest(ctx, g); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.GrantGroupAccess(ctx, grp.ID, []int64{g.ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	ok, err := repo.HasAccess(ctx, c.ID, g.ID)
+	if err != nil {
+		t.Fatalf("HasAccess: %v", err)
+	}
+	if !ok {
+		t.Fatal("client is a group member (group side) with a group access rule, but access was denied")
+	}
+}
+
 func TestAdminKeys(t *testing.T) {
 	repo := newTestRepo(t)
 	ctx := context.Background()

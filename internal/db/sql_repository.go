@@ -1052,6 +1052,74 @@ func (r *sqlRepo) DeleteActivityOlderThan(ctx context.Context, cutoff time.Time)
 
 // --- Access Control Check ---
 
+// clientGroupIDs returns every group clientID belongs to, as the UNION of the
+// two places a membership can be recorded:
+//
+//   - clients.group_ids -- set when the membership is edited from the CLIENT
+//     side ("this client belongs to these groups"), and
+//   - groups.client_ids -- set when it is edited from the GROUP side ("these
+//     clients are members of this group").
+//
+// The admin UI exposes both independently and nothing reconciles them, so a
+// membership added from the group side leaves clients.group_ids empty. Reading
+// only clients.group_ids -- as the access checks used to -- then missed that
+// membership entirely: a client added to a group that the default policy (or a
+// group rule) authorizes could reach nothing, while editing the policy to name
+// the client directly worked. Taking the union makes access correct no matter
+// which side the membership was entered from.
+//
+// A missing client row is not an error here: the caller turns an empty set into
+// "no group grants", the same answer a client in no groups gets.
+func (r *sqlRepo) clientGroupIDs(ctx context.Context, clientID int64) ([]int64, error) {
+	seen := make(map[int64]struct{})
+
+	// The client side.
+	var groupsJSON string
+	err := r.queryRow(ctx,
+		"SELECT group_ids FROM clients WHERE id = ?", clientID).Scan(&groupsJSON)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, err
+	}
+	if err == nil {
+		var ids []int64
+		_ = json.Unmarshal([]byte(groupsJSON), &ids)
+		for _, id := range ids {
+			seen[id] = struct{}{}
+		}
+	}
+
+	// The group side: any group whose client_ids names this client.
+	rows, err := r.query(ctx, "SELECT id, client_ids FROM groups")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var gid int64
+		var clientIDsJSON string
+		if err := rows.Scan(&gid, &clientIDsJSON); err != nil {
+			return nil, err
+		}
+		var members []int64
+		_ = json.Unmarshal([]byte(clientIDsJSON), &members)
+		for _, m := range members {
+			if m == clientID {
+				seen[gid] = struct{}{}
+				break
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	out := make([]int64, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
+	return out, nil
+}
+
 // HasAccess returns true if clientID is allowed to reach guestID.
 // Priority: explicit client rule > group rule > default policy.
 func (r *sqlRepo) HasAccess(ctx context.Context, clientID, guestID int64) (bool, error) {
@@ -1067,18 +1135,11 @@ func (r *sqlRepo) HasAccess(ctx context.Context, clientID, guestID int64) (bool,
 		return false, err
 	}
 
-	// 2. Group rules — load the client's group memberships
-	var groupsJSON string
-	err = r.queryRow(ctx,
-		"SELECT group_ids FROM clients WHERE id = ?", clientID).Scan(&groupsJSON)
+	// 2. Group rules — the client's group memberships, from BOTH sides.
+	groupIDs, err := r.clientGroupIDs(ctx, clientID)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return false, nil
-		}
 		return false, err
 	}
-	var groupIDs []int64
-	_ = json.Unmarshal([]byte(groupsJSON), &groupIDs)
 
 	for _, gid := range groupIDs {
 		err = r.queryRow(ctx,
@@ -1147,18 +1208,11 @@ func (r *sqlRepo) HasInstanceAccess(ctx context.Context, clientID, instanceID in
 		return false, err
 	}
 
-	// 2. Group rules — load the client's group memberships
-	var groupsJSON string
-	err = r.queryRow(ctx,
-		"SELECT group_ids FROM clients WHERE id = ?", clientID).Scan(&groupsJSON)
+	// 2. Group rules — the client's group memberships, from BOTH sides.
+	groupIDs, err := r.clientGroupIDs(ctx, clientID)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return false, nil
-		}
 		return false, err
 	}
-	var groupIDs []int64
-	_ = json.Unmarshal([]byte(groupsJSON), &groupIDs)
 
 	for _, gid := range groupIDs {
 		err = r.queryRow(ctx,
