@@ -370,10 +370,12 @@
                                             <template x-for="col in currentResource().columns" :key="col.key">
                                                 <th class="text-left font-medium px-4 py-3" x-text="col.label"></th>
                                             </template>
-                                            <!-- Dedicated "Access" column (e.g. the Grant action), before the
-                                                 trailing Edit/Delete actions column. -->
-                                            <template x-if="(currentResource().rowActions || []).length">
-                                                <th class="text-left font-medium px-4 py-3" x-text="(currentResource().rowActionsLabel || 'Access').toUpperCase()"></th>
+                                            <!-- Dedicated row-actions column (e.g. the Grant action), before the
+                                                 trailing Edit/Delete actions column. Only resources that opt in with
+                                                 a rowActionsLabel get their own column; others keep their row
+                                                 actions inline in the trailing actions cell. -->
+                                            <template x-if="currentResource().rowActionsLabel && (currentResource().rowActions || []).length">
+                                                <th class="text-left font-medium px-4 py-3" x-text="currentResource().rowActionsLabel.toUpperCase()"></th>
                                             </template>
                                             <th class="px-4 py-3"></th>
                                         </tr>
@@ -384,8 +386,9 @@
                                                 <template x-for="col in currentResource().columns" :key="col.key">
                                                     <td class="px-4 py-3 align-top" x-html="renderCell(col, row)"></td>
                                                 </template>
-                                                <!-- Access column: the Grant action lives here, before Edit/Delete. -->
-                                                <template x-if="(currentResource().rowActions || []).length">
+                                                <!-- Dedicated row-actions column (opt-in via rowActionsLabel, e.g.
+                                                     the Grant action on Nodes/Guests), before Edit/Delete. -->
+                                                <template x-if="currentResource().rowActionsLabel && (currentResource().rowActions || []).length">
                                                     <td class="px-4 py-3 align-top whitespace-nowrap">
                                                         <template x-for="act in currentResource().rowActions" :key="act.label">
                                                             <button @click="act.run(row)" class="text-primary hover:underline mr-3" x-text="act.label"></button>
@@ -398,6 +401,15 @@
                                                     </template>
                                                     <template x-if="currentResource().remove">
                                                         <button @click="removeRow(row)" class="text-red-600 hover:underline">Delete</button>
+                                                    </template>
+                                                    <!-- Resources without a dedicated column keep their row actions
+                                                         inline here (e.g. "Revoke" on the access-rule lists). -->
+                                                    <template x-if="!currentResource().rowActionsLabel && (currentResource().rowActions || []).length">
+                                                        <span>
+                                                            <template x-for="act in currentResource().rowActions" :key="act.label">
+                                                                <button @click="act.run(row)" class="text-primary hover:underline ml-3" x-text="act.label"></button>
+                                                            </template>
+                                                        </span>
                                                     </template>
                                                 </td>
                                             </tr>

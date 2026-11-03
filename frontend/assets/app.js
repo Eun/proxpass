@@ -704,12 +704,14 @@ function app() {
 
         // tableColSpan is how many columns the empty/loading placeholder row
         // must span: the data columns, the trailing Edit/Delete actions column
-        // (always rendered), and -- when the resource has row actions -- the
-        // dedicated "Access" column that sits before it.
+        // (always rendered), and -- only when the resource opts in with a
+        // rowActionsLabel -- the dedicated row-actions column that sits before
+        // it. Resources that keep their row actions inline (e.g. the access
+        // lists' "Revoke") do not get an extra column.
         tableColSpan() {
             const r = this.currentResource();
             let n = r.columns.length + 1;
-            if ((r.rowActions || []).length) n += 1;
+            if (r.rowActionsLabel && (r.rowActions || []).length) n += 1;
             return n;
         },
 
