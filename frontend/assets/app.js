@@ -81,7 +81,7 @@ function app() {
         // policy + discovery view state. policyForm holds arrays of selected
         // client/group IDs; the clients/groups lists to pick from come from
         // cache.clients / cache.groups (loaded by loadPolicy).
-        policyForm: { clients: [], groups: [] },
+        policyForm: { clients: [], groups: [], nodeAccess: false },
         discoverInstance: '',
         discoverResult: null,
 
@@ -1175,6 +1175,7 @@ function app() {
                 this.cache.groups = groups || [];
                 this.policyForm.clients = [...(policy.authorized_client_ids || [])];
                 this.policyForm.groups = [...(policy.authorized_group_ids || [])];
+                this.policyForm.nodeAccess = !!policy.node_access;
             } catch (e) { this.fail(e); }
             finally { this.busy = false; }
         },
@@ -1185,12 +1186,34 @@ function app() {
             if (i === -1) arr.push(id); else arr.splice(i, 1);
             this.policyForm[which] = [...arr];
         },
+        // toggleNodeAccess flips the node-access flag. Turning it ON is the
+        // broadest grant proxpass can give -- a shell on EVERY node for everyone
+        // the default policy covers -- so it is gated behind an explicit warning
+        // dialog. Turning it OFF needs no confirmation. The change is only
+        // persisted when Save policy is pressed.
+        async toggleNodeAccess() {
+            if (this.policyForm.nodeAccess) {
+                // Currently on -> turning off: no warning.
+                this.policyForm.nodeAccess = false;
+                return;
+            }
+            const ok = await this.askConfirm(
+                'Enable node access for the default policy?\n\n' +
+                'Every client and group this default policy authorizes will get a ' +
+                'FULL SHELL (and SFTP) on EVERY Proxmox node — not just the guests ' +
+                'the policy covers. This is the broadest access proxpass can grant ' +
+                'and bypasses per-node access rules. Only enable it if you intend ' +
+                'those clients to administer the nodes directly.');
+            // askConfirm resolves false on cancel; leave the flag off then.
+            this.policyForm.nodeAccess = !!ok;
+        },
         async savePolicy() {
             this.busy = true;
             try {
                 await this.request('PUT', '/policy', {
                     authorized_client_ids: this.policyForm.clients,
                     authorized_group_ids: this.policyForm.groups,
+                    node_access: this.policyForm.nodeAccess,
                 });
                 this.ok('Default policy saved.');
             } catch (e) { this.fail(e); }

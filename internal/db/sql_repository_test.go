@@ -29,6 +29,7 @@ const (
 	testClientUpper = "Alice"
 	testGroupName   = "ops"
 	testNodeName    = "rome"
+	testNodeURL     = "https://rome:8006"
 )
 
 // newTestRepo returns a repository for the backend under test.
@@ -631,6 +632,78 @@ func TestGroupAccessRuleFromTheGroupSide(t *testing.T) {
 	}
 	if !ok {
 		t.Fatal("client is a group member (group side) with a group access rule, but access was denied")
+	}
+}
+
+// The default policy grants NODE access only when its node_access flag is on.
+// With it off (the default), a policy-covered client reaches no node; with it on,
+// it reaches every node. A group-authorized client is covered the same way.
+func TestDefaultPolicyNodeAccessIsOptIn(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+
+	c := &models.Client{Name: "policyclient", PublicKeys: []string{testKey}, GroupIDs: []int64{}}
+	if err := repo.AddClient(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	grp := &models.Group{Name: "policygroup", ClientIDs: []int64{}}
+	if err := repo.AddGroup(ctx, grp); err != nil {
+		t.Fatal(err)
+	}
+	member := &models.Client{Name: "policymember", PublicKeys: []string{testKey}, GroupIDs: []int64{grp.ID}}
+	if err := repo.AddClient(ctx, member); err != nil {
+		t.Fatal(err)
+	}
+	inst := &models.ProxmoxInstance{Name: "rome", APIURL: testNodeURL, APITokenID: "t", APITokenSecret: "s", Node: "rome"}
+	if err := repo.AddProxmoxInstance(ctx, inst); err != nil {
+		t.Fatal(err)
+	}
+
+	// Policy authorizes the client and the group, but node_access is OFF.
+	if err := repo.SetDefaultPolicy(ctx, &models.DefaultAccessPolicy{
+		AuthorizedClientIDs: []int64{c.ID},
+		AuthorizedGroupIDs:  []int64{grp.ID},
+		NodeAccess:          false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := repo.HasInstanceAccess(ctx, c.ID, inst.ID); ok {
+		t.Fatal("node_access off: a policy-covered client must NOT reach a node")
+	}
+	if ok, _ := repo.HasInstanceAccess(ctx, member.ID, inst.ID); ok {
+		t.Fatal("node_access off: a policy-covered group member must NOT reach a node")
+	}
+
+	// Turn node_access ON.
+	if err := repo.SetDefaultPolicy(ctx, &models.DefaultAccessPolicy{
+		AuthorizedClientIDs: []int64{c.ID},
+		AuthorizedGroupIDs:  []int64{grp.ID},
+		NodeAccess:          true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The flag round-trips.
+	got, err := repo.GetDefaultPolicy(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.NodeAccess {
+		t.Fatal("node_access did not persist")
+	}
+	if ok, err := repo.HasInstanceAccess(ctx, c.ID, inst.ID); err != nil || !ok {
+		t.Fatalf("node_access on: a policy-covered client should reach the node (ok=%v err=%v)", ok, err)
+	}
+	if ok, err := repo.HasInstanceAccess(ctx, member.ID, inst.ID); err != nil || !ok {
+		t.Fatalf("node_access on: a policy-covered group member should reach the node (ok=%v err=%v)", ok, err)
+	}
+
+	// A client NOT in the policy still gets nothing, even with node_access on.
+	outsider := &models.Client{Name: "outsider", PublicKeys: []string{testKey}, GroupIDs: []int64{}}
+	if err := repo.AddClient(ctx, outsider); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := repo.HasInstanceAccess(ctx, outsider.ID, inst.ID); ok {
+		t.Fatal("node_access on: a client NOT in the policy must still be denied")
 	}
 }
 

@@ -173,6 +173,14 @@ type InstanceAccessRuleRow struct {
 type DefaultAccessPolicy struct {
 	AuthorizedClientIDs []int64 `json:"authorized_client_ids"`
 	AuthorizedGroupIDs  []int64 `json:"authorized_group_ids"`
+
+	// NodeAccess, when true, extends the default policy to Proxmox NODES: a
+	// client or group it authorizes reaches every node, not only the guests it
+	// covers. Off by default -- node access otherwise requires an explicit
+	// per-client/per-group grant. This is the broadest grant proxpass can give
+	// (a shell on every node), so it is opt-in and the admin UI warns before
+	// enabling it.
+	NodeAccess bool `json:"node_access"`
 }
 
 // SessionIdentity is who a session turned out to be, as resolved from the

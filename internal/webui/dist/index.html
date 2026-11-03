@@ -411,7 +411,7 @@
                     <!-- Default policy editor -->
                     <template x-if="view === 'policy'">
                         <div class="bg-white rounded-lg shadow p-6 max-w-2xl">
-                            <h3 class="font-semibold text-secondary mb-4">Default guest access policy</h3>
+                            <h3 class="font-semibold text-secondary mb-4">Default access policy</h3>
                             <p class="text-sm text-gray-500 mb-4">Clients and groups selected here can reach every guest, in addition to any explicit access rules.</p>
                             <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
                                 <div>
@@ -446,6 +446,20 @@
                                         </template>
                                     </div>
                                 </div>
+                            </div>
+                            <!-- Node access: the broadest grant. Off by default; turning
+                                 it on warns first (toggleNodeAccess) because it gives a
+                                 shell on every node to everyone the policy covers. -->
+                            <div class="mt-6 rounded border border-amber-200 bg-amber-50 p-4">
+                                <label class="flex items-start gap-3 cursor-pointer">
+                                    <input type="checkbox" class="form-checkbox rounded border-gray-300 text-amber-600 focus:ring-amber-500 mt-0.5"
+                                        :checked="policyForm.nodeAccess"
+                                        @change.prevent="toggleNodeAccess()">
+                                    <span>
+                                        <span class="block text-sm font-medium text-amber-800">Also grant access to Proxmox nodes</span>
+                                        <span class="block text-xs text-amber-700 mt-0.5">The authorized clients and groups get a full shell and SFTP on <strong>every node</strong>, not just guests. This bypasses per-node access rules — enable only if they should administer the nodes directly.</span>
+                                    </span>
+                                </label>
                             </div>
                             <button @click="savePolicy()" :disabled="busy" class="mt-6 bg-primary hover:bg-primary-dark text-white font-medium px-4 py-2 rounded transition disabled:opacity-50">
                                 <span x-text="busy ? 'Saving…' : 'Save policy'"></span>
@@ -709,7 +723,7 @@
             <template x-if="confirmState.open">
                 <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
                     <div class="fixed inset-0 bg-black opacity-50" @click="resolveConfirm(false)"></div>
-                    <div class="relative bg-white rounded-lg shadow-xl w-full max-w-sm">
+                    <div class="relative bg-white rounded-lg shadow-xl w-full max-w-md">
                         <div class="p-6">
                             <div class="flex items-start gap-3">
                                 <span class="flex-shrink-0 flex items-center justify-center w-10 h-10 rounded-full bg-red-100 text-red-600">
@@ -717,7 +731,7 @@
                                 </span>
                                 <div>
                                     <h3 class="font-semibold text-secondary">Please confirm</h3>
-                                    <p class="text-sm text-gray-600 mt-1" x-text="confirmState.message"></p>
+                                    <p class="text-sm text-gray-600 mt-1 whitespace-pre-line" x-text="confirmState.message"></p>
                                 </div>
                             </div>
                         </div>

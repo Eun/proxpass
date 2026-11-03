@@ -153,9 +153,11 @@ func toAPIInstanceAccessRuleRow(r *models.InstanceAccessRuleRow) InstanceAccessR
 // --- default policy ---
 
 func toAPIDefaultPolicy(p *models.DefaultAccessPolicy) DefaultAccessPolicy {
+	nodeAccess := p.NodeAccess
 	return DefaultAccessPolicy{
 		AuthorizedClientIds: nonNilInts(p.AuthorizedClientIDs),
 		AuthorizedGroupIds:  nonNilInts(p.AuthorizedGroupIDs),
+		NodeAccess:          &nodeAccess,
 	}
 }
 
@@ -163,6 +165,8 @@ func fromAPIDefaultPolicy(in *DefaultAccessPolicy) *models.DefaultAccessPolicy {
 	return &models.DefaultAccessPolicy{
 		AuthorizedClientIDs: in.AuthorizedClientIds,
 		AuthorizedGroupIDs:  in.AuthorizedGroupIds,
+		// Optional in the API; absent means off.
+		NodeAccess: in.NodeAccess != nil && *in.NodeAccess,
 	}
 }
 

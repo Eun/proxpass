@@ -51,7 +51,7 @@ func TestNamesAreUniqueIgnoringCase(t *testing.T) {
 
 	t.Run("instance", func(t *testing.T) {
 		if err := repo.AddProxmoxInstance(ctx, &models.ProxmoxInstance{
-			Name: testNodeName, APIURL: "https://rome:8006", Node: testNodeName,
+			Name: testNodeName, APIURL: testNodeURL, Node: testNodeName,
 			ConsoleTransport: models.ConsoleTransportTermProxy,
 		}); err != nil {
 			t.Fatalf("first add: %v", err)
@@ -75,7 +75,7 @@ func TestAddingAnInstanceFoldsTheNameInTheCallersStruct(t *testing.T) {
 	ctx := context.Background()
 
 	inst := &models.ProxmoxInstance{
-		Name: "ROME", APIURL: "https://rome:8006", Node: testNodeName,
+		Name: "ROME", APIURL: testNodeURL, Node: testNodeName,
 		ConsoleTransport: models.ConsoleTransportTermProxy,
 	}
 	if err := repo.AddProxmoxInstance(ctx, inst); err != nil {
