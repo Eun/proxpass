@@ -919,19 +919,24 @@ paths:
       summary: List guest access rules.
       description: |
         Mirrors `db.Repository.ListAccessRules`: one row per (subject, guest)
-        grant, where the subject is a client or a group.
+        grant, where the subject is a client or a group. An optional `filter`
+        narrows the result; see the `ListFilter` parameter.
       operationId: listAccessRules
       security:
         - adminToken: []
+      parameters:
+        - $ref: "#/components/parameters/ListFilter"
       responses:
         "200":
-          description: Every guest access rule.
+          description: Every guest access rule (optionally filtered).
           content:
             application/json:
               schema:
                 type: array
                 items:
                   $ref: "#/components/schemas/AccessRuleRow"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -1008,19 +1013,24 @@ paths:
       description: |
         Mirrors `db.Repository.ListInstanceAccessRules`: one row per
         (subject, instance) grant. Separate from guest access rules because a
-        node grant and a guest grant confer different things.
+        node grant and a guest grant confer different things. An optional
+        `filter` narrows the result; see the `ListFilter` parameter.
       operationId: listInstanceAccessRules
       security:
         - adminToken: []
+      parameters:
+        - $ref: "#/components/parameters/ListFilter"
       responses:
         "200":
-          description: Every instance access rule.
+          description: Every instance access rule (optionally filtered).
           content:
             application/json:
               schema:
                 type: array
                 items:
                   $ref: "#/components/schemas/InstanceAccessRuleRow"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -1519,6 +1529,21 @@ components:
       schema:
         type: integer
         format: int64
+
+    ListFilter:
+      name: filter
+      in: query
+      required: false
+      description: |
+        Optional URL-encoded JSON filter restricting which rows are returned.
+        The object's keys are field names and the values are operator objects,
+        e.g. `{"guest_id":{"$eq":"5"}}`. Comparison operators are `$eq`, `$ieq`,
+        `$contains`, `$icontains`, `$startswith`, `$endswith`; logical operators
+        `$and`, `$or`, `$nor`, `$not` combine conditions on one field. Multiple
+        fields are implicitly ANDed. An unknown field, unknown operator, or
+        malformed JSON is a 400.
+      schema:
+        type: string
 
   responses:
     Unauthorized:

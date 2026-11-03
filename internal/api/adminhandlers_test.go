@@ -207,6 +207,52 @@ func TestGrantAccessByClientKind(t *testing.T) {
 	}
 }
 
+// ListAccessRules passes its filter through to the repository and answers a bad
+// filter with a 400 rather than a 500.
+func TestListAccessRulesFilterHandler(t *testing.T) {
+	h, repo, ctx := newAdminHandler(t)
+
+	client := &models.Client{Name: testClientAlice}
+	if err := repo.AddClient(t.Context(), client); err != nil {
+		t.Fatalf("seed client: %v", err)
+	}
+	stored, err := repo.GetClientByName(t.Context(), testClientAlice)
+	if err != nil {
+		t.Fatalf("get client: %v", err)
+	}
+	if err := repo.GrantClientAccess(t.Context(), stored.ID, []int64{1, 2}); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+
+	// A filter on guest_id returns only the matching rule.
+	f := `{"guest_id":{"$eq":"2"}}`
+	resp, err := h.ListAccessRules(ctx, ListAccessRulesRequestObject{
+		Params: ListAccessRulesParams{Filter: &f},
+	})
+	if err != nil {
+		t.Fatalf("ListAccessRules: %v", err)
+	}
+	rules, ok := resp.(ListAccessRules200JSONResponse)
+	if !ok {
+		t.Fatalf("ListAccessRules returned %T, want 200", resp)
+	}
+	if len(rules) != 1 || rules[0].GuestID != 2 {
+		t.Fatalf("filtered rules = %+v, want one rule for guest 2", rules)
+	}
+
+	// An unknown field is a client error: 400, not 500.
+	bad := `{"nope":{"$eq":"x"}}`
+	badResp, err := h.ListAccessRules(ctx, ListAccessRulesRequestObject{
+		Params: ListAccessRulesParams{Filter: &bad},
+	})
+	if err != nil {
+		t.Fatalf("bad filter returned a Go error (would be 500): %v", err)
+	}
+	if _, ok := badResp.(ListAccessRules400JSONResponse); !ok {
+		t.Fatalf("bad filter returned %T, want ListAccessRules400JSONResponse", badResp)
+	}
+}
+
 // An unknown subject kind is a 400, not a silent success.
 func TestGrantAccessUnknownKindIs400(t *testing.T) {
 	h, _, ctx := newAdminHandler(t)

@@ -9,10 +9,18 @@ import (
 	"time"
 
 	"proxpass/internal/db"
+	"proxpass/internal/filter"
 	"proxpass/internal/models"
 	"proxpass/internal/proxmox"
 	"proxpass/internal/sshhostkey"
 )
+
+// isFilterError reports whether err is a client-supplied bad filter (bad JSON,
+// unknown field, disallowed operator), which the list handlers answer with a
+// 400 rather than a 500.
+func isFilterError(err error) bool {
+	return errors.Is(err, filter.ErrInvalidFilter)
+}
 
 // Admin handlers for the typed /v1 API.
 //
@@ -711,7 +719,7 @@ func (h *SessionHandler) GetGuest(
 //
 //nolint:dupl // guest and node access handlers are mirror images
 func (h *SessionHandler) ListAccessRules(
-	ctx context.Context, _ ListAccessRulesRequestObject,
+	ctx context.Context, request ListAccessRulesRequestObject,
 ) (ListAccessRulesResponseObject, error) {
 	if denied, ok, err := gateAdmin(ctx, h,
 		func(reason string) ListAccessRulesResponseObject {
@@ -723,8 +731,11 @@ func (h *SessionHandler) ListAccessRules(
 	); !ok {
 		return denied, err
 	}
-	rules, err := h.repo.ListAccessRules(ctx)
+	rules, err := h.repo.ListAccessRules(ctx, request.Params.Filter)
 	if err != nil {
+		if isFilterError(err) {
+			return ListAccessRules400JSONResponse{BadRequestJSONResponse{Error: err.Error()}}, nil
+		}
 		return nil, err
 	}
 	out := make([]AccessRuleRow, 0, len(rules))
@@ -825,7 +836,7 @@ func (h *SessionHandler) RevokeAccess(
 //
 //nolint:dupl // guest and node access handlers are mirror images
 func (h *SessionHandler) ListInstanceAccessRules(
-	ctx context.Context, _ ListInstanceAccessRulesRequestObject,
+	ctx context.Context, request ListInstanceAccessRulesRequestObject,
 ) (ListInstanceAccessRulesResponseObject, error) {
 	if denied, ok, err := gateAdmin(ctx, h,
 		func(reason string) ListInstanceAccessRulesResponseObject {
@@ -837,8 +848,11 @@ func (h *SessionHandler) ListInstanceAccessRules(
 	); !ok {
 		return denied, err
 	}
-	rules, err := h.repo.ListInstanceAccessRules(ctx)
+	rules, err := h.repo.ListInstanceAccessRules(ctx, request.Params.Filter)
 	if err != nil {
+		if isFilterError(err) {
+			return ListInstanceAccessRules400JSONResponse{BadRequestJSONResponse{Error: err.Error()}}, nil
+		}
 		return nil, err
 	}
 	out := make([]InstanceAccessRuleRow, 0, len(rules))

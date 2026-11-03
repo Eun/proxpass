@@ -271,11 +271,11 @@ func assertSameRest(t *testing.T, remote, direct db.Repository, clientID, guestI
 	t.Helper()
 	ctx := t.Context()
 
-	rulesA, err := remote.ListAccessRules(ctx)
+	rulesA, err := remote.ListAccessRules(ctx, nil)
 	if err != nil {
 		t.Fatalf("remote rules: %v", err)
 	}
-	rulesB, err := direct.ListAccessRules(ctx)
+	rulesB, err := direct.ListAccessRules(ctx, nil)
 	if err != nil {
 		t.Fatalf("direct rules: %v", err)
 	}
