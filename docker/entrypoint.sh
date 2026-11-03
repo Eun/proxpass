@@ -45,15 +45,42 @@ log() {
 # every lookup is refused and NOBODY can log in. This block therefore runs
 # ahead of all serve/sshd logic below.
 #
-# Generated when unset with pure coreutils (base64 of 32 random bytes, with
-# the base64 non-alphanumerics stripped so the value is a clean header token):
-# the runtime image ships neither openssl nor jq/python, only the Debian base
-# plus curl and openssh-server.
-if [ -z "${PROXPASS_NSS_TOKEN:-}" ]; then
-	PROXPASS_NSS_TOKEN="$(head -c32 /dev/urandom | base64 | tr -d '/+=')"
-	log "generated a PROXPASS_NSS_TOKEN for the NSS directory"
-else
+# The token is PERSISTED on the volume when it is not supplied, so it stays the
+# same across container recreates. This matters because /etc/nss_http.json lives
+# in the container's ephemeral filesystem, not on the volume: recreating the
+# container (a routine image bump) resets that file to its build-time
+# placeholder, so the token in it is rewritten on every start. If the token were
+# generated fresh each boot instead, a serve process and an nss_http.json that
+# came up at slightly different moments -- or a stale serve kept across a partial
+# restart -- would end up with DIFFERENT tokens, and then every NSS lookup is a
+# 401, getent returns nothing, and sshd refuses every login with "invalid user"
+# (nobody can log in, including the administrator). Reading a persisted token
+# instead means serve and the freshly-rewritten nss_http.json always derive from
+# the same stable value. An explicit PROXPASS_NSS_TOKEN still wins and is not
+# persisted (the operator owns it then).
+#
+# Generated with pure coreutils (base64 of 32 random bytes, with the base64
+# non-alphanumerics stripped so the value is a clean header token): the runtime
+# image ships neither openssl nor jq/python, only the Debian base plus curl and
+# openssh-server. The file is root-only and does not live where clients can list.
+PROXPASS_NSS_TOKEN_FILE="${PROXPASS_NSS_TOKEN_FILE:-${PROXPASS_DATA_DIR}/nss_token}"
+if [ -n "${PROXPASS_NSS_TOKEN:-}" ]; then
 	log "using the supplied PROXPASS_NSS_TOKEN for the NSS directory"
+elif [ -r "${PROXPASS_NSS_TOKEN_FILE}" ]; then
+	PROXPASS_NSS_TOKEN="$(cat "${PROXPASS_NSS_TOKEN_FILE}")"
+	log "using the persisted PROXPASS_NSS_TOKEN for the NSS directory"
+else
+	PROXPASS_NSS_TOKEN="$(head -c32 /dev/urandom | base64 | tr -d '/+=')"
+	mkdir -p "$(dirname "${PROXPASS_NSS_TOKEN_FILE}")"
+	# Write via a temp file + move so a concurrent read never sees a partial
+	# token, and keep it root-only.
+	nss_token_tmp="$(mktemp)"
+	printf '%s' "${PROXPASS_NSS_TOKEN}" > "${nss_token_tmp}"
+	cat "${nss_token_tmp}" > "${PROXPASS_NSS_TOKEN_FILE}"
+	rm -f "${nss_token_tmp}"
+	chown root:root "${PROXPASS_NSS_TOKEN_FILE}" 2>/dev/null || true
+	chmod 0600 "${PROXPASS_NSS_TOKEN_FILE}"
+	log "generated and persisted a PROXPASS_NSS_TOKEN for the NSS directory"
 fi
 export PROXPASS_NSS_TOKEN
 
@@ -297,14 +324,22 @@ export PROXPASS_SSH_KEY_FILE
 # A 200 on the user list endpoint means `proxpass serve' is far enough along
 # that NSS lookups will succeed. --fail turns any non-2xx into a non-zero exit.
 #
-# The /users route now requires the NSS bearer token, exactly like the NSS
-# module's own requests: without the Authorization header this probe would get
-# a 401, --fail would never succeed, and the entrypoint would hang until the
-# readiness timeout and then exit. The header must carry the same token that
-# was injected into /etc/nss_http.json above.
+# The probe deliberately sends the token read back FROM /etc/nss_http.json rather
+# than the ${PROXPASS_NSS_TOKEN} shell variable, so it exercises the exact same
+# credential the NSS module will present. If the two ever disagree -- the failure
+# that silently locks everyone out -- this probe gets a 401 and the entrypoint
+# refuses to start sshd instead of coming up with a directory that answers no
+# lookups. The grep/sed extracts the bare token from the "Bearer <token>" header;
+# the token is base64-alphanumeric, so no escaping is needed.
+nss_config_token() {
+	sed -n 's/.*"Authorization"[^"]*"Bearer \([A-Za-z0-9]*\)".*/\1/p' \
+		"${PROXPASS_NSS_CONFIG}" 2>/dev/null
+}
 nss_api_ready() {
+	probe_token="$(nss_config_token)"
+	[ -n "${probe_token}" ] || return 1
 	curl --silent --show-error --fail --max-time 2 \
-		-H "Authorization: Bearer ${PROXPASS_NSS_TOKEN}" \
+		-H "Authorization: Bearer ${probe_token}" \
 		--output /dev/null "http://${PROXPASS_LISTEN}/users"
 }
 

@@ -76,3 +76,32 @@ func TestEntrypointDoesNotExportThePrivateKeyItself(t *testing.T) {
 		}
 	}
 }
+
+// TestEntrypointPersistsTheNSSToken guards the fix for the lock-out bug.
+//
+// A generated-per-boot NSS token could drift between `proxpass serve' and
+// /etc/nss_http.json across a container recreate or a partial restart, and then
+// every NSS lookup is a 401, getent returns nothing, and sshd refuses every
+// login with "invalid user" -- nobody can log in, the administrator included.
+// The entrypoint must persist a generated token on the volume (so it is stable)
+// and the readiness probe must exercise the token actually in nss_http.json (so
+// a mismatch fails startup loudly instead of coming up unusable).
+func TestEntrypointPersistsTheNSSToken(t *testing.T) {
+	b, err := os.ReadFile(filepath.Clean(entrypointPath))
+	if err != nil {
+		t.Fatalf("reading the entrypoint: %v", err)
+	}
+	script := string(b)
+
+	// A generated token is written to a persistence file under the data dir.
+	if !strings.Contains(script, "PROXPASS_NSS_TOKEN_FILE") {
+		t.Fatal("the entrypoint does not persist the generated NSS token " +
+			"(no PROXPASS_NSS_TOKEN_FILE); it would regenerate per boot and can drift")
+	}
+	// The readiness probe must read the token from the NSS config, not just the
+	// shell variable, so a serve/config mismatch is detected before sshd starts.
+	if !strings.Contains(script, "nss_config_token") {
+		t.Fatal("the readiness probe does not verify the token from nss_http.json; " +
+			"a serve/config token mismatch would come up silently unusable")
+	}
+}
