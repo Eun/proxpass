@@ -456,6 +456,8 @@ paths:
       operationId: listInstances
       security:
         - adminToken: []
+      parameters:
+        - $ref: "#/components/parameters/ListFilter"
       responses:
         "200":
           description: Every configured Proxmox instance.
@@ -465,6 +467,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/ProxmoxInstance"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -598,6 +602,7 @@ paths:
       security:
         - adminToken: []
       parameters:
+        - $ref: "#/components/parameters/ListFilter"
         - name: name
           in: query
           required: false
@@ -617,6 +622,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/AdminClient"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -739,6 +746,8 @@ paths:
       operationId: listGroups
       security:
         - adminToken: []
+      parameters:
+        - $ref: "#/components/parameters/ListFilter"
       responses:
         "200":
           description: Every group.
@@ -748,6 +757,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/ClientGroup"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -871,6 +882,8 @@ paths:
       operationId: listGuests
       security:
         - adminToken: []
+      parameters:
+        - $ref: "#/components/parameters/ListFilter"
       responses:
         "200":
           description: Every discovered guest.
@@ -880,6 +893,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/GuestRow"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -1244,6 +1259,8 @@ paths:
       operationId: listSettings
       security:
         - adminToken: []
+      parameters:
+        - $ref: "#/components/parameters/ListFilter"
       responses:
         "200":
           description: The effective settings.
@@ -1253,6 +1270,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/SettingEntry"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":

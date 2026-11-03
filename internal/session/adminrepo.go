@@ -135,7 +135,7 @@ func (r *AdminRepository) AddProxmoxInstance(ctx context.Context, inst *models.P
 }
 
 func (r *AdminRepository) ListProxmoxInstances(ctx context.Context) ([]*models.ProxmoxInstance, error) {
-	resp, err := r.api.ListInstancesWithResponse(ctx)
+	resp, err := r.api.ListInstancesWithResponse(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +237,7 @@ func (r *AdminRepository) AddGroup(ctx context.Context, group *models.Group) err
 }
 
 func (r *AdminRepository) ListGroups(ctx context.Context) ([]*models.Group, error) {
-	resp, err := r.api.ListGroupsWithResponse(ctx)
+	resp, err := r.api.ListGroupsWithResponse(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -258,7 +258,7 @@ func (r *AdminRepository) RemoveGroup(ctx context.Context, id int64) error {
 // --- Guests ---
 
 func (r *AdminRepository) ListGuests(ctx context.Context) ([]*models.Guest, error) {
-	resp, err := r.api.ListGuestsWithResponse(ctx)
+	resp, err := r.api.ListGuestsWithResponse(ctx, nil)
 	if err != nil {
 		return nil, err
 	}

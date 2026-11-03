@@ -34,13 +34,16 @@ function app() {
         busy: false,
         search: '',
 
-        // accessFilter, when set, restricts the Guest/Node Access list to the
-        // rules for one target (a guest or a node). It is set by the "List" row
-        // action on the Nodes/Guests tables, which then navigates to the access
-        // view; loadAccess turns it into a ?filter= query against the backend,
-        // and a banner above the table lets the operator clear it. kind is
-        // 'guest' or 'instance'; id/name identify the target.
-        accessFilter: null,
+        // listFilter is the raw JSON filter string applied to the current list
+        // view (or null). Every list endpoint accepts it as a ?filter= query, so
+        // the table shows only matching rows. It is reflected in the URL hash as
+        // #view?filter=<url-encoded JSON>, so a filtered view is bookmarkable and
+        // survives reload. filterLabel is the human-readable banner text shown
+        // above the table while a filter is active (e.g. the "List" row action
+        // sets both). A filter belongs to one view and is dropped on navigation
+        // elsewhere.
+        listFilter: null,
+        filterLabel: '',
 
         // rows for the current resource view; cache keeps the last-loaded list
         // for each resource so cross-resource lookups (e.g. instance names on
@@ -302,8 +305,12 @@ function app() {
             // rewriting the hash (go() guards that).
             window.addEventListener('hashchange', () => {
                 if (!this.authed) return;
-                const id = this.viewFromHash();
-                if (id !== this.view) this.go(id);
+                const route = this.routeFromHash();
+                // Re-navigate when the view OR its filter changed (Back/Forward
+                // between filtered and unfiltered states, or an edited URL).
+                if (route.id !== this.view || (route.filter || null) !== (this.listFilter || null)) {
+                    this.go(route.id, { filter: route.filter });
+                }
             });
             // A token stored from a previous visit is not trusted blindly: it
             // may have been rotated or revoked. Re-validate it, and only then
@@ -326,7 +333,7 @@ function app() {
                 this.loadVersion();
                 this.loadLatestVersion();
                 // Honour a bookmarked route (e.g. /#clients); default dashboard.
-                this.go(this.viewFromHash());
+                { const r = this.routeFromHash(); this.go(r.id, { filter: r.filter }); }
             } catch (_) {
                 // Any failure means the stored token is no good: forget it and
                 // show the login. (A transient network error also lands here;
@@ -337,12 +344,27 @@ function app() {
             }
         },
 
-        // viewFromHash resolves the current location hash to a known view id,
-        // defaulting to the dashboard when the hash is empty or unrecognised.
-        viewFromHash() {
-            const id = (window.location.hash || '').replace(/^#/, '');
-            return this.nav.some((n) => n.id === id) ? id : 'dashboard';
+        // routeFromHash parses the location hash into a known view id and an
+        // optional raw JSON filter string. The hash is #view or
+        // #view?filter=<url-encoded JSON>; an unknown view falls back to the
+        // dashboard. A malformed filter is dropped (treated as absent) rather
+        // than erroring here -- the backend validates it on load.
+        routeFromHash() {
+            const raw = (window.location.hash || '').replace(/^#/, '');
+            const qIdx = raw.indexOf('?');
+            const id = qIdx === -1 ? raw : raw.slice(0, qIdx);
+            let filter = null;
+            if (qIdx !== -1) {
+                const params = new URLSearchParams(raw.slice(qIdx + 1));
+                const f = params.get('filter');
+                if (f) { try { filter = decodeURIComponent(f); } catch (_) { filter = null; } }
+            }
+            const view = this.nav.some((n) => n.id === id) ? id : 'dashboard';
+            return { id: view, filter };
         },
+
+        // viewFromHash returns just the view id (for navigation comparisons).
+        viewFromHash() { return this.routeFromHash().id; },
 
         // loadVersion fetches the build version once, for the sidebar footer.
         // A failure is non-fatal -- the footer just shows nothing extra.
@@ -376,7 +398,7 @@ function app() {
                 this.loadLatestVersion();
                 // Honour a bookmarked hash (e.g. someone opened /#clients then
                 // signed in) rather than always landing on the dashboard.
-                this.go(this.viewFromHash());
+                { const r = this.routeFromHash(); this.go(r.id, { filter: r.filter }); }
             } catch (e) {
                 this.clearToken();
                 this.authError = e.isAuth ? 'Token rejected (not an admin credential).' : e.message;
@@ -401,29 +423,31 @@ function app() {
             return item ? item.label : '';
         },
 
-        async go(id) {
+        // go navigates to a view, optionally with a list filter. opts.filter is
+        // a raw JSON filter string; opts.filterLabel is the banner text. The
+        // filter is written into the URL hash (#view?filter=…) so it is
+        // bookmarkable, and applies to this view's list load. Any navigation
+        // without a filter clears it, so a filter never silently narrows a page
+        // the operator just browsed to.
+        async go(id, opts) {
+            opts = opts || {};
             this.view = id;
             this.search = '';
             this.error = '';
-            // Drop any target filter unless we are navigating to the very access
-            // view it applies to (the "List" action sets the filter and then
-            // calls go() with that view). Any other navigation clears it, so the
-            // filter never silently narrows a page the operator browsed to.
-            const keepsFilter = this.accessFilter &&
-                ((this.accessFilter.kind === 'guest' && id === 'access') ||
-                 (this.accessFilter.kind === 'instance' && id === 'instanceAccess'));
-            if (!keepsFilter) this.accessFilter = null;
+            this.listFilter = opts.filter || null;
+            this.filterLabel = opts.filterLabel || '';
             this.modal.open = false;
             // The activity detail is a non-modal sidebar: it stays open while the
             // user clicks between rows, and only closes on a deliberate close or
             // when they navigate away from the page -- this is that latter case.
             this.closeActivityDetail();
-            // Reflect the current page in the URL hash. Guard against rewriting
-            // it to the same value so navigation triggered BY a hashchange does
-            // not loop. history.replaceState keeps Back/Forward meaningful
-            // without stacking a duplicate entry when the hash already matches.
-            if (this.viewFromHash() !== id) {
-                window.location.hash = id;
+            // Reflect the current page (and any filter) in the URL hash. Guard
+            // against rewriting it to the same value so navigation triggered BY a
+            // hashchange does not loop.
+            const hash = id + (this.listFilter
+                ? '?filter=' + encodeURIComponent(this.listFilter) : '');
+            if ((window.location.hash || '').replace(/^#/, '') !== hash) {
+                window.location.hash = hash;
             }
             if (id === 'dashboard') return this.loadDashboard();
             if (id === 'activity') { this.activity.offset = 0; return this.loadActivity(); }
@@ -434,7 +458,16 @@ function app() {
             if (this.resources[id]) return this.loadResource(id);
         },
 
-        refresh() { this.go(this.view); },
+        refresh() {
+            this.go(this.view, { filter: this.listFilter, filterLabel: this.filterLabel });
+        },
+
+        // listFilterQuery is the ?filter=<url-encoded JSON> suffix for the active
+        // list filter, or '' when none. Appended to a list GET so the backend
+        // returns only matching rows.
+        listFilterQuery() {
+            return this.listFilter ? '?filter=' + encodeURIComponent(this.listFilter) : '';
+        },
 
         // ---- generic list loading ----
         async loadResource(id) {
@@ -446,7 +479,7 @@ function app() {
                 // names rather than ids. needsCaches lists the other resources
                 // whose names this table shows.
                 if (r.needsCaches) await this.ensureCaches(...r.needsCaches);
-                let data = await this.request('GET', r.path);
+                let data = await this.request('GET', r.path + this.listFilterQuery());
                 if (r.unwrap) data = r.unwrap(data);
                 this.rows = Array.isArray(data) ? data : [];
                 this.cache[id] = this.rows;
@@ -1134,9 +1167,9 @@ function app() {
             await this.ensureCaches('clients', 'groups',
                 kind === 'guest' ? 'guests' : 'instances');
             try {
-                // When a target filter is active for this view, ask the backend
-                // for just those rules via ?filter= (see accessFilterQuery).
-                const data = await this.request('GET', path + this.accessFilterQuery(kind));
+                // When a filter is active for this view, ask the backend for
+                // just the matching rules via ?filter= (see listFilterQuery).
+                const data = await this.request('GET', path + this.listFilterQuery());
                 this.rows = (data || []).map((row) => ({ ...row, id: row.id }));
             } catch (e) { this.fail(e); }
             finally { this.loading = false; }
@@ -1225,35 +1258,30 @@ function app() {
             };
         },
         // listAccessFor navigates to the Guest/Node Access page showing only the
-        // rules for one target (the row the operator clicked). It records the
-        // target in accessFilter and switches view; go() preserves the filter
-        // for this one navigation, loadAccess turns it into a ?filter= query.
+        // rules for one target (the row the operator clicked), by building a
+        // ?filter= on guest_id/instance_id and passing it to go(). The filter
+        // lands in the URL hash (#access?filter=…), so the view is bookmarkable,
+        // and a banner names the target.
         //
         // kind is 'guest' or 'instance'. The access views are 'access' (guests)
         // and 'instanceAccess' (nodes).
         listAccessFor(kind, targetId, targetName) {
-            this.accessFilter = { kind, id: targetId, name: targetName };
-            this.go(kind === 'guest' ? 'access' : 'instanceAccess');
-        },
-
-        // clearAccessFilter drops the target filter and reloads the full list.
-        clearAccessFilter() {
-            this.accessFilter = null;
-            this.loadAccess(this.accessPath, this.accessKind);
-        },
-
-        // accessFilterQuery renders the ?filter= query string for the active
-        // accessFilter when it applies to the view being loaded, else ''. The
-        // column is guest_id for guest rules and instance_id for node rules; the
-        // value is matched with $eq. The JSON is URL-encoded so it survives as a
-        // single query parameter.
-        accessFilterQuery(kind) {
-            const f = this.accessFilter;
-            if (!f || f.kind !== kind) return '';
             const col = kind === 'guest' ? 'guest_id' : 'instance_id';
             const filter = {};
-            filter[col] = { $eq: String(f.id) };
-            return '?filter=' + encodeURIComponent(JSON.stringify(filter));
+            filter[col] = { $eq: String(targetId) };
+            const label = 'Showing access rules for '
+                + (kind === 'guest' ? 'guest ' : 'node ')
+                + (targetName || '#' + targetId) + ' only.';
+            this.go(kind === 'guest' ? 'access' : 'instanceAccess', {
+                filter: JSON.stringify(filter),
+                filterLabel: label,
+            });
+        },
+
+        // clearListFilter drops the active list filter and reloads the current
+        // view unfiltered, updating the URL hash to match.
+        clearListFilter() {
+            this.go(this.view);
         },
 
         // nameSelectName resolves the display name for a nameselect value, used to

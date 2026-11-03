@@ -253,6 +253,46 @@ func TestListAccessRulesFilterHandler(t *testing.T) {
 	}
 }
 
+// ListGuests honors the generic ?filter= param (in-memory filtering) and
+// returns 400 for a bad filter.
+func TestListGuestsFilterHandler(t *testing.T) {
+	h, repo, ctx := newAdminHandler(t)
+
+	for _, g := range []*models.Guest{
+		{Type: models.GuestTypeVM, Name: "web-01", Status: models.StatusRunning, ProxmoxID: 100, InstanceID: 1},
+		{Type: models.GuestTypeVM, Name: "web-02", Status: models.StatusRunning, ProxmoxID: 101, InstanceID: 1},
+		{Type: models.GuestTypeCT, Name: "db-01", Status: models.StatusStopped, ProxmoxID: 102, InstanceID: 1},
+	} {
+		if err := repo.UpsertGuest(t.Context(), g); err != nil {
+			t.Fatalf("seed guest: %v", err)
+		}
+	}
+
+	// Filter by status=running -> 2 of 3.
+	f := `{"status":{"$eq":"running"}}`
+	resp, err := h.ListGuests(ctx, ListGuestsRequestObject{Params: ListGuestsParams{Filter: &f}})
+	if err != nil {
+		t.Fatalf("ListGuests: %v", err)
+	}
+	rows, ok := resp.(ListGuests200JSONResponse)
+	if !ok {
+		t.Fatalf("ListGuests returned %T, want 200", resp)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("filtered guests = %d, want 2 running", len(rows))
+	}
+
+	// Unknown field -> 400, not 500.
+	bad := `{"nope":{"$eq":"x"}}`
+	badResp, err := h.ListGuests(ctx, ListGuestsRequestObject{Params: ListGuestsParams{Filter: &bad}})
+	if err != nil {
+		t.Fatalf("bad filter returned a Go error (would be 500): %v", err)
+	}
+	if _, ok := badResp.(ListGuests400JSONResponse); !ok {
+		t.Fatalf("bad filter returned %T, want ListGuests400JSONResponse", badResp)
+	}
+}
+
 // An unknown subject kind is a 400, not a silent success.
 func TestGrantAccessUnknownKindIs400(t *testing.T) {
 	h, _, ctx := newAdminHandler(t)

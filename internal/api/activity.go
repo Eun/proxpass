@@ -33,6 +33,7 @@ const (
 	paramName        = "name"
 	paramID          = "id"
 	paramKey         = "key"
+	paramValue       = "value"
 	paramSubjectID   = "subject_id"
 	paramSubjectKind = "subject_kind"
 	paramCommand     = "command"
