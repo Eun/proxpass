@@ -363,6 +363,19 @@
                                     </button>
                                 </template>
                             </div>
+                            <!-- Target filter banner: shown when the "List" action on a
+                                 Node/Guest row narrowed this access page to one target. -->
+                            <template x-if="accessFilter">
+                                <div class="flex items-center justify-between gap-3 px-4 py-2 bg-amber-50 border-b border-amber-200 text-sm text-amber-800">
+                                    <span>
+                                        Showing access rules for
+                                        <span x-text="accessFilter.kind === 'guest' ? 'guest' : 'node'"></span>
+                                        <span class="font-medium" x-text="accessFilter.name || ('#' + accessFilter.id)"></span>
+                                        only.
+                                    </span>
+                                    <button @click="clearAccessFilter()" class="text-amber-800 hover:underline font-medium whitespace-nowrap">Clear filter</button>
+                                </div>
+                            </template>
                             <div class="overflow-x-auto custom-scrollbar">
                                 <table class="min-w-full text-sm">
                                     <thead class="bg-gray-50 text-gray-500 uppercase text-xs">

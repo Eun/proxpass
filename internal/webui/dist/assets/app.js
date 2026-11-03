@@ -34,6 +34,14 @@ function app() {
         busy: false,
         search: '',
 
+        // accessFilter, when set, restricts the Guest/Node Access list to the
+        // rules for one target (a guest or a node). It is set by the "List" row
+        // action on the Nodes/Guests tables, which then navigates to the access
+        // view; loadAccess turns it into a ?filter= query against the backend,
+        // and a banner above the table lets the operator clear it. kind is
+        // 'guest' or 'instance'; id/name identify the target.
+        accessFilter: null,
+
         // rows for the current resource view; cache keeps the last-loaded list
         // for each resource so cross-resource lookups (e.g. instance names on
         // the guests table) and the dashboard counts work without refetching.
@@ -175,6 +183,7 @@ function app() {
                     rowActionsLabel: 'Access',
                     rowActions: [
                         { label: 'Grant', run: (row) => self.grantAccessTo('instance', row.id, row.name) },
+                        { label: 'List', run: (row) => self.listAccessFor('instance', row.id, row.name) },
                     ],
                 },
                 guests: {
@@ -194,6 +203,7 @@ function app() {
                     rowActionsLabel: 'Access',
                     rowActions: [
                         { label: 'Grant', run: (row) => self.grantAccessTo('guest', row.id, row.name) },
+                        { label: 'List', run: (row) => self.listAccessFor('guest', row.id, row.name) },
                     ],
                 },
                 clients: {
@@ -395,6 +405,14 @@ function app() {
             this.view = id;
             this.search = '';
             this.error = '';
+            // Drop any target filter unless we are navigating to the very access
+            // view it applies to (the "List" action sets the filter and then
+            // calls go() with that view). Any other navigation clears it, so the
+            // filter never silently narrows a page the operator browsed to.
+            const keepsFilter = this.accessFilter &&
+                ((this.accessFilter.kind === 'guest' && id === 'access') ||
+                 (this.accessFilter.kind === 'instance' && id === 'instanceAccess'));
+            if (!keepsFilter) this.accessFilter = null;
             this.modal.open = false;
             // The activity detail is a non-modal sidebar: it stays open while the
             // user clicks between rows, and only closes on a deliberate close or
@@ -1116,7 +1134,9 @@ function app() {
             await this.ensureCaches('clients', 'groups',
                 kind === 'guest' ? 'guests' : 'instances');
             try {
-                const data = await this.request('GET', path);
+                // When a target filter is active for this view, ask the backend
+                // for just those rules via ?filter= (see accessFilterQuery).
+                const data = await this.request('GET', path + this.accessFilterQuery(kind));
                 this.rows = (data || []).map((row) => ({ ...row, id: row.id }));
             } catch (e) { this.fail(e); }
             finally { this.loading = false; }
@@ -1204,6 +1224,38 @@ function app() {
                 targetLabel: (kind === 'guest' ? 'guest ' : 'node ') + (targetName || '#' + targetId),
             };
         },
+        // listAccessFor navigates to the Guest/Node Access page showing only the
+        // rules for one target (the row the operator clicked). It records the
+        // target in accessFilter and switches view; go() preserves the filter
+        // for this one navigation, loadAccess turns it into a ?filter= query.
+        //
+        // kind is 'guest' or 'instance'. The access views are 'access' (guests)
+        // and 'instanceAccess' (nodes).
+        listAccessFor(kind, targetId, targetName) {
+            this.accessFilter = { kind, id: targetId, name: targetName };
+            this.go(kind === 'guest' ? 'access' : 'instanceAccess');
+        },
+
+        // clearAccessFilter drops the target filter and reloads the full list.
+        clearAccessFilter() {
+            this.accessFilter = null;
+            this.loadAccess(this.accessPath, this.accessKind);
+        },
+
+        // accessFilterQuery renders the ?filter= query string for the active
+        // accessFilter when it applies to the view being loaded, else ''. The
+        // column is guest_id for guest rules and instance_id for node rules; the
+        // value is matched with $eq. The JSON is URL-encoded so it survives as a
+        // single query parameter.
+        accessFilterQuery(kind) {
+            const f = this.accessFilter;
+            if (!f || f.kind !== kind) return '';
+            const col = kind === 'guest' ? 'guest_id' : 'instance_id';
+            const filter = {};
+            filter[col] = { $eq: String(f.id) };
+            return '?filter=' + encodeURIComponent(JSON.stringify(filter));
+        },
+
         // nameSelectName resolves the display name for a nameselect value, used to
         // render a locked (read-only) nameselect field.
         nameSelectName(field, id) {
