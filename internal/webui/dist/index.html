@@ -370,6 +370,13 @@
                                             <template x-for="col in currentResource().columns" :key="col.key">
                                                 <th class="text-left font-medium px-4 py-3" x-text="col.label"></th>
                                             </template>
+                                            <!-- Dedicated row-actions column (e.g. the Grant action), before the
+                                                 trailing Edit/Delete actions column. Only resources that opt in with
+                                                 a rowActionsLabel get their own column; others keep their row
+                                                 actions inline in the trailing actions cell. -->
+                                            <template x-if="currentResource().rowActionsLabel && (currentResource().rowActions || []).length">
+                                                <th class="text-left font-medium px-4 py-3" x-text="currentResource().rowActionsLabel.toUpperCase()"></th>
+                                            </template>
                                             <th class="px-4 py-3"></th>
                                         </tr>
                                     </thead>
@@ -379,6 +386,15 @@
                                                 <template x-for="col in currentResource().columns" :key="col.key">
                                                     <td class="px-4 py-3 align-top" x-html="renderCell(col, row)"></td>
                                                 </template>
+                                                <!-- Dedicated row-actions column (opt-in via rowActionsLabel, e.g.
+                                                     the Grant action on Nodes/Guests), before Edit/Delete. -->
+                                                <template x-if="currentResource().rowActionsLabel && (currentResource().rowActions || []).length">
+                                                    <td class="px-4 py-3 align-top whitespace-nowrap">
+                                                        <template x-for="act in currentResource().rowActions" :key="act.label">
+                                                            <button @click="act.run(row)" class="text-primary hover:underline mr-3" x-text="act.label"></button>
+                                                        </template>
+                                                    </td>
+                                                </template>
                                                 <td class="px-4 py-3 text-right whitespace-nowrap">
                                                     <template x-if="currentResource().edit">
                                                         <button @click="openEdit(row)" class="text-primary hover:underline mr-3">Edit</button>
@@ -386,7 +402,9 @@
                                                     <template x-if="currentResource().remove">
                                                         <button @click="removeRow(row)" class="text-red-600 hover:underline">Delete</button>
                                                     </template>
-                                                    <template x-if="(currentResource().rowActions || []).length">
+                                                    <!-- Resources without a dedicated column keep their row actions
+                                                         inline here (e.g. "Revoke" on the access-rule lists). -->
+                                                    <template x-if="!currentResource().rowActionsLabel && (currentResource().rowActions || []).length">
                                                         <span>
                                                             <template x-for="act in currentResource().rowActions" :key="act.label">
                                                                 <button @click="act.run(row)" class="text-primary hover:underline ml-3" x-text="act.label"></button>
@@ -397,10 +415,10 @@
                                             </tr>
                                         </template>
                                         <template x-if="!loading && filteredRows().length === 0">
-                                            <tr><td :colspan="currentResource().columns.length + 1" class="px-4 py-8 text-center text-gray-400">No rows.</td></tr>
+                                            <tr><td :colspan="tableColSpan()" class="px-4 py-8 text-center text-gray-400">No rows.</td></tr>
                                         </template>
                                         <template x-if="loading">
-                                            <tr><td :colspan="currentResource().columns.length + 1" class="px-4 py-8 text-center text-gray-400">Loading…</td></tr>
+                                            <tr><td :colspan="tableColSpan()" class="px-4 py-8 text-center text-gray-400">Loading…</td></tr>
                                         </template>
                                     </tbody>
                                 </table>
@@ -524,7 +542,7 @@
                     <div class="fixed inset-0 bg-black opacity-50" @click="closeModal()"></div>
                     <div class="relative bg-white rounded-lg shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto custom-scrollbar">
                         <div class="flex items-center justify-between p-4 border-b">
-                            <h3 class="font-semibold text-secondary" x-text="(modal.mode === 'create' ? 'New ' : 'Edit ') + currentResource().singular"></h3>
+                            <h3 class="font-semibold text-secondary" x-text="modal.targetLabel ? ('Grant access to ' + modal.targetLabel) : ((modal.mode === 'create' ? 'New ' : 'Edit ') + currentResource().singular)"></h3>
                             <button @click="closeModal()" class="text-gray-400 hover:text-gray-700 text-xl">&times;</button>
                         </div>
                         <!-- Wizard step indicator. Field explanations live under
@@ -574,15 +592,25 @@
                                          Options come from a cache (nameSelectOptions), which may depend
                                          on another field (e.g. the access subject switches clients/groups). -->
                                     <template x-if="field.type === 'nameselect'">
-                                        <!-- :selected pins the option to the bound id so the control reflects
-                                             modal.data when the options mount via x-for after the <select>
-                                             (same reactivity fix as the plain select above). -->
-                                        <select x-model.number="modal.data[field.key]" class="form-select w-full rounded border-gray-300">
-                                            <option value="" x-text="'Select a ' + field.label.toLowerCase() + '…'"></option>
-                                            <template x-for="opt in nameSelectOptions(field)" :key="opt.id">
-                                                <option :value="opt.id" x-text="opt.name" :selected="opt.id === modal.data[field.key]"></option>
+                                        <div>
+                                            <!-- Locked: the target is fixed (e.g. "Grant access" opened from a
+                                                 node/guest row), so show it read-only instead of a picker. -->
+                                            <template x-if="field.locked">
+                                                <div class="form-input w-full rounded border-gray-300 bg-gray-50 text-gray-700"
+                                                     x-text="nameSelectName(field, modal.data[field.key])"></div>
                                             </template>
-                                        </select>
+                                            <!-- :selected pins the option to the bound id so the control reflects
+                                                 modal.data when the options mount via x-for after the <select>
+                                                 (same reactivity fix as the plain select above). -->
+                                            <template x-if="!field.locked">
+                                                <select x-model.number="modal.data[field.key]" class="form-select w-full rounded border-gray-300">
+                                                    <option value="" x-text="'Select a ' + field.label.toLowerCase() + '…'"></option>
+                                                    <template x-for="opt in nameSelectOptions(field)" :key="opt.id">
+                                                        <option :value="opt.id" x-text="opt.name" :selected="opt.id === modal.data[field.key]"></option>
+                                                    </template>
+                                                </select>
+                                            </template>
+                                        </div>
                                     </template>
                                     <template x-if="field.type === 'checkbox'">
                                         <input type="checkbox" x-model="modal.data[field.key]" class="form-checkbox rounded border-gray-300 text-primary focus:ring-primary">
