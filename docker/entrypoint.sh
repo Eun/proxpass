@@ -32,23 +32,21 @@ log() {
 
 # --- NSS bearer token ------------------------------------------------------
 #
-# `proxpass serve' now requires a bearer token on the NSS directory routes
-# (/user/*, /group/*, /users, /groups) so the single HTTP listener can be
-# bound to a routable interface without exposing the user/group directory
+# `proxpass serve' requires a bearer token on the NSS directory routes
+# (/user/*, /group/*, /users, /groups) so the single HTTP listener can be bound
+# to a routable interface without exposing the user/group directory
 # unauthenticated. The NSS module (github.com/Eun/nss_http-go) presents this
 # token on EVERY request via the "Headers" map in /etc/nss_http.json.
 #
-# CRITICAL ORDERING: the token must be generated, exported (so the child
-# `proxpass serve' inherits it), AND written into /etc/nss_http.json BEFORE
-# `proxpass serve' starts and BEFORE sshd resolves the first user. If the
-# token the NSS module sends does not match the one `proxpass serve' expects,
-# every lookup is refused and NOBODY can log in. This block therefore runs
-# ahead of all serve/sshd logic below.
-#
-# Generated when unset with pure coreutils (base64 of 32 random bytes, with
-# the base64 non-alphanumerics stripped so the value is a clean header token):
-# the runtime image ships neither openssl nor jq/python, only the Debian base
-# plus curl and openssh-server.
+# The token is a plain random value generated per boot when none is supplied
+# (base64 of 32 random bytes with the non-alphanumerics stripped, using pure
+# coreutils -- the runtime image ships neither openssl nor jq/python). It does
+# NOT need to be persisted or templated into a file here: `proxpass serve'
+# itself WRITES /etc/nss_http.json from this same token (via --nss-config /
+# PROXPASS_NSS_CONFIG below), so the token the NSS module presents is by
+# construction the one serve validates. That is what retires the old sed-into-
+# a-checked-in-placeholder step, whose token could desync from serve's on a
+# container recreate and lock every login out with a 401.
 if [ -z "${PROXPASS_NSS_TOKEN:-}" ]; then
 	PROXPASS_NSS_TOKEN="$(head -c32 /dev/urandom | base64 | tr -d '/+=')"
 	log "generated a PROXPASS_NSS_TOKEN for the NSS directory"
@@ -57,27 +55,11 @@ else
 fi
 export PROXPASS_NSS_TOKEN
 
-# Inject the token into /etc/nss_http.json's Headers.Authorization. The file
-# is COPYed from docker/nss_http.json at build time with a placeholder; this
-# rewrites the placeholder to the real "Bearer <token>" value at startup.
-#
-# A placeholder + sed is used rather than jq/python/envsubst because none of
-# those are in the runtime image. The token is restricted to base64 alphanum
-# above, so it contains no sed metacharacters and no '/' (the sed delimiter),
-# which keeps this substitution safe. The edit is written to a temp file and
-# moved into place so a login never sees a half-written config.
+# Tell serve where to render the libnss_http config. serve writes it from the
+# token above and its own --listen, atomically, before the listener comes up --
+# so there is a single writer and no templating that could drift.
 PROXPASS_NSS_CONFIG="${PROXPASS_NSS_CONFIG:-/etc/nss_http.json}"
-if [ -f "${PROXPASS_NSS_CONFIG}" ]; then
-	nss_tmp="$(mktemp)"
-	sed "s/__PROXPASS_NSS_TOKEN__/${PROXPASS_NSS_TOKEN}/g" \
-		"${PROXPASS_NSS_CONFIG}" > "${nss_tmp}"
-	# Preserve the 0644 root:root mode the Dockerfile set.
-	cat "${nss_tmp}" > "${PROXPASS_NSS_CONFIG}"
-	rm -f "${nss_tmp}"
-	log "injected the NSS bearer token into ${PROXPASS_NSS_CONFIG}"
-else
-	log "warning: ${PROXPASS_NSS_CONFIG} not found; NSS lookups will fail"
-fi
+export PROXPASS_NSS_CONFIG
 
 # --- admin REST API token passthrough --------------------------------------
 #

@@ -76,3 +76,30 @@ func TestEntrypointDoesNotExportThePrivateKeyItself(t *testing.T) {
 		}
 	}
 }
+
+// TestEntrypointLetsServeWriteTheNSSConfig guards the fix for the lock-out bug.
+//
+// The NSS token and the nss_http.json it is injected into used to be two sides
+// that could drift: the entrypoint sed'd a generated token into a checked-in
+// file, and a container recreate reset that file to its placeholder. If serve
+// and the file ever disagreed, every NSS lookup was a 401 and nobody could log
+// in. serve now WRITES the config itself from its own token (one writer, no
+// drift), so the entrypoint must point serve at the path (PROXPASS_NSS_CONFIG)
+// and must NOT sed a token into the file any more.
+func TestEntrypointLetsServeWriteTheNSSConfig(t *testing.T) {
+	b, err := os.ReadFile(filepath.Clean(entrypointPath))
+	if err != nil {
+		t.Fatalf("reading the entrypoint: %v", err)
+	}
+	script := string(b)
+
+	// serve is told where to render the config.
+	if !strings.Contains(script, "export PROXPASS_NSS_CONFIG") {
+		t.Fatal("the entrypoint does not export PROXPASS_NSS_CONFIG; serve would not know where to write nss_http.json")
+	}
+	// The old drift-prone templating is gone: no sed of the token placeholder.
+	if strings.Contains(script, "__PROXPASS_NSS_TOKEN__") {
+		t.Fatal("the entrypoint still templates the NSS token into nss_http.json; " +
+			"serve writes it now, and the shell copy can drift and lock everyone out")
+	}
+}
