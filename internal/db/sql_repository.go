@@ -731,12 +731,13 @@ func (r *sqlRepo) SetDefaultPolicy(ctx context.Context, policy *models.DefaultAc
 	clientIDsJSON, _ := json.Marshal(policy.AuthorizedClientIDs)
 	groupIDsJSON, _ := json.Marshal(policy.AuthorizedGroupIDs)
 	_, err := r.exec(ctx,
-		`INSERT INTO default_policy (id, authorized_client_ids, authorized_group_ids)
-		 VALUES (1, ?, ?)
+		`INSERT INTO default_policy (id, authorized_client_ids, authorized_group_ids, node_access)
+		 VALUES (1, ?, ?, ?)
 		 ON CONFLICT (id) DO UPDATE SET
 		   authorized_client_ids = excluded.authorized_client_ids,
-		   authorized_group_ids  = excluded.authorized_group_ids`,
-		string(clientIDsJSON), string(groupIDsJSON))
+		   authorized_group_ids  = excluded.authorized_group_ids,
+		   node_access           = excluded.node_access`,
+		string(clientIDsJSON), string(groupIDsJSON), policy.NodeAccess)
 	return err
 }
 
@@ -744,8 +745,8 @@ func (r *sqlRepo) GetDefaultPolicy(ctx context.Context) (*models.DefaultAccessPo
 	policy := &models.DefaultAccessPolicy{}
 	var clientIDsStr, groupIDsStr string
 	err := r.queryRow(ctx,
-		"SELECT authorized_client_ids, authorized_group_ids FROM default_policy WHERE id = 1").
-		Scan(&clientIDsStr, &groupIDsStr)
+		"SELECT authorized_client_ids, authorized_group_ids, node_access FROM default_policy WHERE id = 1").
+		Scan(&clientIDsStr, &groupIDsStr, &policy.NodeAccess)
 	if err == sql.ErrNoRows {
 		return policy, nil
 	}
@@ -1177,24 +1178,18 @@ func (r *sqlRepo) HasAccess(ctx context.Context, clientID, guestID int64) (bool,
 // HasInstanceAccess returns true if clientID is allowed to reach the Proxmox
 // node instanceID. Priority: explicit client rule > group rule.
 //
-// # Why the default policy is not consulted
+// # The default policy and nodes
 //
-// HasAccess has a third tier: a client named in default_policy reaches
-// anything. That tier does not look at its target at all -- it returns true
-// for any id, including one that names nothing -- so including it here would
-// mean every policy-covered client silently gained a shell on every node the
-// moment this table existed.
-//
-// That is not the same bargain as the guest tier. A default policy is
-// standing configuration, often set once and left; an administrator who ran
-// `policy add --client alice' months ago was saying something about guests,
-// because guests were the only thing it could be about. Reading it now as
-// consent to node access would put words in their mouth, and the grant it
-// would imply is the broadest one proxpass can give.
-//
-// So an instance is reachable only when somebody said so explicitly, with
-// `access grant --instance'. The cost is that a deployment relying on the
-// default policy has to name its nodes; that is the intended cost.
+// Unlike guests, the default policy grants node access ONLY when its node_access
+// flag is explicitly turned on. HasAccess's default-policy tier reaches anything
+// without looking at its target, and a default policy is standing configuration
+// often set once and left: reading an old `policy add --client alice' (which
+// could only ever have meant guests) as consent to a shell on every node would
+// put words in the administrator's mouth, and that grant is the broadest
+// proxpass can give. So the flag is off by default -- an instance is then
+// reachable only when somebody said so explicitly with `access grant --instance'
+// -- and when an administrator deliberately turns it on (the UI warns first), a
+// client or group the policy authorizes reaches every node.
 func (r *sqlRepo) HasInstanceAccess(ctx context.Context, clientID, instanceID int64) (bool, error) {
 	// 1. Direct client rule
 	var exists int
@@ -1223,6 +1218,30 @@ func (r *sqlRepo) HasInstanceAccess(ctx context.Context, clientID, instanceID in
 		}
 		if err != sql.ErrNoRows {
 			return false, err
+		}
+	}
+
+	// 3. Default policy — only when node_access is explicitly enabled. Then a
+	// client or group the policy authorizes reaches EVERY node, mirroring the
+	// guest default-policy tier (HasAccess). The instanceID is not consulted:
+	// the whole point of the flag is "all nodes".
+	policy, err := r.GetDefaultPolicy(ctx)
+	if err != nil {
+		return false, err
+	}
+	if !policy.NodeAccess {
+		return false, nil
+	}
+	for _, cid := range policy.AuthorizedClientIDs {
+		if cid == clientID {
+			return true, nil
+		}
+	}
+	for _, authGID := range policy.AuthorizedGroupIDs {
+		for _, memberGID := range groupIDs {
+			if authGID == memberGID {
+				return true, nil
+			}
 		}
 	}
 

@@ -2101,7 +2101,7 @@ components:
       description: |
         The default access policy, mirroring models.DefaultAccessPolicy: the
         clients and groups granted access to guests not covered by an explicit
-        rule.
+        rule, and (when node_access is on) to every Proxmox node.
       required: [authorized_client_ids, authorized_group_ids]
       properties:
         authorized_client_ids:
@@ -2114,6 +2114,14 @@ components:
           items:
             type: integer
             format: int64
+        node_access:
+          type: boolean
+          description: |
+            When true, the clients and groups above also reach EVERY Proxmox
+            node, not just the guests the policy covers. Off by default; node
+            access otherwise requires an explicit per-client/per-group grant.
+            This is the broadest grant proxpass can give, so enabling it is a
+            deliberate, security-relevant choice.
 
     AccessSubject:
       type: object
