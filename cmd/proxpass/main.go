@@ -115,6 +115,16 @@ func serveCommand() *ucli.Command {
 				Sources: ucli.EnvVars("PROXPASS_NSS_TOKEN"),
 			},
 			&ucli.StringFlag{
+				Name: "nss-config",
+				Usage: "path to write the libnss_http config (nss_http.json). " +
+					"When set, serve renders it from --listen and --nss-token " +
+					"so the token in it is always the one serve validates, " +
+					"which no external templating can get out of sync. Empty " +
+					"(the default) writes nothing. The container points this " +
+					"at /etc/nss_http.json.",
+				Sources: ucli.EnvVars("PROXPASS_NSS_CONFIG"),
+			},
+			&ucli.StringFlag{
 				Name: "rest-api-token",
 				Usage: "static bearer token for the typed /v1 admin REST API " +
 					"(and the admin web UI), served on --listen. Empty leaves " +
@@ -223,6 +233,22 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 		return errors.New("a non-empty PROXPASS_NSS_TOKEN (--nss-token) is required: " +
 			"without it the NSS directory is closed and no login can resolve")
 	}
+
+	// Render the libnss_http config ourselves from this exact token and listen
+	// address, so the token the NSS module presents is always the one this
+	// process validates -- they are written by the same process and cannot
+	// drift. This replaces the old entrypoint sed-templating of a checked-in
+	// file, whose token could desync from serve's on a container recreate and
+	// lock every login out with a 401. Written before the listener comes up so
+	// the first NSS lookup already sees it. Empty path (the default for a
+	// non-container run) writes nothing.
+	if nssConfigPath := strings.TrimSpace(cmd.String("nss-config")); nssConfigPath != "" {
+		if err := api.WriteNSSConfig(nssConfigPath, listenAddr, nssToken); err != nil {
+			return fmt.Errorf("writing nss config: %w", err)
+		}
+		logger.Printf("wrote the NSS directory config to %s", nssConfigPath)
+	}
+
 	restAPIToken := cmd.String("rest-api-token")
 
 	// Guest discovery runs in the background; the directory API blocks.
