@@ -169,6 +169,13 @@ function app() {
                     numeric: ['ssh_port'],
                     // Fields dropped from the request under a condition.
                     omitWhen: { ssh_fingerprints: (d) => !!d.insecure_ssh },
+                    // Grant a client/group access to THIS node without leaving the
+                    // list: opens the access-rule dialog pre-filled with the node.
+                    // Rendered in a dedicated "Access" column before Edit/Delete.
+                    rowActionsLabel: 'Access',
+                    rowActions: [
+                        { label: 'Grant', run: (row) => self.grantAccessTo('instance', row.id, row.name) },
+                    ],
                 },
                 guests: {
                     singular: 'guest', path: '/guests',
@@ -181,6 +188,12 @@ function app() {
                         { key: 'proxmox_id', label: 'VMID' },
                         { key: 'status', label: 'Status', render: (v) => badge(v, v === 'running' ? 'green' : 'gray') },
                         { key: 'instance_id', label: 'Node', render: (v) => self.instanceName(v) },
+                    ],
+                    // Grant a client/group access to THIS guest, pre-filled.
+                    // Rendered in a dedicated "Access" column before Edit/Delete.
+                    rowActionsLabel: 'Access',
+                    rowActions: [
+                        { label: 'Grant', run: (row) => self.grantAccessTo('guest', row.id, row.name) },
                     ],
                 },
                 clients: {
@@ -255,8 +268,20 @@ function app() {
             };
         },
 
+        // currentResource is the resource for the ACTIVE VIEW -- the list table
+        // and its row actions use this. It must NOT be affected by an open modal,
+        // or the table underneath would re-render with the modal's fields/actions
+        // (e.g. a "Grant access" button turning into the access form's "Revoke").
         currentResource() {
             return this.dynamicResources[this.view] || this.resources[this.view] || { columns: [] };
+        },
+        // modalResource is the resource the OPEN MODAL drives -- its fields, wizard
+        // steps, submit and remove. A modal may pin its own resource (e.g. "Grant
+        // access" opened from a guest/node row uses the access-rule resource even
+        // though the active view is Guests/Nodes); otherwise it follows the view.
+        modalResource() {
+            if (this.modal.open && this.modal.resource) return this.modal.resource;
+            return this.currentResource();
         },
 
         // ---- lifecycle ----
@@ -677,6 +702,17 @@ function app() {
             return esc(String(v));
         },
 
+        // tableColSpan is how many columns the empty/loading placeholder row
+        // must span: the data columns, the trailing Edit/Delete actions column
+        // (always rendered), and -- when the resource has row actions -- the
+        // dedicated "Access" column that sits before it.
+        tableColSpan() {
+            const r = this.currentResource();
+            let n = r.columns.length + 1;
+            if ((r.rowActions || []).length) n += 1;
+            return n;
+        },
+
         // options for multiselect fields, keyed by the resource name they come
         // from (e.g. 'groups', 'clients'): [{ id, name }]. Loaded when a modal
         // with a multiselect field opens.
@@ -693,14 +729,14 @@ function app() {
             this.scanning = false;
         },
         async openCreate() {
-            const r = this.currentResource();
+            const r = this.modalResource();
             await this.loadModalOptions(r);
             this.resetFingerprintScan();
             this.modalError = '';
             this.modal = { open: true, mode: 'create', step: 0, data: { ...(r.defaults || {}) } };
         },
         async openEdit(row) {
-            const r = this.currentResource();
+            const r = this.modalResource();
             await this.loadModalOptions(r);
             this.resetFingerprintScan();
             this.modalError = '';
@@ -793,7 +829,7 @@ function app() {
         // flat `fields' list or a stepped wizard (`steps'). Used by submit,
         // edit, and option loading, which do not care about step boundaries.
         modalFields(r) {
-            r = r || this.currentResource();
+            r = r || this.modalResource();
             if (r.steps) return r.steps.flatMap((s) => s.fields || []);
             return r.fields || [];
         },
@@ -801,8 +837,8 @@ function app() {
         // ---- wizard navigation (only for resources with `steps') ----
         // A stepped resource uses the wizard for both add and edit, so editing
         // a Proxmox node walks the same Connection / Console / SSH steps.
-        isWizard() { return !!this.currentResource().steps; },
-        wizardSteps() { return this.currentResource().steps || []; },
+        isWizard() { return !!this.modalResource().steps; },
+        wizardSteps() { return this.modalResource().steps || []; },
         isLastStep() { return this.modal.step >= this.wizardSteps().length - 1; },
         // showSave decides when the footer's Save button is shown. A NEW wizard
         // shows it only on the last step, so creation walks the steps in order;
@@ -855,7 +891,7 @@ function app() {
         // visibleFields: the fields to render right now -- the current step's
         // for a wizard, otherwise all of them (edit, or a non-stepped resource).
         visibleFields() {
-            const r = this.currentResource();
+            const r = this.modalResource();
             if (this.isWizard()) return (this.wizardSteps()[this.modal.step].fields || []);
             return this.modalFields(r);
         },
@@ -955,7 +991,7 @@ function app() {
         },
 
         async submitModal() {
-            const r = this.currentResource();
+            const r = this.modalResource();
             const d = { ...this.modal.data };
 
             // Access rules: POST grant with {subject, *_ids}
@@ -1131,6 +1167,46 @@ function app() {
                     { label: 'Revoke', run: (row) => self.revokeAccess(row) },
                 ],
             };
+        },
+
+        // grantAccessTo opens the access-rule grant dialog pre-filled with a
+        // target, launched from a Guest or Node row. It is the same form as the
+        // access view's "New access rule", only the target (guest/node) is fixed
+        // to the row the operator clicked, so they just pick the subject.
+        //
+        // kind is 'guest' or 'instance'. It pins the access-rule resource on the
+        // modal (currentResource honours modal.resource), so submit routes through
+        // the access grant path regardless of which view we were on.
+        async grantAccessTo(kind, targetId, targetName) {
+            this.accessKind = kind;
+            this.accessPath = kind === 'guest' ? '/access-rules' : '/instance-access-rules';
+            // The subject name-selects (clients/groups) and the target cache the
+            // form resolves names from must be present.
+            await this.ensureCaches('clients', 'groups',
+                kind === 'guest' ? 'guests' : 'instances');
+            this.modalError = '';
+            this.resetFingerprintScan();
+            // Clone the access resource and LOCK its target field, so the target
+            // shows read-only (the row the operator picked) and only the subject
+            // is chosen.
+            const res = this.accessResource();
+            res.fields = res.fields.map((f) =>
+                f.key === 'target_id' ? { ...f, locked: true } : f);
+            this.modal = {
+                open: true, mode: 'create', step: 0,
+                resource: res,
+                // target_id is the fixed target; subject_type defaults to client.
+                data: { subject_type: 'client', target_id: targetId },
+                // Shown in the dialog header so the operator sees what they are
+                // granting access to.
+                targetLabel: (kind === 'guest' ? 'guest ' : 'node ') + (targetName || '#' + targetId),
+            };
+        },
+        // nameSelectName resolves the display name for a nameselect value, used to
+        // render a locked (read-only) nameselect field.
+        nameSelectName(field, id) {
+            const opt = this.nameSelectOptions(field).find((o) => o.id === id);
+            return opt ? opt.name : ('#' + id);
         },
 
         // nameSelectOptions returns the {id,name} list for a nameselect field,
