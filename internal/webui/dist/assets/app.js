@@ -1376,12 +1376,21 @@ function app() {
             return this.currentResource().filterFields || [];
         },
 
-        // toggleFilterBuilder opens/closes the builder panel. On open it seeds an
-        // empty condition row when there is nothing to edit yet, so the operator
-        // sees a ready-to-fill row.
+        // filterPanelVisible reports whether the builder panel should be shown:
+        // whenever the operator opened it, OR whenever a filter is active (so a
+        // filtered view always shows WHAT is filtered, and the filter can't be
+        // hidden out of sight).
+        filterPanelVisible() {
+            return !!(this.filterBuilder.open || this.listFilter);
+        },
+
+        // toggleFilterBuilder opens/closes the builder panel. While a filter is
+        // active the panel can't be hidden (filterPanelVisible stays true), so the
+        // toggle only ever opens it then. On open it seeds an empty condition row
+        // when there is nothing to edit yet, so the operator sees a ready row.
         toggleFilterBuilder() {
             this.filterBuilder.open = !this.filterBuilder.open;
-            if (this.filterBuilder.open && !this.filterBuilder.advanced &&
+            if (this.filterPanelVisible() && !this.filterBuilder.advanced &&
                 this.filterBuilder.rows.length === 0) {
                 this.addFilterRow();
             }

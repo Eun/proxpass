@@ -384,8 +384,9 @@
                             <!-- Visual filter builder: one row per condition, each a
                                  field · operation · value triple, ANDed together. Covers only
                                  the simple top-level shape; an advanced (nested) filter is shown
-                                 read-only below instead. -->
-                            <template x-if="filterBuilder.open && filterFields().length">
+                                 read-only below instead. Always visible while a filter is active
+                                 (filterPanelVisible), so a filtered view shows what is filtered. -->
+                            <template x-if="filterPanelVisible() && filterFields().length">
                                 <div class="px-4 py-3 border-b bg-gray-50 space-y-2">
                                     <template x-if="filterBuilder.advanced">
                                         <div class="text-sm text-gray-600">
@@ -435,7 +436,6 @@
                                             </template>
                                             <div class="flex items-center gap-3 pt-1">
                                                 <button @click="addFilterRow()" class="text-sm text-primary hover:underline">+ Add condition</button>
-                                                <div class="flex-1"></div>
                                                 <button @click="clearListFilter()" class="text-sm text-gray-500 hover:underline">Clear</button>
                                                 <button @click="applyFilterBuilder()" class="bg-primary hover:bg-primary-dark text-white text-sm font-medium px-4 py-1.5 rounded transition">Apply</button>
                                             </div>
@@ -444,15 +444,6 @@
                                 </div>
                             </template>
 
-                            <!-- List filter banner: shown when a ?filter= is active but the
-                                 builder panel is closed, so the operator still sees (and can
-                                 clear) the active filter. filterLabel describes it in words. -->
-                            <template x-if="listFilter && !filterBuilder.open">
-                                <div class="flex items-center justify-between gap-3 px-4 py-2 bg-amber-50 border-b border-amber-200 text-sm text-amber-800">
-                                    <span x-text="filterLabel || ('Filtered: ' + listFilter)"></span>
-                                    <button @click="clearListFilter()" class="text-amber-800 hover:underline font-medium whitespace-nowrap">Clear filter</button>
-                                </div>
-                            </template>
                             <div class="overflow-x-auto custom-scrollbar">
                                 <table class="min-w-full text-sm">
                                     <thead class="bg-gray-50 text-gray-500 uppercase text-xs">
