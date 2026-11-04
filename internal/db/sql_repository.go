@@ -31,6 +31,13 @@ const (
 	colGuestID   = "guest_id"
 )
 
+// colSubject is a virtual filter field: a rule's subject is a client OR a group
+// and the two id spaces overlap, so subject_id alone is ambiguous. A filter on
+// "subject" carries "type:id" (e.g. "group:1") and is rewritten into a type +
+// subject_id match before the query is built (see rewriteSubjectFilter), so the
+// URL stays clean ({"subject":{"$eq":"group:1"}}) while the match is exact.
+const colSubject = "subject"
+
 var (
 	accessRuleFields = filter.FieldSpecMap{
 		colID:        {Column: colID},
@@ -45,6 +52,57 @@ var (
 		instanceRuleCol: {Column: instanceRuleCol},
 	}
 )
+
+// rewriteSubjectFilter expands a top-level "subject" filter entry into separate
+// "type" and "subject_id" conditions, so the compound subject stays a single
+// clean field in the URL but matches both columns. It handles the shape the UI
+// produces: {"subject":{"$eq":"type:id"}}. A subject value without a "type:id"
+// shape, or subject nested under a logical operator, is left untouched -- the
+// filter engine then reports it (an unknown field yields a 400), rather than
+// this silently mis-rewriting something it does not understand. rawFilter and
+// all other fields pass through unchanged.
+func rewriteSubjectFilter(rawFilter *string) (*string, error) {
+	if rawFilter == nil || *rawFilter == "" {
+		return rawFilter, nil
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(*rawFilter), &obj); err != nil {
+		// Not an object we can rewrite; hand it on so the engine reports it.
+		return rawFilter, nil //nolint:nilerr // malformed JSON is the engine's to reject
+	}
+	subjRaw, ok := obj[colSubject]
+	if !ok {
+		return rawFilter, nil
+	}
+	var ops map[string]string
+	if err := json.Unmarshal(subjRaw, &ops); err != nil {
+		return rawFilter, nil //nolint:nilerr // non-scalar subject: leave for the engine
+	}
+	eq, ok := ops[filter.OpEq]
+	if !ok || len(ops) != 1 {
+		return rawFilter, nil
+	}
+	sep := strings.IndexByte(eq, ':')
+	if sep <= 0 {
+		return rawFilter, nil
+	}
+	ruleType, subjectID := eq[:sep], eq[sep+1:]
+	delete(obj, colSubject)
+	obj[colType] = json.RawMessage(`{"` + filter.OpEq + `":` + strconvQuote(ruleType) + `}`)
+	obj[colSubjectID] = json.RawMessage(`{"` + filter.OpEq + `":` + strconvQuote(subjectID) + `}`)
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return nil, err
+	}
+	s := string(out)
+	return &s, nil
+}
+
+// strconvQuote JSON-quotes a string value for embedding in a raw filter object.
+func strconvQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
 
 // appendFilter appends a WHERE clause built from rawFilter to baseQuery and
 // returns the final query plus its bound args. When the filter is absent the
@@ -632,6 +690,10 @@ func (r *sqlRepo) RemoveGroup(ctx context.Context, id int64) error {
 func (r *sqlRepo) ListAccessRules(
 	ctx context.Context, rawFilter *string,
 ) ([]*models.AccessRuleRow, error) {
+	rawFilter, err := rewriteSubjectFilter(rawFilter)
+	if err != nil {
+		return nil, err
+	}
 	q, args, err := appendFilter(
 		"SELECT id, type, subject_id, guest_id FROM access_rules",
 		"ORDER BY id", rawFilter, accessRuleFields)
@@ -715,6 +777,10 @@ const (
 func (r *sqlRepo) ListInstanceAccessRules(
 	ctx context.Context, rawFilter *string,
 ) ([]*models.InstanceAccessRuleRow, error) {
+	rawFilter, err := rewriteSubjectFilter(rawFilter)
+	if err != nil {
+		return nil, err
+	}
 	q, args, err := appendFilter(
 		"SELECT id, type, subject_id, "+instanceRuleCol+" FROM "+instanceRuleTable,
 		"ORDER BY id", rawFilter, instanceAccessRuleFields)

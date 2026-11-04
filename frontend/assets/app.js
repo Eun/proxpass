@@ -1276,14 +1276,12 @@ function app() {
                 // Order follows the table columns (then fields without a column).
                 filterFields: [
                     { key: 'type', label: 'Subject type' },
-                    // The subject is a client OR a group depending on the rule's
-                    // type, and the two id spaces overlap, so filtering by
-                    // subject_id alone would also match a different kind with the
-                    // same id. This is a COMPOUND field: its option value encodes
-                    // "type:id", which applyFilterBuilder expands into both a
-                    // type and a subject_id condition so only that exact subject
-                    // matches. Options are the subjects present in the rules.
-                    { key: 'subject', label: 'Subject', compound: 'subject', optionsFn: () => self.subjectFilterOptions() },
+                    // The subject is a client OR a group, and the two id spaces
+                    // overlap, so subject_id alone is ambiguous. The option value
+                    // is "type:id"; the backend's "subject" field matches both
+                    // columns (rewriteSubjectFilter), so the URL stays a clean
+                    // {"subject":{"$eq":"group:1"}} and the match is exact.
+                    { key: 'subject', label: 'Subject', optionsFn: () => self.subjectFilterOptions() },
                     // The target (guest or node) is picked by NAME, limited to the
                     // targets that appear in the current rules.
                     { key: targetKey, label: targetLabel, optionsCache: targetCache },
@@ -1489,24 +1487,13 @@ function app() {
         // field with several, they are combined with the field's join operator as
         // {field:{$and|$or|$nor:[ {$op:v} | {$not:{$op:v}}, … ]}}; a plain AND of
         // distinct operators collapses to {field:{$op1:v1,$op2:v2}} for a tidier
-        // filter. The compound Subject field still expands to type + subject_id.
+        // filter. The compound Subject field is emitted as a single "subject"
+        // field carrying "type:id"; the backend expands it to a type + subject_id
+        // match (see rewriteSubjectFilter), keeping the URL clean.
         applyFilterBuilder() {
             const groups = new Map(); // field -> { join, items:[{op,value,not}] }
-            const addExpanded = (field, op, value, not) => {
-                if (!groups.has(field)) groups.set(field, { join: 'and', items: [] });
-                groups.get(field).items.push({ op, value: String(value), not: !!not });
-            };
             for (const r of this.filterBuilder.rows) {
                 if (!r.field || r.value === '' || r.value === null || r.value === undefined) continue;
-                const def = this.filterFieldDef(r.field);
-                if (def && def.compound === 'subject') {
-                    const sep = String(r.value).indexOf(':');
-                    if (sep > 0) {
-                        addExpanded('type', '$eq', String(r.value).slice(0, sep), false);
-                        addExpanded('subject_id', '$eq', String(r.value).slice(sep + 1), false);
-                    }
-                    continue;
-                }
                 const g = groups.has(r.field) ? groups.get(r.field) : { join: 'and', items: [] };
                 // The join of the first joining (2nd+) row sets the field's combiner.
                 if (g.items.length >= 1 && r.join) g.join = r.join;
@@ -1553,18 +1540,7 @@ function app() {
         // name contains web").
         describeFilter(obj) {
             const parts = [];
-            // Describe a compound subject (type + subject_id, both $eq) as one
-            // "Subject equals name (type)" phrase, matching the Subject combobox.
-            const hasSubject = this.filterFields().some((f) => f.compound === 'subject');
-            const skip = {};
-            if (hasSubject && obj.type && obj.type.$eq !== undefined &&
-                obj.subject_id && obj.subject_id.$eq !== undefined) {
-                const t = obj.type.$eq, sid = obj.subject_id.$eq;
-                parts.push('Subject equals "' + this.subjectName(t, sid) + ' (' + t + ')"');
-                skip.type = true; skip.subject_id = true;
-            }
             for (const field of Object.keys(obj)) {
-                if (skip[field]) continue;
                 const label = this.filterFieldLabel(field);
                 const ops = obj[field];
                 for (const op of Object.keys(ops)) {
@@ -1685,7 +1661,7 @@ function app() {
                 for (const row of parsed) rows.push(row);
             }
             if (simple) {
-                b.rows = this.collapseSubjectRows(rows);
+                b.rows = rows;
             } else {
                 b.advanced = true;
                 b.rows = [];
@@ -1748,33 +1724,6 @@ function app() {
                 out.push(row);
             }
             return out.length ? out : null;
-        },
-
-        // collapseSubjectRows folds a {type $eq X} + {subject_id $eq Y} pair back
-        // into a single compound "subject" row (value "X:Y"), the inverse of the
-        // expansion applyFilterBuilder does -- so a subject filter round-trips
-        // from the URL into one Subject combobox instead of two raw rows. Only
-        // applies when the current view actually offers the compound subject
-        // field (the access views). Other fields pass through unchanged.
-        collapseSubjectRows(rows) {
-            const hasSubject = this.filterFields().some((f) => f.compound === 'subject');
-            if (!hasSubject) return rows;
-            const typeRow = rows.find((r) => r.field === 'type' && r.op === '$eq');
-            const subjRow = rows.find((r) => r.field === 'subject_id' && r.op === '$eq');
-            if (!typeRow || !subjRow) return rows;
-            const out = [];
-            let inserted = false;
-            for (const r of rows) {
-                if (r === typeRow) {
-                    out.push({ field: 'subject', op: '$eq', value: typeRow.value + ':' + subjRow.value });
-                    inserted = true;
-                } else if (r === subjRow) {
-                    // drop; represented by the compound row
-                } else {
-                    out.push(r);
-                }
-            }
-            return inserted ? out : rows;
         },
 
         // nameSelectName resolves the display name for a nameselect value, used to
