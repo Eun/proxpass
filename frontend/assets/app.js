@@ -1379,6 +1379,8 @@ function app() {
                 const self = this;
                 return [
                     { key: 'actor', label: 'Who' },
+                    { key: 'host', label: 'Host' },
+                    { key: 'guest', label: 'Guest' },
                     { key: 'event_id', label: 'Activity', optionsFn: () => self.activityEventOptions() },
                 ];
             }

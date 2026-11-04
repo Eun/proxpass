@@ -167,3 +167,33 @@ func TestActivityFilter(t *testing.T) {
 		t.Errorf("unfiltered count = %d, want 3", all)
 	}
 }
+
+// Host and guest live in the JSON params blob; filtering them exercises the
+// dialect's JSON extraction (json_extract on SQLite).
+func TestActivityFilterByParams(t *testing.T) {
+	const keyHost, keyGuest = "host", "guest"
+	const targetGuest = "web-01"
+	r := newTestRepo(t)
+	base := time.Now().Truncate(time.Second)
+	addEvent(t, r, "session.console.opened", base, map[string]any{keyHost: testNodeName, keyGuest: targetGuest})
+	addEvent(t, r, "session.console.opened", base.Add(time.Second), map[string]any{keyHost: "paris", keyGuest: "ci-runner"})
+	addEvent(t, r, "session.command.run", base.Add(2*time.Second), map[string]any{keyHost: testNodeName, keyGuest: "db-01"})
+
+	byHost := `{"host":{"$eq":"` + testNodeName + `"}}`
+	list, err := r.ListActivity(t.Context(), 100, 0, &byHost)
+	if err != nil {
+		t.Fatalf("ListActivity: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("host list = %d, want 2", len(list))
+	}
+	if n, _ := r.CountActivity(t.Context(), &byHost); n != 2 {
+		t.Errorf("host count = %d, want 2", n)
+	}
+
+	byGuest := `{"guest":{"$eq":"` + targetGuest + `"}}`
+	list, _ = r.ListActivity(t.Context(), 100, 0, &byGuest)
+	if len(list) != 1 || list[0].Params[keyGuest] != targetGuest {
+		t.Fatalf("guest list = %+v, want one row", list)
+	}
+}

@@ -1061,11 +1061,26 @@ func (r *sqlRepo) AddActivityEvent(ctx context.Context, event *models.ActivityEv
 // falls back to a sane default so a caller cannot ask for an unbounded scan;
 // offset is clamped to >= 0. occurred_at ties are broken by id DESC so the
 // order is stable across pages even when several events share a second.
-// activityFilterFields are the activity-log columns the ?filter= accepts. The
-// params blob is not filterable (it is free-form per event kind).
-var activityFilterFields = filter.FieldSpecMap{
-	"actor":    {Column: "actor"},
-	"event_id": {Column: "event_id"},
+// activityFilterFields are the activity-log fields the ?filter= accepts. actor
+// and event_id are plain columns; host and guest live inside the JSON params
+// blob, so they map to a dialect-specific extraction expression (SQLite uses
+// json_extract, Postgres the ->> operator). These Column strings are fixed and
+// never interpolate user input -- the filter value is always a bound argument.
+func (r *sqlRepo) activityFilterFields() filter.FieldSpecMap {
+	const fieldHost = "host"
+	const fieldGuest = "guest"
+	hostCol := "json_extract(params, '$." + fieldHost + "')"
+	guestCol := "json_extract(params, '$." + fieldGuest + "')"
+	if r.d.backend == BackendPostgres {
+		hostCol = "(params->>'" + fieldHost + "')"
+		guestCol = "(params->>'" + fieldGuest + "')"
+	}
+	return filter.FieldSpecMap{
+		"actor":    {Column: "actor"},
+		"event_id": {Column: "event_id"},
+		fieldHost:  {Column: hostCol},
+		fieldGuest: {Column: guestCol},
+	}
 }
 
 func (r *sqlRepo) ListActivity(
@@ -1077,7 +1092,7 @@ func (r *sqlRepo) ListActivity(
 	if offset < 0 {
 		offset = 0
 	}
-	where, args, err := filter.BuildWhere(rawFilter, activityFilterFields)
+	where, args, err := filter.BuildWhere(rawFilter, r.activityFilterFields())
 	if err != nil {
 		return nil, err
 	}
@@ -1110,7 +1125,7 @@ func (r *sqlRepo) ListActivity(
 // CountActivity returns the total number of events matching the optional filter,
 // for pagination (so the page count reflects the filtered set, not the whole log).
 func (r *sqlRepo) CountActivity(ctx context.Context, rawFilter *string) (int, error) {
-	where, args, err := filter.BuildWhere(rawFilter, activityFilterFields)
+	where, args, err := filter.BuildWhere(rawFilter, r.activityFilterFields())
 	if err != nil {
 		return 0, err
 	}
