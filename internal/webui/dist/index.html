@@ -286,10 +286,92 @@
                          formatted from its event_id + params by formatEvent. -->
                     <template x-if="view === 'activity'">
                         <div class="bg-white rounded-lg shadow">
-                            <div class="flex items-center justify-between p-4 border-b">
-                                <h3 class="font-semibold text-secondary">Activity log</h3>
+                            <div class="flex items-center justify-between p-4 border-b gap-3">
+                                <div class="flex items-center gap-3">
+                                    <h3 class="font-semibold text-secondary">Activity log</h3>
+                                    <!-- Filter toggle (same visual builder as the resource lists). -->
+                                    <button @click="toggleFilterBuilder()"
+                                            class="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded border transition"
+                                            :class="(filterBuilder.open || listFilter) ? 'border-primary text-primary bg-blue-50' : 'border-gray-300 text-gray-600 hover:bg-gray-50'">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 4h18l-7 8v6l-4 2v-8z"/></svg>
+                                        <span>Filter</span>
+                                        <span x-show="listFilter" style="min-width:1.25rem"
+                                              class="inline-flex items-center justify-center text-xs font-semibold bg-primary text-white rounded-full h-5 px-1"
+                                              x-text="activeFilterCount()"></span>
+                                    </button>
+                                </div>
                                 <button @click="loadActivity()" class="text-sm text-primary hover:underline">Refresh</button>
                             </div>
+
+                            <!-- Visual filter builder for the activity log (actor / event kind).
+                                 Shares the same state and methods as the resource lists. -->
+                            <template x-if="filterPanelVisible() && filterFields().length">
+                                <div class="px-4 py-3 border-b bg-gray-50 space-y-2">
+                                    <template x-if="filterBuilder.advanced">
+                                        <div class="text-sm text-gray-600">
+                                            This filter uses advanced operators and can’t be edited here.
+                                            <code class="text-xs break-all" x-text="listFilter"></code>
+                                        </div>
+                                    </template>
+                                    <template x-if="!filterBuilder.advanced">
+                                        <div class="space-y-2">
+                                            <template x-for="(row, i) in filterBuilder.rows" :key="i">
+                                                <div class="flex flex-wrap items-center gap-2">
+                                                    <!-- Join slot: a single fixed-width box that shows "where" for the
+                                                         first condition of a field and an AND/OR/NOR select otherwise.
+                                                         x-show (not x-if) toggles the two so the row never churns its
+                                                         DOM when fields change -- which previously left a stale "where"
+                                                         beside a join select. -->
+                                                    <div class="w-20 shrink-0">
+                                                        <span x-show="filterRowIsFirstOfField(i)" class="block text-xs text-gray-400 text-right pr-1">where</span>
+                                                        <select x-show="!filterRowIsFirstOfField(i)" x-model="row.join" x-effect="$nextTick(() => $el.value = row.join)" class="form-select rounded border-gray-300 text-xs w-full px-2">
+                                                            <template x-for="j in filterJoins" :key="j.join">
+                                                                <option :value="j.join" x-text="j.label"></option>
+                                                            </template>
+                                                        </select>
+                                                    </div>
+                                                    <select x-model="row.field" x-effect="filterFields(); $nextTick(() => $el.value = row.field)" class="form-select rounded border-gray-300 text-sm">
+                                                        <template x-for="f in filterFields()" :key="f.key">
+                                                            <option :value="f.key" x-text="f.label"></option>
+                                                        </template>
+                                                    </select>
+                                                    <label class="inline-flex items-center gap-1 text-xs text-gray-600">
+                                                        <input type="checkbox" x-model="row.not" class="rounded border-gray-300"> not
+                                                    </label>
+                                                    <select x-model="row.op" x-effect="$nextTick(() => $el.value = row.op)" class="form-select rounded border-gray-300 text-sm">
+                                                        <template x-for="o in filterOps" :key="o.op">
+                                                            <option :value="o.op" x-text="o.label"></option>
+                                                        </template>
+                                                    </select>
+                                                    <template x-if="filterValueOptions(row.field)">
+                                                        <select x-model="row.value" x-effect="filterValueOptions(row.field); $nextTick(() => $el.value = row.value)"
+                                                                style="min-width:8rem" class="form-select rounded border-gray-300 text-sm flex-1">
+                                                            <option value="">(any)</option>
+                                                            <template x-for="o in filterValueOptions(row.field)" :key="o.key || o.id">
+                                                                <option :value="String(o.id)" x-text="o.name"></option>
+                                                            </template>
+                                                        </select>
+                                                    </template>
+                                                    <template x-if="!filterValueOptions(row.field)">
+                                                        <input type="text" x-model="row.value" placeholder="value"
+                                                               @keydown.enter="applyFilterBuilder()" style="min-width:8rem"
+                                                               class="form-input rounded border-gray-300 text-sm flex-1">
+                                                    </template>
+                                                    <button @click="removeFilterRow(i)" title="Remove condition"
+                                                            class="text-gray-400 hover:text-red-600 text-lg leading-none px-1">×</button>
+                                                </div>
+                                            </template>
+                                            <div class="flex items-center gap-3 pt-1">
+                                                <button @click="addFilterRow()" class="text-sm text-primary hover:underline">+ Add condition</button>
+                                                <button @click="clearListFilter()" class="text-sm text-gray-500 hover:underline">Clear</button>
+                                                <button @click="applyFilterBuilder()" class="bg-primary hover:bg-primary-dark text-white text-sm font-medium px-4 py-1.5 rounded transition">Apply</button>
+                                            </div>
+                                            <p class="text-xs text-gray-400 pt-1">AND/OR/NOR and “not” combine conditions on the same field. Different fields are always combined with AND.</p>
+                                        </div>
+                                    </template>
+                                </div>
+                            </template>
+
                             <div class="overflow-x-auto custom-scrollbar">
                                 <table class="min-w-full text-sm">
                                     <thead class="bg-gray-50 text-gray-500 uppercase text-xs">
@@ -353,9 +435,26 @@
                     <!-- Generic resource table -->
                     <template x-if="view !== 'dashboard' && view !== 'discover' && view !== 'policy' && view !== 'activity'">
                         <div class="bg-white rounded-lg shadow">
-                            <div class="flex items-center justify-between p-4 border-b">
-                                <div class="relative w-64 max-w-full">
-                                    <input type="text" x-model="search" placeholder="Filter…" class="form-input w-full rounded border-gray-300 text-sm">
+                            <div class="flex items-center justify-between p-4 border-b gap-3">
+                                <div class="flex items-center gap-2">
+                                    <div class="relative w-64 max-w-full">
+                                        <input type="text" x-model="search" placeholder="Search…" class="form-input w-full rounded border-gray-300 text-sm">
+                                    </div>
+                                    <!-- Toggle the visual filter builder (server-side filter),
+                                         distinct from the client-side quick Search above. Only
+                                         shown for views that declare filterable fields. -->
+                                    <template x-if="filterFields().length">
+                                        <button @click="toggleFilterBuilder()"
+                                                class="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-2 rounded border transition"
+                                                :class="(filterBuilder.open || listFilter) ? 'border-primary text-primary bg-blue-50' : 'border-gray-300 text-gray-600 hover:bg-gray-50'">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 4h18l-7 8v6l-4 2v-8z"/></svg>
+                                            <span>Filter</span>
+                                            <span x-show="listFilter"
+                                                  style="min-width:1.25rem"
+                                                  class="inline-flex items-center justify-center text-xs font-semibold bg-primary text-white rounded-full h-5 px-1"
+                                                  x-text="activeFilterCount()"></span>
+                                        </button>
+                                    </template>
                                 </div>
                                 <template x-if="currentResource().create">
                                     <button @click="openCreate()" class="bg-primary hover:bg-primary-dark text-white text-sm font-medium px-4 py-2 rounded transition">
@@ -363,16 +462,88 @@
                                     </button>
                                 </template>
                             </div>
-                            <!-- List filter banner: shown when a ?filter= is active on this
-                                 view (e.g. the "List" action on a Node/Guest row, or a
-                                 bookmarked #view?filter=… URL). filterLabel names the target
-                                 when known; otherwise a generic note with the raw filter. -->
-                            <template x-if="listFilter">
-                                <div class="flex items-center justify-between gap-3 px-4 py-2 bg-amber-50 border-b border-amber-200 text-sm text-amber-800">
-                                    <span x-text="filterLabel || ('Filtered: ' + listFilter)"></span>
-                                    <button @click="clearListFilter()" class="text-amber-800 hover:underline font-medium whitespace-nowrap">Clear filter</button>
+
+                            <!-- Visual filter builder: one row per condition, each a
+                                 field · operation · value triple, ANDed together. Covers only
+                                 the simple top-level shape; an advanced (nested) filter is shown
+                                 read-only below instead. Always visible while a filter is active
+                                 (filterPanelVisible), so a filtered view shows what is filtered. -->
+                            <template x-if="filterPanelVisible() && filterFields().length">
+                                <div class="px-4 py-3 border-b bg-gray-50 space-y-2">
+                                    <template x-if="filterBuilder.advanced">
+                                        <div class="text-sm text-gray-600">
+                                            This filter uses advanced operators and can’t be edited here.
+                                            <code class="text-xs break-all" x-text="listFilter"></code>
+                                        </div>
+                                    </template>
+                                    <template x-if="!filterBuilder.advanced">
+                                        <div class="space-y-2">
+                                            <template x-for="(row, i) in filterBuilder.rows" :key="i">
+                                                <div class="flex flex-wrap items-center gap-2">
+                                                    <!-- Join slot: "where" for the first condition of a field, else an
+                                                         AND/OR/NOR select. A single fixed-width box toggled with x-show
+                                                         (not x-if) so the row never churns its DOM when fields change --
+                                                         which previously left a stale "where" beside a join select.
+                                                         Logical operators only nest within one field. -->
+                                                    <div class="w-20 shrink-0">
+                                                        <span x-show="filterRowIsFirstOfField(i)" class="block text-xs text-gray-400 text-right pr-1">where</span>
+                                                        <select x-show="!filterRowIsFirstOfField(i)" x-model="row.join" x-effect="$nextTick(() => $el.value = row.join)" class="form-select rounded border-gray-300 text-xs w-full px-2">
+                                                            <template x-for="j in filterJoins" :key="j.join">
+                                                                <option :value="j.join" x-text="j.label"></option>
+                                                            </template>
+                                                        </select>
+                                                    </div>
+                                                    <!-- x-effect re-applies the bound value after the x-for options
+                                                         render, so a select built from a loaded filter reflects
+                                                         row.field/row.op instead of defaulting to the first option. -->
+                                                    <select x-model="row.field" x-effect="filterFields(); $nextTick(() => $el.value = row.field)" class="form-select rounded border-gray-300 text-sm">
+                                                        <template x-for="f in filterFields()" :key="f.key">
+                                                            <option :value="f.key" x-text="f.label"></option>
+                                                        </template>
+                                                    </select>
+                                                    <!-- NOT negates just this one condition. -->
+                                                    <label class="inline-flex items-center gap-1 text-xs text-gray-600">
+                                                        <input type="checkbox" x-model="row.not" class="rounded border-gray-300"> not
+                                                    </label>
+                                                    <select x-model="row.op" x-effect="$nextTick(() => $el.value = row.op)" class="form-select rounded border-gray-300 text-sm">
+                                                        <template x-for="o in filterOps" :key="o.op">
+                                                            <option :value="o.op" x-text="o.label"></option>
+                                                        </template>
+                                                    </select>
+                                                    <!-- Relation fields (e.g. a guest's Node, an access rule's Subject)
+                                                         get a name picker whose options are the related objects present
+                                                         in the list; plain fields get a free-text value input. -->
+                                                    <template x-if="filterValueOptions(row.field)">
+                                                        <select x-model="row.value" x-effect="filterValueOptions(row.field); $nextTick(() => $el.value = row.value)"
+                                                                style="min-width:8rem"
+                                                                class="form-select rounded border-gray-300 text-sm flex-1">
+                                                            <option value="">(any)</option>
+                                                            <template x-for="o in filterValueOptions(row.field)" :key="o.key || o.id">
+                                                                <option :value="String(o.id)" x-text="o.name"></option>
+                                                            </template>
+                                                        </select>
+                                                    </template>
+                                                    <template x-if="!filterValueOptions(row.field)">
+                                                        <input type="text" x-model="row.value" placeholder="value"
+                                                               @keydown.enter="applyFilterBuilder()"
+                                                               style="min-width:8rem"
+                                                               class="form-input rounded border-gray-300 text-sm flex-1">
+                                                    </template>
+                                                    <button @click="removeFilterRow(i)" title="Remove condition"
+                                                            class="text-gray-400 hover:text-red-600 text-lg leading-none px-1">×</button>
+                                                </div>
+                                            </template>
+                                            <div class="flex items-center gap-3 pt-1">
+                                                <button @click="addFilterRow()" class="text-sm text-primary hover:underline">+ Add condition</button>
+                                                <button @click="clearListFilter()" class="text-sm text-gray-500 hover:underline">Clear</button>
+                                                <button @click="applyFilterBuilder()" class="bg-primary hover:bg-primary-dark text-white text-sm font-medium px-4 py-1.5 rounded transition">Apply</button>
+                                            </div>
+                                            <p class="text-xs text-gray-400 pt-1">AND/OR/NOR and “not” combine conditions on the same field. Different fields are always combined with AND.</p>
+                                        </div>
+                                    </template>
                                 </div>
                             </template>
+
                             <div class="overflow-x-auto custom-scrollbar">
                                 <table class="min-w-full text-sm">
                                     <thead class="bg-gray-50 text-gray-500 uppercase text-xs">

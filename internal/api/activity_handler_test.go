@@ -98,7 +98,7 @@ func TestRecordDisabledWhenRetentionZero(t *testing.T) {
 	// Do NOT enable activity (retention stays 0).
 	h.record(ctx, EventClientAdded, "admin", map[string]any{"n": float64(1)})
 
-	n, err := h.repo.CountActivity(ctx)
+	n, err := h.repo.CountActivity(ctx, nil)
 	if err != nil {
 		t.Fatalf("CountActivity: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestReportSessionActivityMapsKinds(t *testing.T) {
 		if _, ok := resp.(ReportSessionActivity204Response); !ok {
 			t.Fatalf("expected 204 for %s, got %T", c.kind, resp)
 		}
-		list, _ := h.repo.ListActivity(ctx, 10, 0)
+		list, _ := h.repo.ListActivity(ctx, 10, 0, nil)
 		if len(list) != 1 || list[0].EventID != string(c.want) {
 			t.Fatalf("kind %s recorded %v, want %s", c.kind, list, c.want)
 		}
@@ -149,7 +149,7 @@ func TestReportSessionActivityStoresCommand(t *testing.T) {
 	if _, err := h.ReportSessionActivity(ctx, ReportSessionActivityRequestObject{Body: &body}); err != nil {
 		t.Fatalf("ReportSessionActivity: %v", err)
 	}
-	list, _ := h.repo.ListActivity(ctx, 10, 0)
+	list, _ := h.repo.ListActivity(ctx, 10, 0, nil)
 	if len(list) != 1 || list[0].Params["command"] != "whoami" {
 		t.Fatalf("command not stored: %v", list)
 	}
@@ -171,7 +171,7 @@ func TestReportSessionActivityStoresHostGuestAndRawCommand(t *testing.T) {
 	if _, err := h.ReportSessionActivity(ctx, ReportSessionActivityRequestObject{Body: &body}); err != nil {
 		t.Fatalf("ReportSessionActivity: %v", err)
 	}
-	list, _ := h.repo.ListActivity(ctx, 10, 0)
+	list, _ := h.repo.ListActivity(ctx, 10, 0, nil)
 	if len(list) != 1 {
 		t.Fatalf("want 1 row, got %d", len(list))
 	}
@@ -198,7 +198,7 @@ func TestReportSessionActivityOmitsEmptyHostGuest(t *testing.T) {
 	if _, err := h.ReportSessionActivity(ctx, ReportSessionActivityRequestObject{Body: &body}); err != nil {
 		t.Fatalf("ReportSessionActivity: %v", err)
 	}
-	list, _ := h.repo.ListActivity(ctx, 10, 0)
+	list, _ := h.repo.ListActivity(ctx, 10, 0, nil)
 	if len(list) != 1 {
 		t.Fatalf("want 1 row, got %d", len(list))
 	}
@@ -223,7 +223,7 @@ func TestReportSessionActivityIgnoresUnknownKind(t *testing.T) {
 	if _, ok := resp.(ReportSessionActivity204Response); !ok {
 		t.Fatalf("expected 204, got %T", resp)
 	}
-	if n, _ := h.repo.CountActivity(ctx); n != 0 {
+	if n, _ := h.repo.CountActivity(ctx, nil); n != 0 {
 		t.Fatalf("unknown kind recorded %d rows", n)
 	}
 }
@@ -292,7 +292,7 @@ func TestExchangeSessionTokenDoesNotLogASignIn(t *testing.T) {
 	}
 
 	// No activity row should have been written.
-	if n, _ := repo.CountActivity(context.Background()); n != 0 {
+	if n, _ := repo.CountActivity(context.Background(), nil); n != 0 {
 		t.Fatalf("a sign-in recorded %d activity row(s); it must record none", n)
 	}
 }

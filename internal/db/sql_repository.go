@@ -31,6 +31,13 @@ const (
 	colGuestID   = "guest_id"
 )
 
+// colSubject is a virtual filter field: a rule's subject is a client OR a group
+// and the two id spaces overlap, so subject_id alone is ambiguous. A filter on
+// "subject" carries "type:id" (e.g. "group:1") and is rewritten into a type +
+// subject_id match built directly in SQL (see appendAccessFilter), so the
+// URL stays clean ({"subject":{"$eq":"group:1"}}) while the match is exact.
+const colSubject = "subject"
+
 var (
 	accessRuleFields = filter.FieldSpecMap{
 		colID:        {Column: colID},
@@ -46,25 +53,161 @@ var (
 	}
 )
 
-// appendFilter appends a WHERE clause built from rawFilter to baseQuery and
-// returns the final query plus its bound args. When the filter is absent the
-// base query is returned unchanged. The ORDER BY, if any, must be appended by
-// the caller after the WHERE -- so baseQuery here must not yet carry one.
-func appendFilter(
+// Subject logical operators, named so they are not repeated as string literals.
+const (
+	opOr  = "$or"
+	opAnd = "$and"
+	opNor = "$nor"
+	opNot = "$not"
+)
+
+// appendAccessFilter builds the access-rule list query, which also accepts
+// the virtual "subject" field. A rule's subject is a client OR a group and the
+// two id spaces overlap, so a subject value is "type:id" and must match BOTH the
+// type and subject_id columns -- a cross-column condition the generic engine
+// cannot express. This splits the subject entry out, builds its SQL directly
+// (supporting $eq and $or/$and/$nor/$not of $eq terms, so a subject OR works),
+// runs BuildWhere on the remaining fields, and ANDs the two.
+func appendAccessFilter(
 	baseQuery, orderBy string, rawFilter *string, fields filter.FieldSpecMap,
 ) (query string, args []any, err error) {
-	where, args, err := filter.BuildWhere(rawFilter, fields)
+	rest, subjectExpr, hasSubject, err := splitSubjectFilter(rawFilter)
 	if err != nil {
 		return "", nil, err
 	}
-	query = baseQuery
+	where, args, err := filter.BuildWhere(rest, fields)
+	if err != nil {
+		return "", nil, err
+	}
+	if hasSubject {
+		subjSQL, subjArgs, serr := buildSubjectWhere(subjectExpr)
+		if serr != nil {
+			return "", nil, serr
+		}
+		if where == "" {
+			where = subjSQL
+		} else {
+			where = "(" + where + " AND " + subjSQL + ")"
+		}
+		args = append(args, subjArgs...)
+	}
+	return assembleFilterQuery(baseQuery, orderBy, where), args, nil
+}
+
+func assembleFilterQuery(baseQuery, orderBy, where string) string {
+	q := baseQuery
 	if where != "" {
-		query += " WHERE " + where
+		q += " WHERE " + where
 	}
 	if orderBy != "" {
-		query += " " + orderBy
+		q += " " + orderBy
 	}
-	return query, args, nil
+	return q
+}
+
+// splitSubjectFilter removes a top-level "subject" entry from rawFilter and
+// returns the remaining filter (nil when nothing is left), the subject operator
+// expression, and whether a subject entry was present. A rawFilter that is not a
+// JSON object is passed through unchanged (BuildWhere then reports it).
+func splitSubjectFilter(rawFilter *string) (rest *string, subjectExpr json.RawMessage, has bool, err error) {
+	if rawFilter == nil || *rawFilter == "" {
+		return rawFilter, nil, false, nil
+	}
+	var obj map[string]json.RawMessage
+	if jerr := json.Unmarshal([]byte(*rawFilter), &obj); jerr != nil {
+		return rawFilter, nil, false, nil //nolint:nilerr // malformed JSON is BuildWhere's to reject
+	}
+	subjectExpr, has = obj[colSubject]
+	if !has {
+		return rawFilter, nil, false, nil
+	}
+	delete(obj, colSubject)
+	if len(obj) == 0 {
+		return nil, subjectExpr, true, nil
+	}
+	out, merr := json.Marshal(obj)
+	if merr != nil {
+		return nil, nil, false, merr
+	}
+	s := string(out)
+	return &s, subjectExpr, true, nil
+}
+
+// buildSubjectWhere turns a subject operator expression into SQL over the type
+// and subject_id columns. Supported shapes mirror the filter language, scoped to
+// $eq terms whose value is "type:id":
+//
+//	{"$eq":"group:1"}                                -> (type = ? AND subject_id = ?)
+//	{"$or":[{"$eq":"group:1"},{"$eq":"client:2"}]}   -> (…) OR (…)
+//	{"$and":[…]} / {"$nor":[…]} / {"$not":{"$eq":…}}  likewise
+//
+// Anything else is a client error (reported as an invalid filter -> 400).
+func buildSubjectWhere(expr json.RawMessage) (where string, args []any, err error) {
+	var ops map[string]json.RawMessage
+	if uerr := json.Unmarshal(expr, &ops); uerr != nil {
+		return "", nil, fmt.Errorf("%w: subject must be an operator object", filter.ErrInvalidFilter)
+	}
+	if len(ops) != 1 {
+		return "", nil, fmt.Errorf("%w: subject takes exactly one operator", filter.ErrInvalidFilter)
+	}
+	for op, val := range ops {
+		switch strings.ToLower(op) {
+		case filter.OpEq:
+			return subjectEqTerm(val)
+		case opOr, opAnd, opNor:
+			return subjectLogical(strings.ToLower(op), val)
+		case opNot:
+			inner, innerArgs, ierr := buildSubjectWhere(val)
+			if ierr != nil {
+				return "", nil, ierr
+			}
+			return "NOT " + inner, innerArgs, nil
+		default:
+			return "", nil, fmt.Errorf("%w: operator %q is not supported on subject", filter.ErrInvalidFilter, op)
+		}
+	}
+	return "", nil, fmt.Errorf("%w: empty subject filter", filter.ErrInvalidFilter)
+}
+
+// subjectEqTerm builds one (type = ? AND subject_id = ?) group from a
+// JSON-string "type:id" value.
+func subjectEqTerm(val json.RawMessage) (where string, args []any, err error) {
+	var s string
+	if uerr := json.Unmarshal(val, &s); uerr != nil {
+		return "", nil, fmt.Errorf("%w: subject value must be a \"type:id\" string", filter.ErrInvalidFilter)
+	}
+	sep := strings.IndexByte(s, ':')
+	if sep <= 0 || sep == len(s)-1 {
+		return "", nil, fmt.Errorf("%w: subject value %q must be \"type:id\"", filter.ErrInvalidFilter, s)
+	}
+	return "(" + colType + " = ? AND " + colSubjectID + " = ?)", []any{s[:sep], s[sep+1:]}, nil
+}
+
+// subjectLogical combines an array of subject $eq terms with AND/OR, or (for
+// $nor) negates their OR.
+func subjectLogical(op string, val json.RawMessage) (where string, args []any, err error) {
+	var arr []json.RawMessage
+	if uerr := json.Unmarshal(val, &arr); uerr != nil || len(arr) == 0 {
+		return "", nil, fmt.Errorf("%w: subject %s needs a non-empty array", filter.ErrInvalidFilter, op)
+	}
+	parts := make([]string, 0, len(arr))
+	for _, el := range arr {
+		part, partArgs, perr := buildSubjectWhere(el)
+		if perr != nil {
+			return "", nil, perr
+		}
+		parts = append(parts, part)
+		args = append(args, partArgs...)
+	}
+	sep := " AND "
+	if op == opOr || op == opNor {
+		sep = " OR "
+	}
+	joined := "(" + strings.Join(parts, sep) + ")"
+	if op == opNor {
+		return "NOT " + joined, args, nil
+	}
+	return joined, args, nil
 }
 
 //go:embed migrations/sqlite/*.sql migrations/postgres/*.sql
@@ -632,7 +775,7 @@ func (r *sqlRepo) RemoveGroup(ctx context.Context, id int64) error {
 func (r *sqlRepo) ListAccessRules(
 	ctx context.Context, rawFilter *string,
 ) ([]*models.AccessRuleRow, error) {
-	q, args, err := appendFilter(
+	q, args, err := appendAccessFilter(
 		"SELECT id, type, subject_id, guest_id FROM access_rules",
 		"ORDER BY id", rawFilter, accessRuleFields)
 	if err != nil {
@@ -715,7 +858,7 @@ const (
 func (r *sqlRepo) ListInstanceAccessRules(
 	ctx context.Context, rawFilter *string,
 ) ([]*models.InstanceAccessRuleRow, error) {
-	q, args, err := appendFilter(
+	q, args, err := appendAccessFilter(
 		"SELECT id, type, subject_id, "+instanceRuleCol+" FROM "+instanceRuleTable,
 		"ORDER BY id", rawFilter, instanceAccessRuleFields)
 	if err != nil {
@@ -1061,18 +1204,48 @@ func (r *sqlRepo) AddActivityEvent(ctx context.Context, event *models.ActivityEv
 // falls back to a sane default so a caller cannot ask for an unbounded scan;
 // offset is clamped to >= 0. occurred_at ties are broken by id DESC so the
 // order is stable across pages even when several events share a second.
-func (r *sqlRepo) ListActivity(ctx context.Context, limit, offset int) ([]*models.ActivityEvent, error) {
+// activityFilterFields are the activity-log fields the ?filter= accepts. actor
+// and event_id are plain columns; host and guest live inside the JSON params
+// blob, so they map to a dialect-specific extraction expression (SQLite uses
+// json_extract, Postgres the ->> operator). These Column strings are fixed and
+// never interpolate user input -- the filter value is always a bound argument.
+func (r *sqlRepo) activityFilterFields() filter.FieldSpecMap {
+	const fieldHost = "host"
+	const fieldGuest = "guest"
+	hostCol := "json_extract(params, '$." + fieldHost + "')"
+	guestCol := "json_extract(params, '$." + fieldGuest + "')"
+	if r.d.backend == BackendPostgres {
+		hostCol = "(params->>'" + fieldHost + "')"
+		guestCol = "(params->>'" + fieldGuest + "')"
+	}
+	return filter.FieldSpecMap{
+		"actor":    {Column: "actor"},
+		"event_id": {Column: "event_id"},
+		fieldHost:  {Column: hostCol},
+		fieldGuest: {Column: guestCol},
+	}
+}
+
+func (r *sqlRepo) ListActivity(
+	ctx context.Context, limit, offset int, rawFilter *string,
+) ([]*models.ActivityEvent, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	if offset < 0 {
 		offset = 0
 	}
-	rows, err := r.db.QueryContext(ctx, r.d.rebind(
-		`SELECT id, event_id, actor, occurred_at, params
-		 FROM activity_log
-		 ORDER BY occurred_at DESC, id DESC
-		 LIMIT ? OFFSET ?`), limit, offset)
+	where, args, err := filter.BuildWhere(rawFilter, r.activityFilterFields())
+	if err != nil {
+		return nil, err
+	}
+	q := "SELECT id, event_id, actor, occurred_at, params FROM activity_log"
+	if where != "" {
+		q += " WHERE " + where
+	}
+	q += " ORDER BY occurred_at DESC, id DESC LIMIT ? OFFSET ?"
+	args = append(args, limit, offset)
+	rows, err := r.db.QueryContext(ctx, r.d.rebind(q), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1092,10 +1265,19 @@ func (r *sqlRepo) ListActivity(ctx context.Context, limit, offset int) ([]*model
 	return list, rows.Err()
 }
 
-// CountActivity returns the total number of events, for pagination.
-func (r *sqlRepo) CountActivity(ctx context.Context) (int, error) {
+// CountActivity returns the total number of events matching the optional filter,
+// for pagination (so the page count reflects the filtered set, not the whole log).
+func (r *sqlRepo) CountActivity(ctx context.Context, rawFilter *string) (int, error) {
+	where, args, err := filter.BuildWhere(rawFilter, r.activityFilterFields())
+	if err != nil {
+		return 0, err
+	}
+	q := "SELECT COUNT(*) FROM activity_log"
+	if where != "" {
+		q += " WHERE " + where
+	}
 	var n int
-	if err := r.queryRow(ctx, "SELECT COUNT(*) FROM activity_log").Scan(&n); err != nil {
+	if err := r.queryRow(ctx, q, args...).Scan(&n); err != nil {
 		return 0, err
 	}
 	return n, nil

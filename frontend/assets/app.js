@@ -45,6 +45,28 @@ function app() {
         listFilter: null,
         filterLabel: '',
 
+        // filterBuilder is the visual editor for the active list filter: a panel
+        // of condition rows, each a {field, op, value} combobox triple, ANDed
+        // together. It covers only the simple, top-level shape
+        // ({field:{$op:value}, ...}); a filter with nested logical operators
+        // ($and/$or/$nor/$not) is "advanced" and shown read-only instead of in
+        // the builder. open toggles the panel; rows holds the editable
+        // conditions; advanced is set when the active filter is too complex to
+        // edit here.
+        filterBuilder: { open: false, rows: [], advanced: false },
+
+        // Human-readable labels for the comparison operators the builder offers.
+        // Only the non-nested operators -- the builder deliberately does not do
+        // $and/$or/$nor/$not.
+        filterOps: [
+            { op: '$eq', label: 'equals' },
+            { op: '$ieq', label: 'equals (ignore case)' },
+            { op: '$contains', label: 'contains' },
+            { op: '$icontains', label: 'contains (ignore case)' },
+            { op: '$startswith', label: 'starts with' },
+            { op: '$endswith', label: 'ends with' },
+        ],
+
         // rows for the current resource view; cache keeps the last-loaded list
         // for each resource so cross-resource lookups (e.g. instance names on
         // the guests table) and the dashboard counts work without refetching.
@@ -62,6 +84,21 @@ function app() {
         // page newest-first; total backs pagination; recent is the small set
         // shown on the dashboard panel. limit/offset drive paging.
         activity: { entries: [], total: 0, limit: 25, offset: 0 },
+
+        // Human-readable labels for every activity event kind, used by the
+        // activity filter's Activity picker (all kinds, not just the ones on the
+        // current page) and by eventKindLabel.
+        eventKindLabels: {
+            'instance.added': 'Node added', 'instance.updated': 'Node updated', 'instance.removed': 'Node removed',
+            'client.added': 'Client added', 'client.updated': 'Client updated', 'client.removed': 'Client removed',
+            'group.added': 'Group added', 'group.updated': 'Group updated', 'group.removed': 'Group removed',
+            'admin_key.added': 'Admin key added', 'admin_key.removed': 'Admin key removed',
+            'access.granted': 'Guest access granted', 'access.revoked': 'Guest access revoked',
+            'instance_access.granted': 'Node access granted', 'instance_access.revoked': 'Node access revoked',
+            'policy.set': 'Policy changed', 'setting.changed': 'Setting changed', 'discovery.ran': 'Discovery ran',
+            'session.login': 'Signed in', 'session.console.opened': 'Console opened',
+            'session.command.run': 'Command run', 'session.sftp.opened': 'SFTP opened',
+        },
         recentActivity: [],
         // activityTimeAbsolute toggles ALL activity-list timestamps between the
         // relative form ("10 mins ago", the default) and the absolute form.
@@ -124,6 +161,18 @@ function app() {
                     // "Proxmox Node" in the UI; the API resource is still an instance.
                     singular: 'Proxmox Node', path: '/instances',
                     create: true, edit: true, remove: true,
+                    // Fields the visual filter builder offers for this list; they
+                    // mirror the server's accepted filter fields (listfilter.go).
+                    // Order follows the table columns (then fields without a column).
+                    filterFields: [
+                        { key: 'name', label: 'Name' },
+                        { key: 'api_url', label: 'API URL' },
+                        { key: 'node', label: 'Node' },
+                        { key: 'console_transport', label: 'Console' },
+                        { key: 'ssh_host', label: 'SSH host' },
+                        { key: 'ssh_user', label: 'SSH user' },
+                        { key: 'id', label: 'ID' },
+                    ],
                     columns: [
                         { key: 'name', label: 'Name' },
                         { key: 'api_url', label: 'API URL' },
@@ -194,6 +243,17 @@ function app() {
                     // The Instance column renders the node NAME, so the instances
                     // cache must be present.
                     needsCaches: ['instances'],
+                    // Order follows the table columns (then fields without a column).
+                    filterFields: [
+                        { key: 'type', label: 'Type' },
+                        { key: 'name', label: 'Name' },
+                        { key: 'proxmox_id', label: 'VMID' },
+                        { key: 'status', label: 'Status' },
+                        // Filter by node by NAME: the value becomes a picker of the
+                        // nodes that actually host a guest in the current list.
+                        { key: 'instance_id', label: 'Node', optionsCache: 'instances' },
+                        { key: 'id', label: 'ID' },
+                    ],
                     columns: [
                         { key: 'type', label: 'Type' },
                         { key: 'name', label: 'Name' },
@@ -214,6 +274,10 @@ function app() {
                     create: true, edit: true, remove: true,
                     // The Groups column renders group NAMES.
                     needsCaches: ['groups'],
+                    filterFields: [
+                        { key: 'name', label: 'Name' },
+                        { key: 'id', label: 'ID' },
+                    ],
                     columns: [
                         { key: 'name', label: 'Name' },
                         { key: 'public_keys', label: 'Keys', render: (v) => (v || []).length + ' key(s)' },
@@ -233,6 +297,10 @@ function app() {
                     create: true, edit: true, remove: true,
                     // The Members column renders client NAMES.
                     needsCaches: ['clients'],
+                    filterFields: [
+                        { key: 'name', label: 'Name' },
+                        { key: 'id', label: 'ID' },
+                    ],
                     columns: [
                         { key: 'name', label: 'Name' },
                         { key: 'client_ids', label: 'Members', render: (v) => self.namesFromList('clients', v) },
@@ -268,6 +336,10 @@ function app() {
                     // (tokens, the DB password) arrive already masked by the
                     // server -- the browser never sees their real values.
                     readOnly: true,
+                    filterFields: [
+                        { key: 'key', label: 'Key' },
+                        { key: 'value', label: 'Value' },
+                    ],
                     // Give each row a stable id (its key) for list rendering.
                     unwrap: (data) => (data || []).map((s) => ({ ...s, id: s.key })),
                     // Two columns: the environment variable (Key) and its value,
@@ -436,6 +508,10 @@ function app() {
             this.error = '';
             this.listFilter = opts.filter || null;
             this.filterLabel = opts.filterLabel || '';
+            // Rebuild the visual filter editor from whatever filter is now active
+            // (from a List action, a bookmarked URL, or none), so the panel always
+            // reflects the real filter.
+            this.syncFilterBuilder();
             this.modal.open = false;
             // The activity detail is a non-modal sidebar: it stays open while the
             // user clicks between rows, and only closes on a deliberate close or
@@ -495,7 +571,8 @@ function app() {
         async loadActivity() {
             this.loading = true;
             try {
-                const q = '?limit=' + this.activity.limit + '&offset=' + this.activity.offset;
+                let q = '?limit=' + this.activity.limit + '&offset=' + this.activity.offset;
+                if (this.listFilter) q += '&filter=' + encodeURIComponent(this.listFilter);
                 const page = await this.request('GET', '/activity' + q);
                 this.activity.entries = (page && page.entries) || [];
                 this.activity.total = (page && page.total) || 0;
@@ -718,8 +795,10 @@ function app() {
             } catch (e) { this.fail(e); }
         },
         // nameFrom resolves an id to its object's name within a named cache.
+        // Compares by string so a numeric row id matches an id that arrived as a
+        // string (e.g. from a URL filter value), not just the table's own ids.
         nameFrom(cacheKey, id) {
-            const row = (this.cache[cacheKey] || []).find((x) => x.id === id);
+            const row = (this.cache[cacheKey] || []).find((x) => String(x.id) === String(id));
             return row ? esc(row.name) : '—';
         },
         instanceName(id) { return this.nameFrom('instances', id); },
@@ -1179,6 +1258,11 @@ function app() {
             // and the table would render with no columns (an empty-looking view
             // even though rows loaded).
             this.dynamicResources[this.view] = this.accessResource();
+            // Re-sync the builder now that this view's filterFields exist and the
+            // rows are loaded: go() ran syncFilterBuilder before the dynamic
+            // access resource was injected, so a subject filter could not collapse
+            // into the compound Subject combobox until now.
+            this.syncFilterBuilder();
         },
         accessResource() {
             const self = this;
@@ -1189,6 +1273,20 @@ function app() {
             return {
                 singular: 'access rule',
                 path: self.accessPath,
+                // Order follows the table columns (then fields without a column).
+                filterFields: [
+                    { key: 'type', label: 'Subject type' },
+                    // The subject is a client OR a group, and the two id spaces
+                    // overlap, so subject_id alone is ambiguous. The option value
+                    // is "type:id"; the backend's "subject" field matches both
+                    // columns (rewriteSubjectFilter), so the URL stays a clean
+                    // {"subject":{"$eq":"group:1"}} and the match is exact.
+                    { key: 'subject', label: 'Subject', optionsFn: () => self.subjectFilterOptions() },
+                    // The target (guest or node) is picked by NAME, limited to the
+                    // targets that appear in the current rules.
+                    { key: targetKey, label: targetLabel, optionsCache: targetCache },
+                    { key: 'id', label: 'ID' },
+                ],
                 columns: [
                     // Subject and target are shown by NAME. The subject's cache
                     // depends on the rule type (client vs group).
@@ -1282,6 +1380,350 @@ function app() {
         // view unfiltered, updating the URL hash to match.
         clearListFilter() {
             this.go(this.view);
+        },
+
+        // ---- visual filter builder ----
+
+        // filterFields returns the fields the current view offers for filtering,
+        // or [] when the view is not filterable (so the UI hides the builder). The
+        // activity log is not a generic resource, so its fields are defined here.
+        filterFields() {
+            if (this.view === 'activity') {
+                const self = this;
+                return [
+                    { key: 'actor', label: 'Who' },
+                    { key: 'host', label: 'Host' },
+                    { key: 'guest', label: 'Guest' },
+                    { key: 'event_id', label: 'Activity', optionsFn: () => self.activityEventOptions() },
+                ];
+            }
+            return this.currentResource().filterFields || [];
+        },
+
+        // activityEventOptions builds the Activity (event_id) picker from the
+        // event kinds present in the current page, each with a human-readable
+        // label. Value is the event_id the backend filters on.
+        activityEventOptions() {
+            // Offer EVERY known event kind, not just the ones on the current
+            // (possibly filtered) page -- so after applying an event filter you can
+            // still add another condition for a different kind.
+            return Object.keys(this.eventKindLabels).map((id) => ({ id, name: this.eventKindLabels[id] }));
+        },
+
+        // eventKindLabel is a short human label for an event_id, for the Activity
+        // filter picker (distinct from formatEventBase, which describes a specific
+        // entry with its params).
+        eventKindLabel(id) {
+            return this.eventKindLabels[id] || id;
+        },
+
+        // filterPanelVisible reports whether the builder panel should be shown:
+        // whenever the operator opened it, OR whenever a filter is active (so a
+        // filtered view always shows WHAT is filtered, and the filter can't be
+        // hidden out of sight).
+        filterPanelVisible() {
+            return !!(this.filterBuilder.open || this.listFilter);
+        },
+
+        // toggleFilterBuilder opens/closes the builder panel. While a filter is
+        // active the panel can't be hidden (filterPanelVisible stays true), so the
+        // toggle only ever opens it then. On open it seeds an empty condition row
+        // when there is nothing to edit yet, so the operator sees a ready row.
+        toggleFilterBuilder() {
+            this.filterBuilder.open = !this.filterBuilder.open;
+            if (this.filterPanelVisible() && !this.filterBuilder.advanced &&
+                this.filterBuilder.rows.length === 0) {
+                this.addFilterRow();
+            }
+        },
+
+        // Join operators combine several conditions on the SAME field. The
+        // backend only nests logical operators per field (not across fields), so
+        // these drive the $and/$or/$nor arrays a field's conditions compile to.
+        filterJoins: [
+            { join: 'and', label: 'AND' },
+            { join: 'or', label: 'OR' },
+            { join: 'nor', label: 'NOR' },
+        ],
+
+        // addFilterRow appends an empty condition. not negates just this one
+        // condition ($not); join says how a 2nd+ condition on the SAME field
+        // combines with the earlier ones (AND by default).
+        addFilterRow() {
+            const fields = this.filterFields();
+            this.filterBuilder.rows.push({
+                field: fields.length ? fields[0].key : '',
+                op: '$eq',
+                value: '',
+                not: false,
+                join: 'and',
+            });
+        },
+
+        // removeFilterRow drops one condition row.
+        removeFilterRow(i) {
+            this.filterBuilder.rows.splice(i, 1);
+        },
+
+        // filterRowIsFirstOfField reports whether row i is the first row for its
+        // field among the current rows. The first row of a field shows no join
+        // selector (there is nothing before it to join to).
+        filterRowIsFirstOfField(i) {
+            const rows = this.filterBuilder.rows;
+            const field = rows[i] && rows[i].field;
+            for (let j = 0; j < i; j++) {
+                if (rows[j].field === field) return false;
+            }
+            return true;
+        },
+
+        // applyFilterBuilder compiles the condition rows into a filter JSON and
+        // navigates to the same view with it. Rows with an empty value are
+        // dropped; no rows means clear the filter.
+        //
+        // Rows are grouped by field (the backend ANDs distinct fields and only
+        // nests logical operators WITHIN a field). For a field with one condition
+        // the result is {field:{$op:v}} (wrapped in $not when negated). For a
+        // field with several, they are combined with the field's join operator as
+        // {field:{$and|$or|$nor:[ {$op:v} | {$not:{$op:v}}, … ]}}; a plain AND of
+        // distinct operators collapses to {field:{$op1:v1,$op2:v2}} for a tidier
+        // filter. The compound Subject field is emitted as a single "subject"
+        // field carrying "type:id"; the backend expands it to a type + subject_id
+        // match (see rewriteSubjectFilter), keeping the URL clean.
+        applyFilterBuilder() {
+            const groups = new Map(); // field -> { join, items:[{op,value,not}] }
+            for (const r of this.filterBuilder.rows) {
+                if (!r.field || r.value === '' || r.value === null || r.value === undefined) continue;
+                const g = groups.has(r.field) ? groups.get(r.field) : { join: 'and', items: [] };
+                // The join of the first joining (2nd+) row sets the field's combiner.
+                if (g.items.length >= 1 && r.join) g.join = r.join;
+                g.items.push({ op: r.op, value: String(r.value), not: !!r.not });
+                groups.set(r.field, g);
+            }
+
+            const obj = {};
+            for (const [field, g] of groups) {
+                obj[field] = this.compileFieldConditions(g);
+            }
+            if (Object.keys(obj).length === 0) {
+                this.go(this.view);
+                return;
+            }
+            this.go(this.view, {
+                filter: JSON.stringify(obj),
+                filterLabel: this.describeFilter(obj),
+            });
+        },
+
+        // compileFieldConditions builds the operator object for one field's
+        // conditions. One item -> a plain (optionally $not) operator map; several
+        // -> an $and/$or/$nor array. A pure-AND group of distinct, un-negated
+        // operators collapses to a flat {$op1:…,$op2:…} map (the backend ANDs it).
+        compileFieldConditions(g) {
+            const term = (it) => it.not ? { $not: { [it.op]: it.value } } : { [it.op]: it.value };
+            if (g.items.length === 1) {
+                return term(g.items[0]);
+            }
+            const distinctOps = new Set(g.items.map((it) => it.op));
+            const noneNegated = g.items.every((it) => !it.not);
+            if (g.join === 'and' && noneNegated && distinctOps.size === g.items.length) {
+                const flat = {};
+                for (const it of g.items) flat[it.op] = it.value;
+                return flat;
+            }
+            const key = g.join === 'or' ? '$or' : g.join === 'nor' ? '$nor' : '$and';
+            return { [key]: g.items.map(term) };
+        },
+
+        // describeFilter renders a short human-readable summary of a simple
+        // filter object, used for the banner text (e.g. "status equals running,
+        // name contains web").
+        describeFilter(obj) {
+            const parts = [];
+            for (const field of Object.keys(obj)) {
+                const label = this.filterFieldLabel(field);
+                const ops = obj[field];
+                for (const op of Object.keys(ops)) {
+                    const v = ops[op];
+                    // Skip nested logical/negation shapes in the short summary --
+                    // only flat scalar comparisons get a human phrase.
+                    if (v === null || typeof v === 'object') { parts.push(label + ' (filtered)'); continue; }
+                    const shown = this.filterValueLabel(field, v);
+                    parts.push(label + ' ' + this.opLabel(op) + ' "' + shown + '"');
+                }
+            }
+            return parts.length ? 'Filtered: ' + parts.join(', ') : '';
+        },
+
+        // activeFilterCount is the small badge number on the Filter button: the
+        // number of conditions in a simple filter, or the count of top-level
+        // fields for an advanced one. 0 when no filter is set.
+        activeFilterCount() {
+            if (!this.listFilter) return 0;
+            if (!this.filterBuilder.advanced) return this.filterBuilder.rows.length;
+            try {
+                const obj = JSON.parse(this.listFilter);
+                return (obj && typeof obj === 'object') ? Object.keys(obj).length : 1;
+            } catch (_) { return 1; }
+        },
+
+        filterFieldLabel(key) {
+            const f = this.filterFields().find((x) => x.key === key);
+            return f ? f.label : key;
+        },
+
+        // filterFieldDef returns the field definition for a key (or null), used to
+        // decide whether the value input is free text or a name picker.
+        filterFieldDef(key) {
+            return this.filterFields().find((x) => x.key === key) || null;
+        },
+
+        // filterValueOptions returns the {id, name} choices for a relation field,
+        // or null when the field is a plain free-text value. A field supplies its
+        // choices either with optionsCache (a named cache, e.g. a guest's Node) or
+        // optionsFn (a function, e.g. an access rule's polymorphic Subject). For
+        // optionsCache the list is restricted to the ids that actually appear in
+        // the current rows for that field -- "deeper objects only when they appear
+        // in the list" -- falling back to the whole cache when the rows carry no
+        // such ids yet.
+        filterValueOptions(fieldKey) {
+            const def = this.filterFieldDef(fieldKey);
+            if (!def) return null;
+            if (def.optionsFn) {
+                return (def.optionsFn() || []).slice()
+                    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+            }
+            if (!def.optionsCache) return null;
+            // Offer the FULL set from the cache, not just the values present in the
+            // currently displayed rows: once a filter is applied the list shrinks,
+            // and a second condition (especially an OR) must still be able to pick
+            // any value. The caches hold every object independently of the filter.
+            const all = this.cache[def.optionsCache] || [];
+            return all.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
+        },
+
+        // filterValueLabel resolves a relation value id to its display name, for
+        // the banner summary (so it reads "Node equals rome", not "… 1"). Uses the
+        // field's option list (cache or fn) so both relation kinds resolve.
+        filterValueLabel(fieldKey, value) {
+            const opts = this.filterValueOptions(fieldKey);
+            if (opts) {
+                const opt = opts.find((o) => String(o.id) === String(value));
+                if (opt) return opt.name;
+            }
+            return value;
+        },
+
+        // subjectFilterOptions builds the Subject picker for the access views. A
+        // rule's subject is a client or a group depending on its type, and the
+        // two id spaces overlap, so each option is labelled with its name and
+        // kind ("tobias (client)"). Only subjects that appear in the current rules
+        // are offered. The value is the subject_id (what the backend filters on).
+        subjectFilterOptions() {
+            // Offer EVERY client and group as a subject, from the full caches --
+            // not just the subjects in the currently displayed (possibly filtered)
+            // rules, so a second condition can still pick any subject. The value is
+            // the composite "type:id" (client/group ids overlap), which
+            // applyFilterBuilder expands into a type + subject_id match.
+            const out = [];
+            for (const c of (this.cache.clients || [])) {
+                out.push({ id: 'client:' + c.id, name: c.name + ' (client)' });
+            }
+            for (const g of (this.cache.groups || [])) {
+                out.push({ id: 'group:' + g.id, name: g.name + ' (group)' });
+            }
+            return out;
+        },
+        opLabel(op) {
+            const o = this.filterOps.find((x) => x.op === op);
+            return o ? o.label : op;
+        },
+
+        // syncFilterBuilder rebuilds the editor rows from the active listFilter.
+        // It understands the shapes the builder itself produces: per field, a flat
+        // comparison map {$op:v,…}, a negated op {$not:{$op:v}}, or a logical
+        // array {$and|$or|$nor:[ {$op:v} | {$not:{$op:v}} ]}. Anything it cannot
+        // represent (deeper nesting, non-scalar values) flips the panel to a
+        // read-only "advanced" view, so it never silently misrepresents a filter.
+        syncFilterBuilder() {
+            const b = this.filterBuilder;
+            b.advanced = false;
+            if (!this.listFilter) { b.rows = []; return; }
+            let obj;
+            try { obj = JSON.parse(this.listFilter); } catch (_) { b.advanced = true; b.rows = []; return; }
+            if (!obj || typeof obj !== 'object' || Array.isArray(obj)) { b.advanced = true; b.rows = []; return; }
+
+            const rows = [];
+            let simple = true;
+            for (const field of Object.keys(obj)) {
+                const parsed = this.parseFieldConditions(field, obj[field]);
+                if (!parsed) { simple = false; break; }
+                for (const row of parsed) rows.push(row);
+            }
+            if (simple) {
+                b.rows = rows;
+            } else {
+                b.advanced = true;
+                b.rows = [];
+            }
+        },
+
+        // parseFieldConditions turns one field's operator object into builder rows,
+        // or returns null when the shape is not editable here. The join is carried
+        // on the 2nd+ rows so re-applying reproduces the same logical array.
+        parseFieldConditions(field, ops) {
+            if (!ops || typeof ops !== 'object' || Array.isArray(ops)) return null;
+            const known = new Set(this.filterOps.map((o) => o.op));
+            // A single comparison op (scalar), e.g. {$eq:"x"}.
+            const term = (expr, not) => {
+                if (!expr || typeof expr !== 'object' || Array.isArray(expr)) return null;
+                const keys = Object.keys(expr);
+                if (keys.length !== 1) return null;
+                const op = keys[0].toLowerCase();
+                const v = expr[keys[0]];
+                if (!known.has(op) || v === null || typeof v === 'object') return null;
+                return { field, op, value: String(v), not: !!not, join: 'and' };
+            };
+            const opKeys = Object.keys(ops);
+            const logical = opKeys.find((k) => ['$and', '$or', '$nor'].includes(k.toLowerCase()));
+            // A logical array must be the ONLY key on the field.
+            if (logical && opKeys.length === 1) {
+                const arr = ops[logical];
+                if (!Array.isArray(arr) || arr.length === 0) return null;
+                const join = logical.toLowerCase().slice(1); // $and -> and
+                const out = [];
+                for (let i = 0; i < arr.length; i++) {
+                    const el = arr[i];
+                    if (!el || typeof el !== 'object') return null;
+                    const ek = Object.keys(el);
+                    let row;
+                    if (ek.length === 1 && ek[0].toLowerCase() === '$not') {
+                        row = term(el.$not, true);
+                    } else {
+                        row = term(el, false);
+                    }
+                    if (!row) return null;
+                    if (i > 0) row.join = join;
+                    out.push(row);
+                }
+                return out;
+            }
+            // Otherwise a flat AND map: {$op1:v1, $op2:v2} and/or a single {$not:…}.
+            const out = [];
+            for (const k of opKeys) {
+                if (k.toLowerCase() === '$not') {
+                    const row = term(ops.$not, true);
+                    if (!row) return null;
+                    if (out.length) row.join = 'and';
+                    out.push(row);
+                    continue;
+                }
+                const row = term({ [k]: ops[k] }, false);
+                if (!row) return null;
+                if (out.length) row.join = 'and';
+                out.push(row);
+            }
+            return out.length ? out : null;
         },
 
         // nameSelectName resolves the display name for a nameselect value, used to

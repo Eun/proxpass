@@ -108,3 +108,74 @@ func TestListAccessRulesBadFilter(t *testing.T) {
 func jsonGuestFilter(id int64) *string {
 	return strp(`{"guest_id":{"$eq":"` + strconv.FormatInt(id, 10) + `"}}`)
 }
+
+// TestListAccessRulesSubjectFilter checks the compound "subject" filter: a
+// client and a group can share a subject_id, and a subject filter ("type:id")
+// must match only the chosen kind, not the other with the same id.
+func TestListAccessRulesSubjectFilter(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+
+	c := &models.Client{Name: testGrantee, PublicKeys: []string{testKey}, GroupIDs: []int64{}}
+	if err := repo.AddClient(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	grp := &models.Group{Name: testGroupName, ClientIDs: []int64{}}
+	if err := repo.AddGroup(ctx, grp); err != nil {
+		t.Fatal(err)
+	}
+	g := &models.Guest{Type: models.GuestTypeVM, Name: "sfvm", Status: models.StatusRunning, ProxmoxID: 300, InstanceID: 1}
+	if err := repo.UpsertGuest(ctx, g); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.GrantClientAccess(ctx, c.ID, []int64{g.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.GrantGroupAccess(ctx, grp.ID, []int64{g.ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	// subject = group:<grp.ID> -> only the group rule, even if a client shares the id.
+	f := `{"subject":{"$eq":"group:` + strconv.FormatInt(grp.ID, 10) + `"}}`
+	rules, err := repo.ListAccessRules(ctx, strp(f))
+	if err != nil {
+		t.Fatalf("subject filter: %v", err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("subject=group filter = %d rules, want 1", len(rules))
+	}
+	if rules[0].Type != models.RuleGroup || rules[0].SubjectID != grp.ID {
+		t.Errorf("matched %s/%d, want group/%d", rules[0].Type, rules[0].SubjectID, grp.ID)
+	}
+
+	// subject = client:<c.ID> -> only the client rule.
+	f = `{"subject":{"$eq":"client:` + strconv.FormatInt(c.ID, 10) + `"}}`
+	rules, _ = repo.ListAccessRules(ctx, strp(f))
+	if len(rules) != 1 || rules[0].Type != models.RuleClient {
+		t.Fatalf("subject=client filter = %+v, want one client rule", rules)
+	}
+
+	// subject OR: group OR client -> both rules (cross-column OR).
+	f = `{"subject":{"$or":[` +
+		`{"$eq":"group:` + strconv.FormatInt(grp.ID, 10) + `"},` +
+		`{"$eq":"client:` + strconv.FormatInt(c.ID, 10) + `"}]}}`
+	rules, err = repo.ListAccessRules(ctx, strp(f))
+	if err != nil {
+		t.Fatalf("subject OR filter: %v", err)
+	}
+	if len(rules) != 2 {
+		t.Fatalf("subject OR filter = %d rules, want 2", len(rules))
+	}
+	kinds := map[models.RuleType]bool{}
+	for _, r := range rules {
+		kinds[r.Type] = true
+	}
+	if !kinds[models.RuleGroup] || !kinds[models.RuleClient] {
+		t.Errorf("subject OR should include both a group and a client rule, got %+v", rules)
+	}
+
+	// A bad subject value is a client error (invalid filter -> 400 upstream).
+	if _, err := repo.ListAccessRules(ctx, strp(`{"subject":{"$eq":"nope"}}`)); !errors.Is(err, filter.ErrInvalidFilter) {
+		t.Errorf("bad subject value: err = %v, want ErrInvalidFilter", err)
+	}
+}
