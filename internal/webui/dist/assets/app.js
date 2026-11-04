@@ -84,6 +84,21 @@ function app() {
         // page newest-first; total backs pagination; recent is the small set
         // shown on the dashboard panel. limit/offset drive paging.
         activity: { entries: [], total: 0, limit: 25, offset: 0 },
+
+        // Human-readable labels for every activity event kind, used by the
+        // activity filter's Activity picker (all kinds, not just the ones on the
+        // current page) and by eventKindLabel.
+        eventKindLabels: {
+            'instance.added': 'Node added', 'instance.updated': 'Node updated', 'instance.removed': 'Node removed',
+            'client.added': 'Client added', 'client.updated': 'Client updated', 'client.removed': 'Client removed',
+            'group.added': 'Group added', 'group.updated': 'Group updated', 'group.removed': 'Group removed',
+            'admin_key.added': 'Admin key added', 'admin_key.removed': 'Admin key removed',
+            'access.granted': 'Guest access granted', 'access.revoked': 'Guest access revoked',
+            'instance_access.granted': 'Node access granted', 'instance_access.revoked': 'Node access revoked',
+            'policy.set': 'Policy changed', 'setting.changed': 'Setting changed', 'discovery.ran': 'Discovery ran',
+            'session.login': 'Signed in', 'session.console.opened': 'Console opened',
+            'session.command.run': 'Command run', 'session.sftp.opened': 'SFTP opened',
+        },
         recentActivity: [],
         // activityTimeAbsolute toggles ALL activity-list timestamps between the
         // relative form ("10 mins ago", the default) and the absolute form.
@@ -1391,30 +1406,17 @@ function app() {
         // event kinds present in the current page, each with a human-readable
         // label. Value is the event_id the backend filters on.
         activityEventOptions() {
-            const seen = new Map();
-            for (const e of (this.activity.entries || [])) {
-                if (!e.event_id || seen.has(e.event_id)) continue;
-                seen.set(e.event_id, { id: e.event_id, name: this.eventKindLabel(e.event_id) });
-            }
-            return [...seen.values()];
+            // Offer EVERY known event kind, not just the ones on the current
+            // (possibly filtered) page -- so after applying an event filter you can
+            // still add another condition for a different kind.
+            return Object.keys(this.eventKindLabels).map((id) => ({ id, name: this.eventKindLabels[id] }));
         },
 
         // eventKindLabel is a short human label for an event_id, for the Activity
         // filter picker (distinct from formatEventBase, which describes a specific
         // entry with its params).
         eventKindLabel(id) {
-            const m = {
-                'instance.added': 'Node added', 'instance.updated': 'Node updated', 'instance.removed': 'Node removed',
-                'client.added': 'Client added', 'client.updated': 'Client updated', 'client.removed': 'Client removed',
-                'group.added': 'Group added', 'group.updated': 'Group updated', 'group.removed': 'Group removed',
-                'admin_key.added': 'Admin key added', 'admin_key.removed': 'Admin key removed',
-                'access.granted': 'Guest access granted', 'access.revoked': 'Guest access revoked',
-                'instance_access.granted': 'Node access granted', 'instance_access.revoked': 'Node access revoked',
-                'policy.set': 'Policy changed', 'setting.changed': 'Setting changed', 'discovery.ran': 'Discovery ran',
-                'session.login': 'Signed in', 'session.console.opened': 'Console opened',
-                'session.command.run': 'Command run', 'session.sftp.opened': 'SFTP opened',
-            };
-            return m[id] || id;
+            return this.eventKindLabels[id] || id;
         },
 
         // filterPanelVisible reports whether the builder panel should be shown:
@@ -1616,16 +1618,12 @@ function app() {
                     .sort((a, b) => String(a.name).localeCompare(String(b.name)));
             }
             if (!def.optionsCache) return null;
+            // Offer the FULL set from the cache, not just the values present in the
+            // currently displayed rows: once a filter is applied the list shrinks,
+            // and a second condition (especially an OR) must still be able to pick
+            // any value. The caches hold every object independently of the filter.
             const all = this.cache[def.optionsCache] || [];
-            const present = new Set();
-            for (const row of (this.rows || [])) {
-                const v = row[fieldKey];
-                if (v !== undefined && v !== null && v !== '') present.add(String(v));
-            }
-            const scoped = present.size
-                ? all.filter((o) => present.has(String(o.id)))
-                : all;
-            return scoped.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
+            return all.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
         },
 
         // filterValueLabel resolves a relation value id to its display name, for
@@ -1646,22 +1644,19 @@ function app() {
         // kind ("tobias (client)"). Only subjects that appear in the current rules
         // are offered. The value is the subject_id (what the backend filters on).
         subjectFilterOptions() {
-            // Key by type+id, not id alone: a client and a group can share an id
-            // (both start at 1), so keying by id would hide one of them. The value
-            // is still the subject_id -- the only column the backend filters on --
-            // so two same-id subjects of different kinds map to the same value.
-            const seen = new Map();
-            for (const row of (this.rows || [])) {
-                const id = row.subject_id;
-                if (id === undefined || id === null) continue;
-                const composite = row.type + ':' + id;
-                if (seen.has(composite)) continue;
-                const name = this.subjectName(row.type, id);
-                // The value is the composite "type:id" so the subject is matched
-                // exactly (applyFilterBuilder expands it into type + subject_id).
-                seen.set(composite, { id: composite, name: name + ' (' + row.type + ')' });
+            // Offer EVERY client and group as a subject, from the full caches --
+            // not just the subjects in the currently displayed (possibly filtered)
+            // rules, so a second condition can still pick any subject. The value is
+            // the composite "type:id" (client/group ids overlap), which
+            // applyFilterBuilder expands into a type + subject_id match.
+            const out = [];
+            for (const c of (this.cache.clients || [])) {
+                out.push({ id: 'client:' + c.id, name: c.name + ' (client)' });
             }
-            return [...seen.values()];
+            for (const g of (this.cache.groups || [])) {
+                out.push({ id: 'group:' + g.id, name: g.name + ' (group)' });
+            }
+            return out;
         },
         opLabel(op) {
             const o = this.filterOps.find((x) => x.op === op);
