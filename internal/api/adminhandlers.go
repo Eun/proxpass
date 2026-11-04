@@ -9,10 +9,18 @@ import (
 	"time"
 
 	"proxpass/internal/db"
+	"proxpass/internal/filter"
 	"proxpass/internal/models"
 	"proxpass/internal/proxmox"
 	"proxpass/internal/sshhostkey"
 )
+
+// isFilterError reports whether err is a client-supplied bad filter (bad JSON,
+// unknown field, disallowed operator), which the list handlers answer with a
+// 400 rather than a 500.
+func isFilterError(err error) bool {
+	return errors.Is(err, filter.ErrInvalidFilter)
+}
 
 // Admin handlers for the typed /v1 API.
 //
@@ -116,7 +124,7 @@ func (h *SessionHandler) WithDiscoverer(factory proxmox.DiscovererFactory) *Sess
 //
 //nolint:dupl // parallel REST CRUD across entity types; the symmetry is the point
 func (h *SessionHandler) ListInstances(
-	ctx context.Context, _ ListInstancesRequestObject,
+	ctx context.Context, request ListInstancesRequestObject,
 ) (ListInstancesResponseObject, error) {
 	if denied, ok, err := gateAdmin(ctx, h,
 		func(reason string) ListInstancesResponseObject {
@@ -135,6 +143,13 @@ func (h *SessionHandler) ListInstances(
 	out := make([]ProxmoxInstance, 0, len(instances))
 	for _, inst := range instances {
 		out = append(out, toAPIInstance(inst))
+	}
+	out, err = filter.Match(request.Params.Filter, out, instanceFilterFields)
+	if err != nil {
+		if isFilterError(err) {
+			return ListInstances400JSONResponse{BadRequestJSONResponse{Error: err.Error()}}, nil
+		}
+		return nil, err
 	}
 	return ListInstances200JSONResponse(out), nil
 }
@@ -346,6 +361,13 @@ func (h *SessionHandler) ListClients(
 	for _, c := range clients {
 		out = append(out, toAPIClient(c))
 	}
+	out, err = filter.Match(request.Params.Filter, out, clientFilterFields)
+	if err != nil {
+		if isFilterError(err) {
+			return ListClients400JSONResponse{BadRequestJSONResponse{Error: err.Error()}}, nil
+		}
+		return nil, err
+	}
 	return ListClients200JSONResponse(out), nil
 }
 
@@ -492,7 +514,7 @@ func (h *SessionHandler) findClient(ctx context.Context, id int64) (*models.Clie
 //
 //nolint:dupl // parallel REST CRUD across entity types; the symmetry is the point
 func (h *SessionHandler) ListGroups(
-	ctx context.Context, _ ListGroupsRequestObject,
+	ctx context.Context, request ListGroupsRequestObject,
 ) (ListGroupsResponseObject, error) {
 	if denied, ok, err := gateAdmin(ctx, h,
 		func(reason string) ListGroupsResponseObject {
@@ -511,6 +533,13 @@ func (h *SessionHandler) ListGroups(
 	out := make([]ClientGroup, 0, len(groups))
 	for _, g := range groups {
 		out = append(out, toAPIGroup(g))
+	}
+	out, err = filter.Match(request.Params.Filter, out, groupFilterFields)
+	if err != nil {
+		if isFilterError(err) {
+			return ListGroups400JSONResponse{BadRequestJSONResponse{Error: err.Error()}}, nil
+		}
+		return nil, err
 	}
 	return ListGroups200JSONResponse(out), nil
 }
@@ -658,7 +687,7 @@ func (h *SessionHandler) findGroup(ctx context.Context, id int64) (*models.Group
 //
 //nolint:dupl // list endpoints share structure across entity types
 func (h *SessionHandler) ListGuests(
-	ctx context.Context, _ ListGuestsRequestObject,
+	ctx context.Context, request ListGuestsRequestObject,
 ) (ListGuestsResponseObject, error) {
 	if denied, ok, err := gateAdmin(ctx, h,
 		func(reason string) ListGuestsResponseObject {
@@ -677,6 +706,13 @@ func (h *SessionHandler) ListGuests(
 	out := make([]GuestRow, 0, len(guests))
 	for _, g := range guests {
 		out = append(out, toAPIGuestRow(g))
+	}
+	out, err = filter.Match(request.Params.Filter, out, guestFilterFields)
+	if err != nil {
+		if isFilterError(err) {
+			return ListGuests400JSONResponse{BadRequestJSONResponse{Error: err.Error()}}, nil
+		}
+		return nil, err
 	}
 	return ListGuests200JSONResponse(out), nil
 }
@@ -711,7 +747,7 @@ func (h *SessionHandler) GetGuest(
 //
 //nolint:dupl // guest and node access handlers are mirror images
 func (h *SessionHandler) ListAccessRules(
-	ctx context.Context, _ ListAccessRulesRequestObject,
+	ctx context.Context, request ListAccessRulesRequestObject,
 ) (ListAccessRulesResponseObject, error) {
 	if denied, ok, err := gateAdmin(ctx, h,
 		func(reason string) ListAccessRulesResponseObject {
@@ -723,8 +759,11 @@ func (h *SessionHandler) ListAccessRules(
 	); !ok {
 		return denied, err
 	}
-	rules, err := h.repo.ListAccessRules(ctx)
+	rules, err := h.repo.ListAccessRules(ctx, request.Params.Filter)
 	if err != nil {
+		if isFilterError(err) {
+			return ListAccessRules400JSONResponse{BadRequestJSONResponse{Error: err.Error()}}, nil
+		}
 		return nil, err
 	}
 	out := make([]AccessRuleRow, 0, len(rules))
@@ -825,7 +864,7 @@ func (h *SessionHandler) RevokeAccess(
 //
 //nolint:dupl // guest and node access handlers are mirror images
 func (h *SessionHandler) ListInstanceAccessRules(
-	ctx context.Context, _ ListInstanceAccessRulesRequestObject,
+	ctx context.Context, request ListInstanceAccessRulesRequestObject,
 ) (ListInstanceAccessRulesResponseObject, error) {
 	if denied, ok, err := gateAdmin(ctx, h,
 		func(reason string) ListInstanceAccessRulesResponseObject {
@@ -837,8 +876,11 @@ func (h *SessionHandler) ListInstanceAccessRules(
 	); !ok {
 		return denied, err
 	}
-	rules, err := h.repo.ListInstanceAccessRules(ctx)
+	rules, err := h.repo.ListInstanceAccessRules(ctx, request.Params.Filter)
 	if err != nil {
+		if isFilterError(err) {
+			return ListInstanceAccessRules400JSONResponse{BadRequestJSONResponse{Error: err.Error()}}, nil
+		}
 		return nil, err
 	}
 	out := make([]InstanceAccessRuleRow, 0, len(rules))
@@ -1078,7 +1120,7 @@ func (h *SessionHandler) GetProxpassSSHPublicKey(
 // repo (it can change without a restart); everything else comes from the
 // snapshot captured at startup.
 func (h *SessionHandler) ListSettings(
-	ctx context.Context, _ ListSettingsRequestObject,
+	ctx context.Context, request ListSettingsRequestObject,
 ) (ListSettingsResponseObject, error) {
 	if denied, ok, err := gateAdmin(ctx, h,
 		func(reason string) ListSettingsResponseObject {
@@ -1100,7 +1142,14 @@ func (h *SessionHandler) ListSettings(
 	if snap == nil {
 		snap = &SettingsSnapshot{}
 	}
-	return ListSettings200JSONResponse(buildSettings(snap, endpoint)), nil
+	out, err := filter.Match(request.Params.Filter, buildSettings(snap, endpoint), settingFilterFields)
+	if err != nil {
+		if isFilterError(err) {
+			return ListSettings400JSONResponse{BadRequestJSONResponse{Error: err.Error()}}, nil
+		}
+		return nil, err
+	}
+	return ListSettings200JSONResponse(out), nil
 }
 
 // GetSetting returns one setting by key.
@@ -1149,7 +1198,7 @@ func (h *SessionHandler) SetSetting(
 	if err := h.repo.SetSetting(ctx, request.Key, request.Body.Value); err != nil {
 		return nil, err
 	}
-	h.recordAdmin(ctx, EventSettingChanged, map[string]any{paramKey: request.Key, "value": request.Body.Value})
+	h.recordAdmin(ctx, EventSettingChanged, map[string]any{paramKey: request.Key, paramValue: request.Body.Value})
 	return SetSetting200JSONResponse(Setting{Key: request.Key, Value: request.Body.Value}), nil
 }
 

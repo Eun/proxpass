@@ -92,7 +92,7 @@ func TestGrantingAnInstanceTwiceIsIdempotent(t *testing.T) {
 		}
 	}
 
-	rules, err := repo.ListInstanceAccessRules(ctx)
+	rules, err := repo.ListInstanceAccessRules(ctx, nil)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestRemovingAnInstanceDeletesItsAccessRules(t *testing.T) {
 		t.Fatalf("remove instance: %v", err)
 	}
 
-	rules, err := repo.ListInstanceAccessRules(ctx)
+	rules, err := repo.ListInstanceAccessRules(ctx, nil)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}

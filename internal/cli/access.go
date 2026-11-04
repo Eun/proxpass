@@ -74,11 +74,11 @@ func accessCmd(deps *Deps) *ucli.Command {
 func listAccessRules(
 	ctx context.Context, deps *Deps, cmd *ucli.Command,
 ) error {
-	rules, err := deps.Repo.ListAccessRules(ctx)
+	rules, err := deps.Repo.ListAccessRules(ctx, nil)
 	if err != nil {
 		return err
 	}
-	instRules, err := deps.Repo.ListInstanceAccessRules(ctx)
+	instRules, err := deps.Repo.ListInstanceAccessRules(ctx, nil)
 	if err != nil {
 		return err
 	}

@@ -14,8 +14,58 @@ import (
 	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite" // register the "sqlite" driver
 
+	"proxpass/internal/filter"
 	"proxpass/internal/models"
 )
+
+// accessRuleFields and instanceAccessRuleFields map the JSON filter field names
+// accepted on the two access-rule list endpoints to their SQL columns. Every
+// column is exposed, with the full operator set allowed (empty AllowedOps), so
+// callers can filter on any of id, type, subject and target.
+// Columns shared by the two access-rule tables. The guest table also has
+// guest_id; the instance table uses instanceRuleCol ("instance_id").
+const (
+	colID        = "id"
+	colType      = "type"
+	colSubjectID = "subject_id"
+	colGuestID   = "guest_id"
+)
+
+var (
+	accessRuleFields = filter.FieldSpecMap{
+		colID:        {Column: colID},
+		colType:      {Column: colType},
+		colSubjectID: {Column: colSubjectID},
+		colGuestID:   {Column: colGuestID},
+	}
+	instanceAccessRuleFields = filter.FieldSpecMap{
+		colID:           {Column: colID},
+		colType:         {Column: colType},
+		colSubjectID:    {Column: colSubjectID},
+		instanceRuleCol: {Column: instanceRuleCol},
+	}
+)
+
+// appendFilter appends a WHERE clause built from rawFilter to baseQuery and
+// returns the final query plus its bound args. When the filter is absent the
+// base query is returned unchanged. The ORDER BY, if any, must be appended by
+// the caller after the WHERE -- so baseQuery here must not yet carry one.
+func appendFilter(
+	baseQuery, orderBy string, rawFilter *string, fields filter.FieldSpecMap,
+) (query string, args []any, err error) {
+	where, args, err := filter.BuildWhere(rawFilter, fields)
+	if err != nil {
+		return "", nil, err
+	}
+	query = baseQuery
+	if where != "" {
+		query += " WHERE " + where
+	}
+	if orderBy != "" {
+		query += " " + orderBy
+	}
+	return query, args, nil
+}
 
 //go:embed migrations/sqlite/*.sql migrations/postgres/*.sql
 var migrationsFS embed.FS
@@ -38,8 +88,8 @@ func (r *sqlRepo) exec(ctx context.Context, q string, args ...any) (sql.Result, 
 	return r.db.ExecContext(ctx, r.d.rebind(q), args...)
 }
 
-func (r *sqlRepo) query(ctx context.Context, q string) (*sql.Rows, error) {
-	return r.db.QueryContext(ctx, r.d.rebind(q))
+func (r *sqlRepo) query(ctx context.Context, q string, args ...any) (*sql.Rows, error) {
+	return r.db.QueryContext(ctx, r.d.rebind(q), args...)
 }
 
 func (r *sqlRepo) queryRow(ctx context.Context, q string, args ...any) *sql.Row {
@@ -579,8 +629,16 @@ func (r *sqlRepo) RemoveGroup(ctx context.Context, id int64) error {
 
 // --- Access Rules ---
 
-func (r *sqlRepo) ListAccessRules(ctx context.Context) ([]*models.AccessRuleRow, error) {
-	rows, err := r.query(ctx, "SELECT id, type, subject_id, guest_id FROM access_rules ORDER BY id")
+func (r *sqlRepo) ListAccessRules(
+	ctx context.Context, rawFilter *string,
+) ([]*models.AccessRuleRow, error) {
+	q, args, err := appendFilter(
+		"SELECT id, type, subject_id, guest_id FROM access_rules",
+		"ORDER BY id", rawFilter, accessRuleFields)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -654,9 +712,16 @@ const (
 	instanceRuleCol   = "instance_id"
 )
 
-func (r *sqlRepo) ListInstanceAccessRules(ctx context.Context) ([]*models.InstanceAccessRuleRow, error) {
-	rows, err := r.query(ctx, "SELECT id, type, subject_id, "+instanceRuleCol+
-		" FROM "+instanceRuleTable+" ORDER BY id")
+func (r *sqlRepo) ListInstanceAccessRules(
+	ctx context.Context, rawFilter *string,
+) ([]*models.InstanceAccessRuleRow, error) {
+	q, args, err := appendFilter(
+		"SELECT id, type, subject_id, "+instanceRuleCol+" FROM "+instanceRuleTable,
+		"ORDER BY id", rawFilter, instanceAccessRuleFields)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

@@ -135,7 +135,7 @@ func (r *AdminRepository) AddProxmoxInstance(ctx context.Context, inst *models.P
 }
 
 func (r *AdminRepository) ListProxmoxInstances(ctx context.Context) ([]*models.ProxmoxInstance, error) {
-	resp, err := r.api.ListInstancesWithResponse(ctx)
+	resp, err := r.api.ListInstancesWithResponse(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +237,7 @@ func (r *AdminRepository) AddGroup(ctx context.Context, group *models.Group) err
 }
 
 func (r *AdminRepository) ListGroups(ctx context.Context) ([]*models.Group, error) {
-	resp, err := r.api.ListGroupsWithResponse(ctx)
+	resp, err := r.api.ListGroupsWithResponse(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -258,7 +258,7 @@ func (r *AdminRepository) RemoveGroup(ctx context.Context, id int64) error {
 // --- Guests ---
 
 func (r *AdminRepository) ListGuests(ctx context.Context) ([]*models.Guest, error) {
-	resp, err := r.api.ListGuestsWithResponse(ctx)
+	resp, err := r.api.ListGuestsWithResponse(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -267,8 +267,10 @@ func (r *AdminRepository) ListGuests(ctx context.Context) ([]*models.Guest, erro
 
 // --- Access rules ---
 
-func (r *AdminRepository) ListAccessRules(ctx context.Context) ([]*models.AccessRuleRow, error) {
-	resp, err := r.api.ListAccessRulesWithResponse(ctx)
+func (r *AdminRepository) ListAccessRules(
+	ctx context.Context, filter *string,
+) ([]*models.AccessRuleRow, error) {
+	resp, err := r.api.ListAccessRulesWithResponse(ctx, &api.ListAccessRulesParams{Filter: filter})
 	if err != nil {
 		return nil, err
 	}
@@ -326,9 +328,10 @@ func (r *AdminRepository) revokeAccess(
 // --- Instance access rules ---
 
 func (r *AdminRepository) ListInstanceAccessRules(
-	ctx context.Context,
+	ctx context.Context, filter *string,
 ) ([]*models.InstanceAccessRuleRow, error) {
-	resp, err := r.api.ListInstanceAccessRulesWithResponse(ctx)
+	resp, err := r.api.ListInstanceAccessRulesWithResponse(
+		ctx, &api.ListInstanceAccessRulesParams{Filter: filter})
 	if err != nil {
 		return nil, err
 	}

@@ -363,6 +363,16 @@
                                     </button>
                                 </template>
                             </div>
+                            <!-- List filter banner: shown when a ?filter= is active on this
+                                 view (e.g. the "List" action on a Node/Guest row, or a
+                                 bookmarked #view?filter=… URL). filterLabel names the target
+                                 when known; otherwise a generic note with the raw filter. -->
+                            <template x-if="listFilter">
+                                <div class="flex items-center justify-between gap-3 px-4 py-2 bg-amber-50 border-b border-amber-200 text-sm text-amber-800">
+                                    <span x-text="filterLabel || ('Filtered: ' + listFilter)"></span>
+                                    <button @click="clearListFilter()" class="text-amber-800 hover:underline font-medium whitespace-nowrap">Clear filter</button>
+                                </div>
+                            </template>
                             <div class="overflow-x-auto custom-scrollbar">
                                 <table class="min-w-full text-sm">
                                     <thead class="bg-gray-50 text-gray-500 uppercase text-xs">

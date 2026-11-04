@@ -43,7 +43,7 @@ type Repository interface {
 	RemoveGroup(ctx context.Context, id int64) error
 
 	// Access Rules
-	ListAccessRules(ctx context.Context) ([]*models.AccessRuleRow, error)
+	ListAccessRules(ctx context.Context, filter *string) ([]*models.AccessRuleRow, error)
 	GrantClientAccess(ctx context.Context, clientID int64, guestIDs []int64) error
 	GrantGroupAccess(ctx context.Context, groupID int64, guestIDs []int64) error
 	RevokeClientAccess(ctx context.Context, clientID, guestID int64) error
@@ -55,7 +55,7 @@ type Repository interface {
 	// Separate methods rather than a target-kind argument: the two have
 	// different tables and different consequences, and a caller that has
 	// to pass a discriminator can pass the wrong one.
-	ListInstanceAccessRules(ctx context.Context) ([]*models.InstanceAccessRuleRow, error)
+	ListInstanceAccessRules(ctx context.Context, filter *string) ([]*models.InstanceAccessRuleRow, error)
 	GrantClientInstanceAccess(ctx context.Context, clientID int64, instanceIDs []int64) error
 	GrantGroupInstanceAccess(ctx context.Context, groupID int64, instanceIDs []int64) error
 	RevokeClientInstanceAccess(ctx context.Context, clientID, instanceID int64) error
