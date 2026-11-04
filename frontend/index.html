@@ -317,11 +317,24 @@
                                         <div class="space-y-2">
                                             <template x-for="(row, i) in filterBuilder.rows" :key="i">
                                                 <div class="flex flex-wrap items-center gap-2">
+                                                    <template x-if="filterRowIsFirstOfField(i)">
+                                                        <span class="text-xs text-gray-400 w-12 text-right">where</span>
+                                                    </template>
+                                                    <template x-if="!filterRowIsFirstOfField(i)">
+                                                        <select x-model="row.join" x-effect="$nextTick(() => $el.value = row.join)" class="form-select rounded border-gray-300 text-xs w-12 px-1">
+                                                            <template x-for="j in filterJoins" :key="j.join">
+                                                                <option :value="j.join" x-text="j.label"></option>
+                                                            </template>
+                                                        </select>
+                                                    </template>
                                                     <select x-model="row.field" x-effect="filterFields(); $nextTick(() => $el.value = row.field)" class="form-select rounded border-gray-300 text-sm">
                                                         <template x-for="f in filterFields()" :key="f.key">
                                                             <option :value="f.key" x-text="f.label"></option>
                                                         </template>
                                                     </select>
+                                                    <label class="inline-flex items-center gap-1 text-xs text-gray-600">
+                                                        <input type="checkbox" x-model="row.not" class="rounded border-gray-300"> not
+                                                    </label>
                                                     <select x-model="row.op" x-effect="$nextTick(() => $el.value = row.op)" class="form-select rounded border-gray-300 text-sm">
                                                         <template x-for="o in filterOps" :key="o.op">
                                                             <option :value="o.op" x-text="o.label"></option>
@@ -350,6 +363,7 @@
                                                 <button @click="clearListFilter()" class="text-sm text-gray-500 hover:underline">Clear</button>
                                                 <button @click="applyFilterBuilder()" class="bg-primary hover:bg-primary-dark text-white text-sm font-medium px-4 py-1.5 rounded transition">Apply</button>
                                             </div>
+                                            <p class="text-xs text-gray-400 pt-1">AND/OR/NOR and “not” combine conditions on the same field. Different fields are always combined with AND.</p>
                                         </div>
                                     </template>
                                 </div>
@@ -463,6 +477,19 @@
                                         <div class="space-y-2">
                                             <template x-for="(row, i) in filterBuilder.rows" :key="i">
                                                 <div class="flex flex-wrap items-center gap-2">
+                                                    <!-- Join to the previous condition ON THE SAME FIELD (AND/OR/NOR);
+                                                         the first condition of a field shows "where" instead, since
+                                                         logical operators only nest within one field. -->
+                                                    <template x-if="filterRowIsFirstOfField(i)">
+                                                        <span class="text-xs text-gray-400 w-12 text-right">where</span>
+                                                    </template>
+                                                    <template x-if="!filterRowIsFirstOfField(i)">
+                                                        <select x-model="row.join" x-effect="$nextTick(() => $el.value = row.join)" class="form-select rounded border-gray-300 text-xs w-12 px-1">
+                                                            <template x-for="j in filterJoins" :key="j.join">
+                                                                <option :value="j.join" x-text="j.label"></option>
+                                                            </template>
+                                                        </select>
+                                                    </template>
                                                     <!-- x-effect re-applies the bound value after the x-for options
                                                          render, so a select built from a loaded filter reflects
                                                          row.field/row.op instead of defaulting to the first option. -->
@@ -471,6 +498,10 @@
                                                             <option :value="f.key" x-text="f.label"></option>
                                                         </template>
                                                     </select>
+                                                    <!-- NOT negates just this one condition. -->
+                                                    <label class="inline-flex items-center gap-1 text-xs text-gray-600">
+                                                        <input type="checkbox" x-model="row.not" class="rounded border-gray-300"> not
+                                                    </label>
                                                     <select x-model="row.op" x-effect="$nextTick(() => $el.value = row.op)" class="form-select rounded border-gray-300 text-sm">
                                                         <template x-for="o in filterOps" :key="o.op">
                                                             <option :value="o.op" x-text="o.label"></option>
@@ -504,6 +535,7 @@
                                                 <button @click="clearListFilter()" class="text-sm text-gray-500 hover:underline">Clear</button>
                                                 <button @click="applyFilterBuilder()" class="bg-primary hover:bg-primary-dark text-white text-sm font-medium px-4 py-1.5 rounded transition">Apply</button>
                                             </div>
+                                            <p class="text-xs text-gray-400 pt-1">AND/OR/NOR and “not” combine conditions on the same field. Different fields are always combined with AND.</p>
                                         </div>
                                     </template>
                                 </div>

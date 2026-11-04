@@ -1437,14 +1437,26 @@ function app() {
             }
         },
 
-        // addFilterRow appends an empty condition, defaulting the field to the
-        // first filterable field and the operator to equals.
+        // Join operators combine several conditions on the SAME field. The
+        // backend only nests logical operators per field (not across fields), so
+        // these drive the $and/$or/$nor arrays a field's conditions compile to.
+        filterJoins: [
+            { join: 'and', label: 'AND' },
+            { join: 'or', label: 'OR' },
+            { join: 'nor', label: 'NOR' },
+        ],
+
+        // addFilterRow appends an empty condition. not negates just this one
+        // condition ($not); join says how a 2nd+ condition on the SAME field
+        // combines with the earlier ones (AND by default).
         addFilterRow() {
             const fields = this.filterFields();
             this.filterBuilder.rows.push({
                 field: fields.length ? fields[0].key : '',
                 op: '$eq',
                 value: '',
+                not: false,
+                join: 'and',
             });
         },
 
@@ -1453,33 +1465,56 @@ function app() {
             this.filterBuilder.rows.splice(i, 1);
         },
 
-        // applyFilterBuilder turns the condition rows into a filter JSON and
+        // filterRowIsFirstOfField reports whether row i is the first row for its
+        // field among the current rows. The first row of a field shows no join
+        // selector (there is nothing before it to join to).
+        filterRowIsFirstOfField(i) {
+            const rows = this.filterBuilder.rows;
+            const field = rows[i] && rows[i].field;
+            for (let j = 0; j < i; j++) {
+                if (rows[j].field === field) return false;
+            }
+            return true;
+        },
+
+        // applyFilterBuilder compiles the condition rows into a filter JSON and
         // navigates to the same view with it. Rows with an empty value are
-        // dropped; no rows means clear the filter. Conditions on the SAME field
-        // are merged into one field object ({field:{$op1:…,$op2:…}}) -- the
-        // backend ANDs multiple operators on a field -- which also keeps the JSON
-        // a valid object (no duplicate keys).
+        // dropped; no rows means clear the filter.
+        //
+        // Rows are grouped by field (the backend ANDs distinct fields and only
+        // nests logical operators WITHIN a field). For a field with one condition
+        // the result is {field:{$op:v}} (wrapped in $not when negated). For a
+        // field with several, they are combined with the field's join operator as
+        // {field:{$and|$or|$nor:[ {$op:v} | {$not:{$op:v}}, … ]}}; a plain AND of
+        // distinct operators collapses to {field:{$op1:v1,$op2:v2}} for a tidier
+        // filter. The compound Subject field still expands to type + subject_id.
         applyFilterBuilder() {
-            const obj = {};
-            const add = (field, op, value) => {
-                if (!obj[field]) obj[field] = {};
-                obj[field][op] = String(value);
+            const groups = new Map(); // field -> { join, items:[{op,value,not}] }
+            const addExpanded = (field, op, value, not) => {
+                if (!groups.has(field)) groups.set(field, { join: 'and', items: [] });
+                groups.get(field).items.push({ op, value: String(value), not: !!not });
             };
             for (const r of this.filterBuilder.rows) {
                 if (!r.field || r.value === '' || r.value === null || r.value === undefined) continue;
                 const def = this.filterFieldDef(r.field);
-                // A compound "subject" field carries "type:id"; expand it into a
-                // type AND subject_id condition so exactly that subject matches
-                // (client#1 and group#1 are different subjects with the same id).
                 if (def && def.compound === 'subject') {
                     const sep = String(r.value).indexOf(':');
                     if (sep > 0) {
-                        add('type', '$eq', String(r.value).slice(0, sep));
-                        add('subject_id', '$eq', String(r.value).slice(sep + 1));
+                        addExpanded('type', '$eq', String(r.value).slice(0, sep), false);
+                        addExpanded('subject_id', '$eq', String(r.value).slice(sep + 1), false);
                     }
                     continue;
                 }
-                add(r.field, r.op, r.value);
+                const g = groups.has(r.field) ? groups.get(r.field) : { join: 'and', items: [] };
+                // The join of the first joining (2nd+) row sets the field's combiner.
+                if (g.items.length >= 1 && r.join) g.join = r.join;
+                g.items.push({ op: r.op, value: String(r.value), not: !!r.not });
+                groups.set(r.field, g);
+            }
+
+            const obj = {};
+            for (const [field, g] of groups) {
+                obj[field] = this.compileFieldConditions(g);
             }
             if (Object.keys(obj).length === 0) {
                 this.go(this.view);
@@ -1489,6 +1524,26 @@ function app() {
                 filter: JSON.stringify(obj),
                 filterLabel: this.describeFilter(obj),
             });
+        },
+
+        // compileFieldConditions builds the operator object for one field's
+        // conditions. One item -> a plain (optionally $not) operator map; several
+        // -> an $and/$or/$nor array. A pure-AND group of distinct, un-negated
+        // operators collapses to a flat {$op1:…,$op2:…} map (the backend ANDs it).
+        compileFieldConditions(g) {
+            const term = (it) => it.not ? { $not: { [it.op]: it.value } } : { [it.op]: it.value };
+            if (g.items.length === 1) {
+                return term(g.items[0]);
+            }
+            const distinctOps = new Set(g.items.map((it) => it.op));
+            const noneNegated = g.items.every((it) => !it.not);
+            if (g.join === 'and' && noneNegated && distinctOps.size === g.items.length) {
+                const flat = {};
+                for (const it of g.items) flat[it.op] = it.value;
+                return flat;
+            }
+            const key = g.join === 'or' ? '$or' : g.join === 'nor' ? '$nor' : '$and';
+            return { [key]: g.items.map(term) };
         },
 
         // describeFilter renders a short human-readable summary of a simple
@@ -1509,8 +1564,13 @@ function app() {
             for (const field of Object.keys(obj)) {
                 if (skip[field]) continue;
                 const label = this.filterFieldLabel(field);
-                for (const op of Object.keys(obj[field])) {
-                    const shown = this.filterValueLabel(field, obj[field][op]);
+                const ops = obj[field];
+                for (const op of Object.keys(ops)) {
+                    const v = ops[op];
+                    // Skip nested logical/negation shapes in the short summary --
+                    // only flat scalar comparisons get a human phrase.
+                    if (v === null || typeof v === 'object') { parts.push(label + ' (filtered)'); continue; }
+                    const shown = this.filterValueLabel(field, v);
                     parts.push(label + ' ' + this.opLabel(op) + ' "' + shown + '"');
                 }
             }
@@ -1609,31 +1669,25 @@ function app() {
         },
 
         // syncFilterBuilder rebuilds the editor rows from the active listFilter.
-        // A simple filter ({field:{$op:value,…},…} with only scalar comparison
-        // operators) becomes editable rows; anything with nested logical
-        // operators, arrays or objects is flagged "advanced" and shown read-only,
-        // so the builder never silently misrepresents a filter it cannot edit.
+        // It understands the shapes the builder itself produces: per field, a flat
+        // comparison map {$op:v,…}, a negated op {$not:{$op:v}}, or a logical
+        // array {$and|$or|$nor:[ {$op:v} | {$not:{$op:v}} ]}. Anything it cannot
+        // represent (deeper nesting, non-scalar values) flips the panel to a
+        // read-only "advanced" view, so it never silently misrepresents a filter.
         syncFilterBuilder() {
             const b = this.filterBuilder;
             b.advanced = false;
             if (!this.listFilter) { b.rows = []; return; }
             let obj;
             try { obj = JSON.parse(this.listFilter); } catch (_) { b.advanced = true; b.rows = []; return; }
-            const known = new Set(this.filterOps.map((o) => o.op));
+            if (!obj || typeof obj !== 'object' || Array.isArray(obj)) { b.advanced = true; b.rows = []; return; }
+
             const rows = [];
-            let simple = (obj && typeof obj === 'object' && !Array.isArray(obj));
-            if (simple) {
-                for (const field of Object.keys(obj)) {
-                    const ops = obj[field];
-                    if (!ops || typeof ops !== 'object' || Array.isArray(ops)) { simple = false; break; }
-                    for (const op of Object.keys(ops)) {
-                        const v = ops[op];
-                        // Only scalar values on known comparison operators are editable.
-                        if (!known.has(op.toLowerCase()) || v === null || typeof v === 'object') { simple = false; break; }
-                        rows.push({ field, op: op.toLowerCase(), value: String(v) });
-                    }
-                    if (!simple) break;
-                }
+            let simple = true;
+            for (const field of Object.keys(obj)) {
+                const parsed = this.parseFieldConditions(field, obj[field]);
+                if (!parsed) { simple = false; break; }
+                for (const row of parsed) rows.push(row);
             }
             if (simple) {
                 b.rows = this.collapseSubjectRows(rows);
@@ -1641,6 +1695,64 @@ function app() {
                 b.advanced = true;
                 b.rows = [];
             }
+        },
+
+        // parseFieldConditions turns one field's operator object into builder rows,
+        // or returns null when the shape is not editable here. The join is carried
+        // on the 2nd+ rows so re-applying reproduces the same logical array.
+        parseFieldConditions(field, ops) {
+            if (!ops || typeof ops !== 'object' || Array.isArray(ops)) return null;
+            const known = new Set(this.filterOps.map((o) => o.op));
+            // A single comparison op (scalar), e.g. {$eq:"x"}.
+            const term = (expr, not) => {
+                if (!expr || typeof expr !== 'object' || Array.isArray(expr)) return null;
+                const keys = Object.keys(expr);
+                if (keys.length !== 1) return null;
+                const op = keys[0].toLowerCase();
+                const v = expr[keys[0]];
+                if (!known.has(op) || v === null || typeof v === 'object') return null;
+                return { field, op, value: String(v), not: !!not, join: 'and' };
+            };
+            const opKeys = Object.keys(ops);
+            const logical = opKeys.find((k) => ['$and', '$or', '$nor'].includes(k.toLowerCase()));
+            // A logical array must be the ONLY key on the field.
+            if (logical && opKeys.length === 1) {
+                const arr = ops[logical];
+                if (!Array.isArray(arr) || arr.length === 0) return null;
+                const join = logical.toLowerCase().slice(1); // $and -> and
+                const out = [];
+                for (let i = 0; i < arr.length; i++) {
+                    const el = arr[i];
+                    if (!el || typeof el !== 'object') return null;
+                    const ek = Object.keys(el);
+                    let row;
+                    if (ek.length === 1 && ek[0].toLowerCase() === '$not') {
+                        row = term(el.$not, true);
+                    } else {
+                        row = term(el, false);
+                    }
+                    if (!row) return null;
+                    if (i > 0) row.join = join;
+                    out.push(row);
+                }
+                return out;
+            }
+            // Otherwise a flat AND map: {$op1:v1, $op2:v2} and/or a single {$not:…}.
+            const out = [];
+            for (const k of opKeys) {
+                if (k.toLowerCase() === '$not') {
+                    const row = term(ops.$not, true);
+                    if (!row) return null;
+                    if (out.length) row.join = 'and';
+                    out.push(row);
+                    continue;
+                }
+                const row = term({ [k]: ops[k] }, false);
+                if (!row) return null;
+                if (out.length) row.join = 'and';
+                out.push(row);
+            }
+            return out.length ? out : null;
         },
 
         // collapseSubjectRows folds a {type $eq X} + {subject_id $eq Y} pair back
