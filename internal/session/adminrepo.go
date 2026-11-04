@@ -637,11 +637,11 @@ func (r *AdminRepository) AddActivityEvent(context.Context, *models.ActivityEven
 	panic(unsupported("AddActivityEvent"))
 }
 
-func (r *AdminRepository) ListActivity(context.Context, int, int) ([]*models.ActivityEvent, error) {
+func (r *AdminRepository) ListActivity(context.Context, int, int, *string) ([]*models.ActivityEvent, error) {
 	panic(unsupported("ListActivity"))
 }
 
-func (r *AdminRepository) CountActivity(context.Context) (int, error) {
+func (r *AdminRepository) CountActivity(context.Context, *string) (int, error) {
 	panic(unsupported("CountActivity"))
 }
 

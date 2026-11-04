@@ -137,12 +137,18 @@ func (h *SessionHandler) ListActivity(
 		offset = *request.Params.Offset
 	}
 
-	events, err := h.repo.ListActivity(ctx, limit, offset)
+	events, err := h.repo.ListActivity(ctx, limit, offset, request.Params.Filter)
 	if err != nil {
+		if isFilterError(err) {
+			return ListActivity400JSONResponse{BadRequestJSONResponse{Error: err.Error()}}, nil
+		}
 		return nil, err
 	}
-	total, err := h.repo.CountActivity(ctx)
+	total, err := h.repo.CountActivity(ctx, request.Params.Filter)
 	if err != nil {
+		if isFilterError(err) {
+			return ListActivity400JSONResponse{BadRequestJSONResponse{Error: err.Error()}}, nil
+		}
 		return nil, err
 	}
 

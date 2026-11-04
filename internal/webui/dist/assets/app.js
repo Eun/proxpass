@@ -556,7 +556,8 @@ function app() {
         async loadActivity() {
             this.loading = true;
             try {
-                const q = '?limit=' + this.activity.limit + '&offset=' + this.activity.offset;
+                let q = '?limit=' + this.activity.limit + '&offset=' + this.activity.offset;
+                if (this.listFilter) q += '&filter=' + encodeURIComponent(this.listFilter);
                 const page = await this.request('GET', '/activity' + q);
                 this.activity.entries = (page && page.entries) || [];
                 this.activity.total = (page && page.total) || 0;
@@ -1371,9 +1372,47 @@ function app() {
         // ---- visual filter builder ----
 
         // filterFields returns the fields the current view offers for filtering,
-        // or [] when the view is not filterable (so the UI hides the builder).
+        // or [] when the view is not filterable (so the UI hides the builder). The
+        // activity log is not a generic resource, so its fields are defined here.
         filterFields() {
+            if (this.view === 'activity') {
+                const self = this;
+                return [
+                    { key: 'actor', label: 'Who' },
+                    { key: 'event_id', label: 'Activity', optionsFn: () => self.activityEventOptions() },
+                ];
+            }
             return this.currentResource().filterFields || [];
+        },
+
+        // activityEventOptions builds the Activity (event_id) picker from the
+        // event kinds present in the current page, each with a human-readable
+        // label. Value is the event_id the backend filters on.
+        activityEventOptions() {
+            const seen = new Map();
+            for (const e of (this.activity.entries || [])) {
+                if (!e.event_id || seen.has(e.event_id)) continue;
+                seen.set(e.event_id, { id: e.event_id, name: this.eventKindLabel(e.event_id) });
+            }
+            return [...seen.values()];
+        },
+
+        // eventKindLabel is a short human label for an event_id, for the Activity
+        // filter picker (distinct from formatEventBase, which describes a specific
+        // entry with its params).
+        eventKindLabel(id) {
+            const m = {
+                'instance.added': 'Node added', 'instance.updated': 'Node updated', 'instance.removed': 'Node removed',
+                'client.added': 'Client added', 'client.updated': 'Client updated', 'client.removed': 'Client removed',
+                'group.added': 'Group added', 'group.updated': 'Group updated', 'group.removed': 'Group removed',
+                'admin_key.added': 'Admin key added', 'admin_key.removed': 'Admin key removed',
+                'access.granted': 'Guest access granted', 'access.revoked': 'Guest access revoked',
+                'instance_access.granted': 'Node access granted', 'instance_access.revoked': 'Node access revoked',
+                'policy.set': 'Policy changed', 'setting.changed': 'Setting changed', 'discovery.ran': 'Discovery ran',
+                'session.login': 'Signed in', 'session.console.opened': 'Console opened',
+                'session.command.run': 'Command run', 'session.sftp.opened': 'SFTP opened',
+            };
+            return m[id] || id;
         },
 
         // filterPanelVisible reports whether the builder panel should be shown:

@@ -420,6 +420,7 @@ paths:
       security:
         - adminToken: []
       parameters:
+        - $ref: "#/components/parameters/ListFilter"
         - name: limit
           in: query
           required: false
@@ -436,11 +437,13 @@ paths:
             minimum: 0
       responses:
         "200":
-          description: A newest-first page of activity.
+          description: A newest-first page of activity (optionally filtered).
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ActivityPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":

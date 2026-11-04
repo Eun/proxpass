@@ -103,8 +103,8 @@ type Repository interface {
 	// limit/offset pagination; DeleteActivityOlderThan enforces retention
 	// and returns how many rows it removed.
 	AddActivityEvent(ctx context.Context, event *models.ActivityEvent) error
-	ListActivity(ctx context.Context, limit, offset int) ([]*models.ActivityEvent, error)
-	CountActivity(ctx context.Context) (int, error)
+	ListActivity(ctx context.Context, limit, offset int, filter *string) ([]*models.ActivityEvent, error)
+	CountActivity(ctx context.Context, filter *string) (int, error)
 	DeleteActivityOlderThan(ctx context.Context, cutoff time.Time) (int, error)
 
 	// Access check (used by the proxy)

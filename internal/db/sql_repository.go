@@ -1061,18 +1061,33 @@ func (r *sqlRepo) AddActivityEvent(ctx context.Context, event *models.ActivityEv
 // falls back to a sane default so a caller cannot ask for an unbounded scan;
 // offset is clamped to >= 0. occurred_at ties are broken by id DESC so the
 // order is stable across pages even when several events share a second.
-func (r *sqlRepo) ListActivity(ctx context.Context, limit, offset int) ([]*models.ActivityEvent, error) {
+// activityFilterFields are the activity-log columns the ?filter= accepts. The
+// params blob is not filterable (it is free-form per event kind).
+var activityFilterFields = filter.FieldSpecMap{
+	"actor":    {Column: "actor"},
+	"event_id": {Column: "event_id"},
+}
+
+func (r *sqlRepo) ListActivity(
+	ctx context.Context, limit, offset int, rawFilter *string,
+) ([]*models.ActivityEvent, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	if offset < 0 {
 		offset = 0
 	}
-	rows, err := r.db.QueryContext(ctx, r.d.rebind(
-		`SELECT id, event_id, actor, occurred_at, params
-		 FROM activity_log
-		 ORDER BY occurred_at DESC, id DESC
-		 LIMIT ? OFFSET ?`), limit, offset)
+	where, args, err := filter.BuildWhere(rawFilter, activityFilterFields)
+	if err != nil {
+		return nil, err
+	}
+	q := "SELECT id, event_id, actor, occurred_at, params FROM activity_log"
+	if where != "" {
+		q += " WHERE " + where
+	}
+	q += " ORDER BY occurred_at DESC, id DESC LIMIT ? OFFSET ?"
+	args = append(args, limit, offset)
+	rows, err := r.db.QueryContext(ctx, r.d.rebind(q), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1092,10 +1107,19 @@ func (r *sqlRepo) ListActivity(ctx context.Context, limit, offset int) ([]*model
 	return list, rows.Err()
 }
 
-// CountActivity returns the total number of events, for pagination.
-func (r *sqlRepo) CountActivity(ctx context.Context) (int, error) {
+// CountActivity returns the total number of events matching the optional filter,
+// for pagination (so the page count reflects the filtered set, not the whole log).
+func (r *sqlRepo) CountActivity(ctx context.Context, rawFilter *string) (int, error) {
+	where, args, err := filter.BuildWhere(rawFilter, activityFilterFields)
+	if err != nil {
+		return 0, err
+	}
+	q := "SELECT COUNT(*) FROM activity_log"
+	if where != "" {
+		q += " WHERE " + where
+	}
 	var n int
-	if err := r.queryRow(ctx, "SELECT COUNT(*) FROM activity_log").Scan(&n); err != nil {
+	if err := r.queryRow(ctx, q, args...).Scan(&n); err != nil {
 		return 0, err
 	}
 	return n, nil

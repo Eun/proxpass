@@ -28,7 +28,7 @@ func TestActivityRoundTrips(t *testing.T) {
 	at := time.Now().Truncate(time.Second)
 	addEvent(t, r, "instance.added", at, map[string]any{"name": testInstanceName, "id": float64(7)})
 
-	list, err := r.ListActivity(t.Context(), 10, 0)
+	list, err := r.ListActivity(t.Context(), 10, 0, nil)
 	if err != nil {
 		t.Fatalf("ListActivity: %v", err)
 	}
@@ -57,25 +57,25 @@ func TestActivityNewestFirstAndPagination(t *testing.T) {
 			map[string]any{"n": float64(i)})
 	}
 
-	if n, err := r.CountActivity(t.Context()); err != nil || n != 5 {
+	if n, err := r.CountActivity(t.Context(), nil); err != nil || n != 5 {
 		t.Fatalf("CountActivity = %d, %v; want 5", n, err)
 	}
 
-	page1, err := r.ListActivity(t.Context(), 2, 0)
+	page1, err := r.ListActivity(t.Context(), 2, 0, nil)
 	if err != nil {
 		t.Fatalf("ListActivity page1: %v", err)
 	}
 	if len(page1) != 2 || page1[0].Params["n"] != float64(4) || page1[1].Params["n"] != float64(3) {
 		t.Fatalf("page1 not newest-first: %v", summarize(page1))
 	}
-	page2, err := r.ListActivity(t.Context(), 2, 2)
+	page2, err := r.ListActivity(t.Context(), 2, 2, nil)
 	if err != nil {
 		t.Fatalf("ListActivity page2: %v", err)
 	}
 	if len(page2) != 2 || page2[0].Params["n"] != float64(2) || page2[1].Params["n"] != float64(1) {
 		t.Fatalf("page2 wrong: %v", summarize(page2))
 	}
-	page3, err := r.ListActivity(t.Context(), 2, 4)
+	page3, err := r.ListActivity(t.Context(), 2, 4, nil)
 	if err != nil {
 		t.Fatalf("ListActivity page3: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestActivityDeleteOlderThan(t *testing.T) {
 	if removed != 1 {
 		t.Fatalf("removed %d, want 1", removed)
 	}
-	list, _ := r.ListActivity(t.Context(), 10, 0)
+	list, _ := r.ListActivity(t.Context(), 10, 0, nil)
 	if len(list) != 2 {
 		t.Fatalf("after prune %d events remain, want 2", len(list))
 	}
@@ -123,11 +123,47 @@ func TestActivityDeleteOlderThan(t *testing.T) {
 func TestActivityEmptyParams(t *testing.T) {
 	r := newTestRepo(t)
 	addEvent(t, r, "discovery.ran", time.Now(), nil)
-	list, err := r.ListActivity(t.Context(), 10, 0)
+	list, err := r.ListActivity(t.Context(), 10, 0, nil)
 	if err != nil || len(list) != 1 {
 		t.Fatalf("ListActivity = %d, %v", len(list), err)
 	}
 	if list[0].Params == nil {
 		t.Error("params decoded as nil; want an empty object")
+	}
+}
+
+// ListActivity and CountActivity honor the optional filter, applying it before
+// pagination so the page and the total reflect the filtered set.
+func TestActivityFilter(t *testing.T) {
+	r := newTestRepo(t)
+	base := time.Now().Truncate(time.Second)
+	addEvent(t, r, "client.added", base, nil)
+	addEvent(t, r, "client.added", base.Add(time.Second), nil)
+	addEvent(t, r, "group.added", base.Add(2*time.Second), nil)
+
+	f := `{"event_id":{"$eq":"client.added"}}`
+	list, err := r.ListActivity(t.Context(), 100, 0, &f)
+	if err != nil {
+		t.Fatalf("ListActivity: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("filtered list = %d, want 2 client.added", len(list))
+	}
+	for _, e := range list {
+		if e.EventID != "client.added" {
+			t.Errorf("unexpected event %q in filtered list", e.EventID)
+		}
+	}
+
+	// Count must reflect the filter, not the whole log.
+	n, err := r.CountActivity(t.Context(), &f)
+	if err != nil {
+		t.Fatalf("CountActivity: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("filtered count = %d, want 2", n)
+	}
+	if all, _ := r.CountActivity(t.Context(), nil); all != 3 {
+		t.Errorf("unfiltered count = %d, want 3", all)
 	}
 }
