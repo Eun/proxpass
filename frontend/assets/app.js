@@ -45,6 +45,28 @@ function app() {
         listFilter: null,
         filterLabel: '',
 
+        // filterBuilder is the visual editor for the active list filter: a panel
+        // of condition rows, each a {field, op, value} combobox triple, ANDed
+        // together. It covers only the simple, top-level shape
+        // ({field:{$op:value}, ...}); a filter with nested logical operators
+        // ($and/$or/$nor/$not) is "advanced" and shown read-only instead of in
+        // the builder. open toggles the panel; rows holds the editable
+        // conditions; advanced is set when the active filter is too complex to
+        // edit here.
+        filterBuilder: { open: false, rows: [], advanced: false },
+
+        // Human-readable labels for the comparison operators the builder offers.
+        // Only the non-nested operators -- the builder deliberately does not do
+        // $and/$or/$nor/$not.
+        filterOps: [
+            { op: '$eq', label: 'equals' },
+            { op: '$ieq', label: 'equals (ignore case)' },
+            { op: '$contains', label: 'contains' },
+            { op: '$icontains', label: 'contains (ignore case)' },
+            { op: '$startswith', label: 'starts with' },
+            { op: '$endswith', label: 'ends with' },
+        ],
+
         // rows for the current resource view; cache keeps the last-loaded list
         // for each resource so cross-resource lookups (e.g. instance names on
         // the guests table) and the dashboard counts work without refetching.
@@ -124,6 +146,17 @@ function app() {
                     // "Proxmox Node" in the UI; the API resource is still an instance.
                     singular: 'Proxmox Node', path: '/instances',
                     create: true, edit: true, remove: true,
+                    // Fields the visual filter builder offers for this list; they
+                    // mirror the server's accepted filter fields (listfilter.go).
+                    filterFields: [
+                        { key: 'name', label: 'Name' },
+                        { key: 'node', label: 'Node' },
+                        { key: 'api_url', label: 'API URL' },
+                        { key: 'console_transport', label: 'Console' },
+                        { key: 'ssh_host', label: 'SSH host' },
+                        { key: 'ssh_user', label: 'SSH user' },
+                        { key: 'id', label: 'ID' },
+                    ],
                     columns: [
                         { key: 'name', label: 'Name' },
                         { key: 'api_url', label: 'API URL' },
@@ -194,6 +227,14 @@ function app() {
                     // The Instance column renders the node NAME, so the instances
                     // cache must be present.
                     needsCaches: ['instances'],
+                    filterFields: [
+                        { key: 'name', label: 'Name' },
+                        { key: 'status', label: 'Status' },
+                        { key: 'type', label: 'Type' },
+                        { key: 'proxmox_id', label: 'VMID' },
+                        { key: 'instance_id', label: 'Node ID' },
+                        { key: 'id', label: 'ID' },
+                    ],
                     columns: [
                         { key: 'type', label: 'Type' },
                         { key: 'name', label: 'Name' },
@@ -214,6 +255,10 @@ function app() {
                     create: true, edit: true, remove: true,
                     // The Groups column renders group NAMES.
                     needsCaches: ['groups'],
+                    filterFields: [
+                        { key: 'name', label: 'Name' },
+                        { key: 'id', label: 'ID' },
+                    ],
                     columns: [
                         { key: 'name', label: 'Name' },
                         { key: 'public_keys', label: 'Keys', render: (v) => (v || []).length + ' key(s)' },
@@ -233,6 +278,10 @@ function app() {
                     create: true, edit: true, remove: true,
                     // The Members column renders client NAMES.
                     needsCaches: ['clients'],
+                    filterFields: [
+                        { key: 'name', label: 'Name' },
+                        { key: 'id', label: 'ID' },
+                    ],
                     columns: [
                         { key: 'name', label: 'Name' },
                         { key: 'client_ids', label: 'Members', render: (v) => self.namesFromList('clients', v) },
@@ -268,6 +317,10 @@ function app() {
                     // (tokens, the DB password) arrive already masked by the
                     // server -- the browser never sees their real values.
                     readOnly: true,
+                    filterFields: [
+                        { key: 'key', label: 'Key' },
+                        { key: 'value', label: 'Value' },
+                    ],
                     // Give each row a stable id (its key) for list rendering.
                     unwrap: (data) => (data || []).map((s) => ({ ...s, id: s.key })),
                     // Two columns: the environment variable (Key) and its value,
@@ -436,6 +489,10 @@ function app() {
             this.error = '';
             this.listFilter = opts.filter || null;
             this.filterLabel = opts.filterLabel || '';
+            // Rebuild the visual filter editor from whatever filter is now active
+            // (from a List action, a bookmarked URL, or none), so the panel always
+            // reflects the real filter.
+            this.syncFilterBuilder();
             this.modal.open = false;
             // The activity detail is a non-modal sidebar: it stays open while the
             // user clicks between rows, and only closes on a deliberate close or
@@ -1189,6 +1246,12 @@ function app() {
             return {
                 singular: 'access rule',
                 path: self.accessPath,
+                filterFields: [
+                    { key: 'type', label: 'Subject type' },
+                    { key: 'subject_id', label: 'Subject ID' },
+                    { key: targetKey, label: targetLabel + ' ID' },
+                    { key: 'id', label: 'ID' },
+                ],
                 columns: [
                     // Subject and target are shown by NAME. The subject's cache
                     // depends on the rule type (client vs group).
@@ -1282,6 +1345,122 @@ function app() {
         // view unfiltered, updating the URL hash to match.
         clearListFilter() {
             this.go(this.view);
+        },
+
+        // ---- visual filter builder ----
+
+        // filterFields returns the fields the current view offers for filtering,
+        // or [] when the view is not filterable (so the UI hides the builder).
+        filterFields() {
+            return this.currentResource().filterFields || [];
+        },
+
+        // toggleFilterBuilder opens/closes the builder panel. On open it seeds an
+        // empty condition row when there is nothing to edit yet, so the operator
+        // sees a ready-to-fill row.
+        toggleFilterBuilder() {
+            this.filterBuilder.open = !this.filterBuilder.open;
+            if (this.filterBuilder.open && !this.filterBuilder.advanced &&
+                this.filterBuilder.rows.length === 0) {
+                this.addFilterRow();
+            }
+        },
+
+        // addFilterRow appends an empty condition, defaulting the field to the
+        // first filterable field and the operator to equals.
+        addFilterRow() {
+            const fields = this.filterFields();
+            this.filterBuilder.rows.push({
+                field: fields.length ? fields[0].key : '',
+                op: '$eq',
+                value: '',
+            });
+        },
+
+        // removeFilterRow drops one condition row.
+        removeFilterRow(i) {
+            this.filterBuilder.rows.splice(i, 1);
+        },
+
+        // applyFilterBuilder turns the condition rows into a filter JSON and
+        // navigates to the same view with it. Rows with an empty value are
+        // dropped; no rows means clear the filter. Conditions on the SAME field
+        // are merged into one field object ({field:{$op1:…,$op2:…}}) -- the
+        // backend ANDs multiple operators on a field -- which also keeps the JSON
+        // a valid object (no duplicate keys).
+        applyFilterBuilder() {
+            const obj = {};
+            for (const r of this.filterBuilder.rows) {
+                if (!r.field || r.value === '' || r.value === null || r.value === undefined) continue;
+                if (!obj[r.field]) obj[r.field] = {};
+                obj[r.field][r.op] = String(r.value);
+            }
+            if (Object.keys(obj).length === 0) {
+                this.go(this.view);
+                return;
+            }
+            this.go(this.view, {
+                filter: JSON.stringify(obj),
+                filterLabel: this.describeFilter(obj),
+            });
+        },
+
+        // describeFilter renders a short human-readable summary of a simple
+        // filter object, used for the banner text (e.g. "status equals running,
+        // name contains web").
+        describeFilter(obj) {
+            const parts = [];
+            for (const field of Object.keys(obj)) {
+                const label = this.filterFieldLabel(field);
+                for (const op of Object.keys(obj[field])) {
+                    parts.push(label + ' ' + this.opLabel(op) + ' "' + obj[field][op] + '"');
+                }
+            }
+            return parts.length ? 'Filtered: ' + parts.join(', ') : '';
+        },
+
+        filterFieldLabel(key) {
+            const f = this.filterFields().find((x) => x.key === key);
+            return f ? f.label : key;
+        },
+        opLabel(op) {
+            const o = this.filterOps.find((x) => x.op === op);
+            return o ? o.label : op;
+        },
+
+        // syncFilterBuilder rebuilds the editor rows from the active listFilter.
+        // A simple filter ({field:{$op:value,…},…} with only scalar comparison
+        // operators) becomes editable rows; anything with nested logical
+        // operators, arrays or objects is flagged "advanced" and shown read-only,
+        // so the builder never silently misrepresents a filter it cannot edit.
+        syncFilterBuilder() {
+            const b = this.filterBuilder;
+            b.advanced = false;
+            if (!this.listFilter) { b.rows = []; return; }
+            let obj;
+            try { obj = JSON.parse(this.listFilter); } catch (_) { b.advanced = true; b.rows = []; return; }
+            const known = new Set(this.filterOps.map((o) => o.op));
+            const rows = [];
+            let simple = (obj && typeof obj === 'object' && !Array.isArray(obj));
+            if (simple) {
+                for (const field of Object.keys(obj)) {
+                    const ops = obj[field];
+                    if (!ops || typeof ops !== 'object' || Array.isArray(ops)) { simple = false; break; }
+                    for (const op of Object.keys(ops)) {
+                        const v = ops[op];
+                        // Only scalar values on known comparison operators are editable.
+                        if (!known.has(op.toLowerCase()) || v === null || typeof v === 'object') { simple = false; break; }
+                        rows.push({ field, op: op.toLowerCase(), value: String(v) });
+                    }
+                    if (!simple) break;
+                }
+            }
+            if (simple) {
+                b.rows = rows;
+            } else {
+                b.advanced = true;
+                b.rows = [];
+            }
         },
 
         // nameSelectName resolves the display name for a nameselect value, used to

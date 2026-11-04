@@ -353,9 +353,21 @@
                     <!-- Generic resource table -->
                     <template x-if="view !== 'dashboard' && view !== 'discover' && view !== 'policy' && view !== 'activity'">
                         <div class="bg-white rounded-lg shadow">
-                            <div class="flex items-center justify-between p-4 border-b">
-                                <div class="relative w-64 max-w-full">
-                                    <input type="text" x-model="search" placeholder="Filter…" class="form-input w-full rounded border-gray-300 text-sm">
+                            <div class="flex items-center justify-between p-4 border-b gap-3">
+                                <div class="flex items-center gap-2">
+                                    <div class="relative w-64 max-w-full">
+                                        <input type="text" x-model="search" placeholder="Search…" class="form-input w-full rounded border-gray-300 text-sm">
+                                    </div>
+                                    <!-- Toggle the visual filter builder (server-side filter),
+                                         distinct from the client-side quick Search above. Only
+                                         shown for views that declare filterable fields. -->
+                                    <template x-if="filterFields().length">
+                                        <button @click="toggleFilterBuilder()"
+                                                class="text-sm font-medium px-3 py-2 rounded border transition"
+                                                :class="(filterBuilder.open || listFilter) ? 'border-primary text-primary bg-blue-50' : 'border-gray-300 text-gray-600 hover:bg-gray-50'">
+                                            Filter<span x-show="listFilter" class="ml-1 inline-flex items-center justify-center text-xs bg-primary text-white rounded-full w-4 h-4">●</span>
+                                        </button>
+                                    </template>
                                 </div>
                                 <template x-if="currentResource().create">
                                     <button @click="openCreate()" class="bg-primary hover:bg-primary-dark text-white text-sm font-medium px-4 py-2 rounded transition">
@@ -363,11 +375,56 @@
                                     </button>
                                 </template>
                             </div>
-                            <!-- List filter banner: shown when a ?filter= is active on this
-                                 view (e.g. the "List" action on a Node/Guest row, or a
-                                 bookmarked #view?filter=… URL). filterLabel names the target
-                                 when known; otherwise a generic note with the raw filter. -->
-                            <template x-if="listFilter">
+
+                            <!-- Visual filter builder: one row per condition, each a
+                                 field · operation · value triple, ANDed together. Covers only
+                                 the simple top-level shape; an advanced (nested) filter is shown
+                                 read-only below instead. -->
+                            <template x-if="filterBuilder.open && filterFields().length">
+                                <div class="px-4 py-3 border-b bg-gray-50 space-y-2">
+                                    <template x-if="filterBuilder.advanced">
+                                        <div class="text-sm text-gray-600">
+                                            This filter uses advanced operators and can’t be edited here.
+                                            <code class="text-xs break-all" x-text="listFilter"></code>
+                                        </div>
+                                    </template>
+                                    <template x-if="!filterBuilder.advanced">
+                                        <div class="space-y-2">
+                                            <template x-for="(row, i) in filterBuilder.rows" :key="i">
+                                                <div class="flex flex-wrap items-center gap-2">
+                                                    <select x-model="row.field" class="form-select rounded border-gray-300 text-sm">
+                                                        <template x-for="f in filterFields()" :key="f.key">
+                                                            <option :value="f.key" x-text="f.label"></option>
+                                                        </template>
+                                                    </select>
+                                                    <select x-model="row.op" class="form-select rounded border-gray-300 text-sm">
+                                                        <template x-for="o in filterOps" :key="o.op">
+                                                            <option :value="o.op" x-text="o.label"></option>
+                                                        </template>
+                                                    </select>
+                                                    <input type="text" x-model="row.value" placeholder="value"
+                                                           @keydown.enter="applyFilterBuilder()"
+                                                           style="min-width:8rem"
+                                                           class="form-input rounded border-gray-300 text-sm flex-1">
+                                                    <button @click="removeFilterRow(i)" title="Remove condition"
+                                                            class="text-gray-400 hover:text-red-600 text-lg leading-none px-1">×</button>
+                                                </div>
+                                            </template>
+                                            <div class="flex items-center gap-3 pt-1">
+                                                <button @click="addFilterRow()" class="text-sm text-primary hover:underline">+ Add condition</button>
+                                                <div class="flex-1"></div>
+                                                <button @click="clearListFilter()" class="text-sm text-gray-500 hover:underline">Clear</button>
+                                                <button @click="applyFilterBuilder()" class="bg-primary hover:bg-primary-dark text-white text-sm font-medium px-4 py-1.5 rounded transition">Apply</button>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+                            </template>
+
+                            <!-- List filter banner: shown when a ?filter= is active but the
+                                 builder panel is closed, so the operator still sees (and can
+                                 clear) the active filter. filterLabel describes it in words. -->
+                            <template x-if="listFilter && !filterBuilder.open">
                                 <div class="flex items-center justify-between gap-3 px-4 py-2 bg-amber-50 border-b border-amber-200 text-sm text-amber-800">
                                     <span x-text="filterLabel || ('Filtered: ' + listFilter)"></span>
                                     <button @click="clearListFilter()" class="text-amber-800 hover:underline font-medium whitespace-nowrap">Clear filter</button>
