@@ -154,4 +154,28 @@ func TestListAccessRulesSubjectFilter(t *testing.T) {
 	if len(rules) != 1 || rules[0].Type != models.RuleClient {
 		t.Fatalf("subject=client filter = %+v, want one client rule", rules)
 	}
+
+	// subject OR: group OR client -> both rules (cross-column OR).
+	f = `{"subject":{"$or":[` +
+		`{"$eq":"group:` + strconv.FormatInt(grp.ID, 10) + `"},` +
+		`{"$eq":"client:` + strconv.FormatInt(c.ID, 10) + `"}]}}`
+	rules, err = repo.ListAccessRules(ctx, strp(f))
+	if err != nil {
+		t.Fatalf("subject OR filter: %v", err)
+	}
+	if len(rules) != 2 {
+		t.Fatalf("subject OR filter = %d rules, want 2", len(rules))
+	}
+	kinds := map[models.RuleType]bool{}
+	for _, r := range rules {
+		kinds[r.Type] = true
+	}
+	if !kinds[models.RuleGroup] || !kinds[models.RuleClient] {
+		t.Errorf("subject OR should include both a group and a client rule, got %+v", rules)
+	}
+
+	// A bad subject value is a client error (invalid filter -> 400 upstream).
+	if _, err := repo.ListAccessRules(ctx, strp(`{"subject":{"$eq":"nope"}}`)); !errors.Is(err, filter.ErrInvalidFilter) {
+		t.Errorf("bad subject value: err = %v, want ErrInvalidFilter", err)
+	}
 }

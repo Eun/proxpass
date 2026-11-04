@@ -34,7 +34,7 @@ const (
 // colSubject is a virtual filter field: a rule's subject is a client OR a group
 // and the two id spaces overlap, so subject_id alone is ambiguous. A filter on
 // "subject" carries "type:id" (e.g. "group:1") and is rewritten into a type +
-// subject_id match before the query is built (see rewriteSubjectFilter), so the
+// subject_id match built directly in SQL (see appendAccessFilter), so the
 // URL stays clean ({"subject":{"$eq":"group:1"}}) while the match is exact.
 const colSubject = "subject"
 
@@ -53,76 +53,161 @@ var (
 	}
 )
 
-// rewriteSubjectFilter expands a top-level "subject" filter entry into separate
-// "type" and "subject_id" conditions, so the compound subject stays a single
-// clean field in the URL but matches both columns. It handles the shape the UI
-// produces: {"subject":{"$eq":"type:id"}}. A subject value without a "type:id"
-// shape, or subject nested under a logical operator, is left untouched -- the
-// filter engine then reports it (an unknown field yields a 400), rather than
-// this silently mis-rewriting something it does not understand. rawFilter and
-// all other fields pass through unchanged.
-func rewriteSubjectFilter(rawFilter *string) (*string, error) {
-	if rawFilter == nil || *rawFilter == "" {
-		return rawFilter, nil
-	}
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(*rawFilter), &obj); err != nil {
-		// Not an object we can rewrite; hand it on so the engine reports it.
-		return rawFilter, nil //nolint:nilerr // malformed JSON is the engine's to reject
-	}
-	subjRaw, ok := obj[colSubject]
-	if !ok {
-		return rawFilter, nil
-	}
-	var ops map[string]string
-	if err := json.Unmarshal(subjRaw, &ops); err != nil {
-		return rawFilter, nil //nolint:nilerr // non-scalar subject: leave for the engine
-	}
-	eq, ok := ops[filter.OpEq]
-	if !ok || len(ops) != 1 {
-		return rawFilter, nil
-	}
-	sep := strings.IndexByte(eq, ':')
-	if sep <= 0 {
-		return rawFilter, nil
-	}
-	ruleType, subjectID := eq[:sep], eq[sep+1:]
-	delete(obj, colSubject)
-	obj[colType] = json.RawMessage(`{"` + filter.OpEq + `":` + strconvQuote(ruleType) + `}`)
-	obj[colSubjectID] = json.RawMessage(`{"` + filter.OpEq + `":` + strconvQuote(subjectID) + `}`)
-	out, err := json.Marshal(obj)
-	if err != nil {
-		return nil, err
-	}
-	s := string(out)
-	return &s, nil
-}
+// Subject logical operators, named so they are not repeated as string literals.
+const (
+	opOr  = "$or"
+	opAnd = "$and"
+	opNor = "$nor"
+	opNot = "$not"
+)
 
-// strconvQuote JSON-quotes a string value for embedding in a raw filter object.
-func strconvQuote(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
-}
-
-// appendFilter appends a WHERE clause built from rawFilter to baseQuery and
-// returns the final query plus its bound args. When the filter is absent the
-// base query is returned unchanged. The ORDER BY, if any, must be appended by
-// the caller after the WHERE -- so baseQuery here must not yet carry one.
-func appendFilter(
+// appendAccessFilter builds the access-rule list query, which also accepts
+// the virtual "subject" field. A rule's subject is a client OR a group and the
+// two id spaces overlap, so a subject value is "type:id" and must match BOTH the
+// type and subject_id columns -- a cross-column condition the generic engine
+// cannot express. This splits the subject entry out, builds its SQL directly
+// (supporting $eq and $or/$and/$nor/$not of $eq terms, so a subject OR works),
+// runs BuildWhere on the remaining fields, and ANDs the two.
+func appendAccessFilter(
 	baseQuery, orderBy string, rawFilter *string, fields filter.FieldSpecMap,
 ) (query string, args []any, err error) {
-	where, args, err := filter.BuildWhere(rawFilter, fields)
+	rest, subjectExpr, hasSubject, err := splitSubjectFilter(rawFilter)
 	if err != nil {
 		return "", nil, err
 	}
-	query = baseQuery
+	where, args, err := filter.BuildWhere(rest, fields)
+	if err != nil {
+		return "", nil, err
+	}
+	if hasSubject {
+		subjSQL, subjArgs, serr := buildSubjectWhere(subjectExpr)
+		if serr != nil {
+			return "", nil, serr
+		}
+		if where == "" {
+			where = subjSQL
+		} else {
+			where = "(" + where + " AND " + subjSQL + ")"
+		}
+		args = append(args, subjArgs...)
+	}
+	return assembleFilterQuery(baseQuery, orderBy, where), args, nil
+}
+
+func assembleFilterQuery(baseQuery, orderBy, where string) string {
+	q := baseQuery
 	if where != "" {
-		query += " WHERE " + where
+		q += " WHERE " + where
 	}
 	if orderBy != "" {
-		query += " " + orderBy
+		q += " " + orderBy
 	}
-	return query, args, nil
+	return q
+}
+
+// splitSubjectFilter removes a top-level "subject" entry from rawFilter and
+// returns the remaining filter (nil when nothing is left), the subject operator
+// expression, and whether a subject entry was present. A rawFilter that is not a
+// JSON object is passed through unchanged (BuildWhere then reports it).
+func splitSubjectFilter(rawFilter *string) (rest *string, subjectExpr json.RawMessage, has bool, err error) {
+	if rawFilter == nil || *rawFilter == "" {
+		return rawFilter, nil, false, nil
+	}
+	var obj map[string]json.RawMessage
+	if jerr := json.Unmarshal([]byte(*rawFilter), &obj); jerr != nil {
+		return rawFilter, nil, false, nil //nolint:nilerr // malformed JSON is BuildWhere's to reject
+	}
+	subjectExpr, has = obj[colSubject]
+	if !has {
+		return rawFilter, nil, false, nil
+	}
+	delete(obj, colSubject)
+	if len(obj) == 0 {
+		return nil, subjectExpr, true, nil
+	}
+	out, merr := json.Marshal(obj)
+	if merr != nil {
+		return nil, nil, false, merr
+	}
+	s := string(out)
+	return &s, subjectExpr, true, nil
+}
+
+// buildSubjectWhere turns a subject operator expression into SQL over the type
+// and subject_id columns. Supported shapes mirror the filter language, scoped to
+// $eq terms whose value is "type:id":
+//
+//	{"$eq":"group:1"}                                -> (type = ? AND subject_id = ?)
+//	{"$or":[{"$eq":"group:1"},{"$eq":"client:2"}]}   -> (…) OR (…)
+//	{"$and":[…]} / {"$nor":[…]} / {"$not":{"$eq":…}}  likewise
+//
+// Anything else is a client error (reported as an invalid filter -> 400).
+func buildSubjectWhere(expr json.RawMessage) (where string, args []any, err error) {
+	var ops map[string]json.RawMessage
+	if uerr := json.Unmarshal(expr, &ops); uerr != nil {
+		return "", nil, fmt.Errorf("%w: subject must be an operator object", filter.ErrInvalidFilter)
+	}
+	if len(ops) != 1 {
+		return "", nil, fmt.Errorf("%w: subject takes exactly one operator", filter.ErrInvalidFilter)
+	}
+	for op, val := range ops {
+		switch strings.ToLower(op) {
+		case filter.OpEq:
+			return subjectEqTerm(val)
+		case opOr, opAnd, opNor:
+			return subjectLogical(strings.ToLower(op), val)
+		case opNot:
+			inner, innerArgs, ierr := buildSubjectWhere(val)
+			if ierr != nil {
+				return "", nil, ierr
+			}
+			return "NOT " + inner, innerArgs, nil
+		default:
+			return "", nil, fmt.Errorf("%w: operator %q is not supported on subject", filter.ErrInvalidFilter, op)
+		}
+	}
+	return "", nil, fmt.Errorf("%w: empty subject filter", filter.ErrInvalidFilter)
+}
+
+// subjectEqTerm builds one (type = ? AND subject_id = ?) group from a
+// JSON-string "type:id" value.
+func subjectEqTerm(val json.RawMessage) (where string, args []any, err error) {
+	var s string
+	if uerr := json.Unmarshal(val, &s); uerr != nil {
+		return "", nil, fmt.Errorf("%w: subject value must be a \"type:id\" string", filter.ErrInvalidFilter)
+	}
+	sep := strings.IndexByte(s, ':')
+	if sep <= 0 || sep == len(s)-1 {
+		return "", nil, fmt.Errorf("%w: subject value %q must be \"type:id\"", filter.ErrInvalidFilter, s)
+	}
+	return "(" + colType + " = ? AND " + colSubjectID + " = ?)", []any{s[:sep], s[sep+1:]}, nil
+}
+
+// subjectLogical combines an array of subject $eq terms with AND/OR, or (for
+// $nor) negates their OR.
+func subjectLogical(op string, val json.RawMessage) (where string, args []any, err error) {
+	var arr []json.RawMessage
+	if uerr := json.Unmarshal(val, &arr); uerr != nil || len(arr) == 0 {
+		return "", nil, fmt.Errorf("%w: subject %s needs a non-empty array", filter.ErrInvalidFilter, op)
+	}
+	parts := make([]string, 0, len(arr))
+	for _, el := range arr {
+		part, partArgs, perr := buildSubjectWhere(el)
+		if perr != nil {
+			return "", nil, perr
+		}
+		parts = append(parts, part)
+		args = append(args, partArgs...)
+	}
+	sep := " AND "
+	if op == opOr || op == opNor {
+		sep = " OR "
+	}
+	joined := "(" + strings.Join(parts, sep) + ")"
+	if op == opNor {
+		return "NOT " + joined, args, nil
+	}
+	return joined, args, nil
 }
 
 //go:embed migrations/sqlite/*.sql migrations/postgres/*.sql
@@ -690,11 +775,7 @@ func (r *sqlRepo) RemoveGroup(ctx context.Context, id int64) error {
 func (r *sqlRepo) ListAccessRules(
 	ctx context.Context, rawFilter *string,
 ) ([]*models.AccessRuleRow, error) {
-	rawFilter, err := rewriteSubjectFilter(rawFilter)
-	if err != nil {
-		return nil, err
-	}
-	q, args, err := appendFilter(
+	q, args, err := appendAccessFilter(
 		"SELECT id, type, subject_id, guest_id FROM access_rules",
 		"ORDER BY id", rawFilter, accessRuleFields)
 	if err != nil {
@@ -777,11 +858,7 @@ const (
 func (r *sqlRepo) ListInstanceAccessRules(
 	ctx context.Context, rawFilter *string,
 ) ([]*models.InstanceAccessRuleRow, error) {
-	rawFilter, err := rewriteSubjectFilter(rawFilter)
-	if err != nil {
-		return nil, err
-	}
-	q, args, err := appendFilter(
+	q, args, err := appendAccessFilter(
 		"SELECT id, type, subject_id, "+instanceRuleCol+" FROM "+instanceRuleTable,
 		"ORDER BY id", rawFilter, instanceAccessRuleFields)
 	if err != nil {
