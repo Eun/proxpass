@@ -317,16 +317,19 @@
                                         <div class="space-y-2">
                                             <template x-for="(row, i) in filterBuilder.rows" :key="i">
                                                 <div class="flex flex-wrap items-center gap-2">
-                                                    <template x-if="filterRowIsFirstOfField(i)">
-                                                        <span class="text-xs text-gray-400 w-12 text-right">where</span>
-                                                    </template>
-                                                    <template x-if="!filterRowIsFirstOfField(i)">
-                                                        <select x-model="row.join" x-effect="$nextTick(() => $el.value = row.join)" class="form-select rounded border-gray-300 text-xs w-12 px-1">
+                                                    <!-- Join slot: a single fixed-width box that shows "where" for the
+                                                         first condition of a field and an AND/OR/NOR select otherwise.
+                                                         x-show (not x-if) toggles the two so the row never churns its
+                                                         DOM when fields change -- which previously left a stale "where"
+                                                         beside a join select. -->
+                                                    <div class="w-20 shrink-0">
+                                                        <span x-show="filterRowIsFirstOfField(i)" class="block text-xs text-gray-400 text-right pr-1">where</span>
+                                                        <select x-show="!filterRowIsFirstOfField(i)" x-model="row.join" x-effect="$nextTick(() => $el.value = row.join)" class="form-select rounded border-gray-300 text-xs w-full px-2">
                                                             <template x-for="j in filterJoins" :key="j.join">
                                                                 <option :value="j.join" x-text="j.label"></option>
                                                             </template>
                                                         </select>
-                                                    </template>
+                                                    </div>
                                                     <select x-model="row.field" x-effect="filterFields(); $nextTick(() => $el.value = row.field)" class="form-select rounded border-gray-300 text-sm">
                                                         <template x-for="f in filterFields()" :key="f.key">
                                                             <option :value="f.key" x-text="f.label"></option>
@@ -477,19 +480,19 @@
                                         <div class="space-y-2">
                                             <template x-for="(row, i) in filterBuilder.rows" :key="i">
                                                 <div class="flex flex-wrap items-center gap-2">
-                                                    <!-- Join to the previous condition ON THE SAME FIELD (AND/OR/NOR);
-                                                         the first condition of a field shows "where" instead, since
-                                                         logical operators only nest within one field. -->
-                                                    <template x-if="filterRowIsFirstOfField(i)">
-                                                        <span class="text-xs text-gray-400 w-12 text-right">where</span>
-                                                    </template>
-                                                    <template x-if="!filterRowIsFirstOfField(i)">
-                                                        <select x-model="row.join" x-effect="$nextTick(() => $el.value = row.join)" class="form-select rounded border-gray-300 text-xs w-12 px-1">
+                                                    <!-- Join slot: "where" for the first condition of a field, else an
+                                                         AND/OR/NOR select. A single fixed-width box toggled with x-show
+                                                         (not x-if) so the row never churns its DOM when fields change --
+                                                         which previously left a stale "where" beside a join select.
+                                                         Logical operators only nest within one field. -->
+                                                    <div class="w-20 shrink-0">
+                                                        <span x-show="filterRowIsFirstOfField(i)" class="block text-xs text-gray-400 text-right pr-1">where</span>
+                                                        <select x-show="!filterRowIsFirstOfField(i)" x-model="row.join" x-effect="$nextTick(() => $el.value = row.join)" class="form-select rounded border-gray-300 text-xs w-full px-2">
                                                             <template x-for="j in filterJoins" :key="j.join">
                                                                 <option :value="j.join" x-text="j.label"></option>
                                                             </template>
                                                         </select>
-                                                    </template>
+                                                    </div>
                                                     <!-- x-effect re-applies the bound value after the x-for options
                                                          render, so a select built from a loaded filter reflects
                                                          row.field/row.op instead of defaulting to the first option. -->
