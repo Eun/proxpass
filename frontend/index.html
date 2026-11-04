@@ -410,20 +410,20 @@
                                                             <option :value="o.op" x-text="o.label"></option>
                                                         </template>
                                                     </select>
-                                                    <!-- Relation fields (e.g. a guest's Node) get a name picker whose
-                                                         options are the matching objects present in the list; plain
-                                                         fields get a free-text value input. -->
-                                                    <template x-if="filterFieldDef(row.field) && filterFieldDef(row.field).optionsCache">
+                                                    <!-- Relation fields (e.g. a guest's Node, an access rule's Subject)
+                                                         get a name picker whose options are the related objects present
+                                                         in the list; plain fields get a free-text value input. -->
+                                                    <template x-if="filterValueOptions(row.field)">
                                                         <select x-model="row.value" x-effect="filterValueOptions(row.field); $nextTick(() => $el.value = row.value)"
                                                                 style="min-width:8rem"
                                                                 class="form-select rounded border-gray-300 text-sm flex-1">
                                                             <option value="">(any)</option>
-                                                            <template x-for="o in filterValueOptions(row.field)" :key="o.id">
+                                                            <template x-for="o in filterValueOptions(row.field)" :key="o.key || o.id">
                                                                 <option :value="String(o.id)" x-text="o.name"></option>
                                                             </template>
                                                         </select>
                                                     </template>
-                                                    <template x-if="!(filterFieldDef(row.field) && filterFieldDef(row.field).optionsCache)">
+                                                    <template x-if="!filterValueOptions(row.field)">
                                                         <input type="text" x-model="row.value" placeholder="value"
                                                                @keydown.enter="applyFilterBuilder()"
                                                                style="min-width:8rem"

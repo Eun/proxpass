@@ -148,10 +148,11 @@ function app() {
                     create: true, edit: true, remove: true,
                     // Fields the visual filter builder offers for this list; they
                     // mirror the server's accepted filter fields (listfilter.go).
+                    // Order follows the table columns (then fields without a column).
                     filterFields: [
                         { key: 'name', label: 'Name' },
-                        { key: 'node', label: 'Node' },
                         { key: 'api_url', label: 'API URL' },
+                        { key: 'node', label: 'Node' },
                         { key: 'console_transport', label: 'Console' },
                         { key: 'ssh_host', label: 'SSH host' },
                         { key: 'ssh_user', label: 'SSH user' },
@@ -227,11 +228,12 @@ function app() {
                     // The Instance column renders the node NAME, so the instances
                     // cache must be present.
                     needsCaches: ['instances'],
+                    // Order follows the table columns (then fields without a column).
                     filterFields: [
-                        { key: 'name', label: 'Name' },
-                        { key: 'status', label: 'Status' },
                         { key: 'type', label: 'Type' },
+                        { key: 'name', label: 'Name' },
                         { key: 'proxmox_id', label: 'VMID' },
+                        { key: 'status', label: 'Status' },
                         // Filter by node by NAME: the value becomes a picker of the
                         // nodes that actually host a guest in the current list.
                         { key: 'instance_id', label: 'Node', optionsCache: 'instances' },
@@ -1248,9 +1250,13 @@ function app() {
             return {
                 singular: 'access rule',
                 path: self.accessPath,
+                // Order follows the table columns (then fields without a column).
                 filterFields: [
                     { key: 'type', label: 'Subject type' },
-                    { key: 'subject_id', label: 'Subject ID' },
+                    // The subject is a client OR a group depending on the rule's
+                    // type, so its picker is built from the subjects that appear in
+                    // the current rules (resolved to names via subjectName).
+                    { key: 'subject_id', label: 'Subject', optionsFn: () => self.subjectFilterOptions() },
                     // The target (guest or node) is picked by NAME, limited to the
                     // targets that appear in the current rules.
                     { key: targetKey, label: targetLabel, optionsCache: targetCache },
@@ -1447,15 +1453,22 @@ function app() {
             return this.filterFields().find((x) => x.key === key) || null;
         },
 
-        // filterValueOptions returns the {id, name} choices for a relation field
-        // (one with optionsCache, e.g. a guest's Node). The list is restricted to
-        // the ids that actually appear in the current rows for that field, so the
-        // picker only offers values that would match something -- "deeper objects
-        // only when they appear in the list". Falls back to the full cache if the
-        // rows carry no such ids yet.
+        // filterValueOptions returns the {id, name} choices for a relation field,
+        // or null when the field is a plain free-text value. A field supplies its
+        // choices either with optionsCache (a named cache, e.g. a guest's Node) or
+        // optionsFn (a function, e.g. an access rule's polymorphic Subject). For
+        // optionsCache the list is restricted to the ids that actually appear in
+        // the current rows for that field -- "deeper objects only when they appear
+        // in the list" -- falling back to the whole cache when the rows carry no
+        // such ids yet.
         filterValueOptions(fieldKey) {
             const def = this.filterFieldDef(fieldKey);
-            if (!def || !def.optionsCache) return null;
+            if (!def) return null;
+            if (def.optionsFn) {
+                return (def.optionsFn() || []).slice()
+                    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+            }
+            if (!def.optionsCache) return null;
             const all = this.cache[def.optionsCache] || [];
             const present = new Set();
             for (const row of (this.rows || [])) {
@@ -1465,19 +1478,42 @@ function app() {
             const scoped = present.size
                 ? all.filter((o) => present.has(String(o.id)))
                 : all;
-            // Keep a stable, name-sorted order.
             return scoped.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
         },
 
         // filterValueLabel resolves a relation value id to its display name, for
-        // the banner summary (so it reads "Node equals rome", not "… 1").
+        // the banner summary (so it reads "Node equals rome", not "… 1"). Uses the
+        // field's option list (cache or fn) so both relation kinds resolve.
         filterValueLabel(fieldKey, value) {
-            const def = this.filterFieldDef(fieldKey);
-            if (def && def.optionsCache) {
-                const opt = (this.cache[def.optionsCache] || []).find((o) => String(o.id) === String(value));
+            const opts = this.filterValueOptions(fieldKey);
+            if (opts) {
+                const opt = opts.find((o) => String(o.id) === String(value));
                 if (opt) return opt.name;
             }
             return value;
+        },
+
+        // subjectFilterOptions builds the Subject picker for the access views. A
+        // rule's subject is a client or a group depending on its type, and the
+        // two id spaces overlap, so each option is labelled with its name and
+        // kind ("tobias (client)"). Only subjects that appear in the current rules
+        // are offered. The value is the subject_id (what the backend filters on).
+        subjectFilterOptions() {
+            // Key by type+id, not id alone: a client and a group can share an id
+            // (both start at 1), so keying by id would hide one of them. The value
+            // is still the subject_id -- the only column the backend filters on --
+            // so two same-id subjects of different kinds map to the same value.
+            const seen = new Map();
+            for (const row of (this.rows || [])) {
+                const id = row.subject_id;
+                if (id === undefined || id === null) continue;
+                const key = row.type + ':' + id;
+                if (seen.has(key)) continue;
+                const name = this.subjectName(row.type, id);
+                // key is a unique option key (type+id) for x-for; id is the value.
+                seen.set(key, { key, id: String(id), name: name + ' (' + row.type + ')' });
+            }
+            return [...seen.values()];
         },
         opLabel(op) {
             const o = this.filterOps.find((x) => x.op === op);
