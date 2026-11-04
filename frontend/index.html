@@ -363,9 +363,14 @@
                                          shown for views that declare filterable fields. -->
                                     <template x-if="filterFields().length">
                                         <button @click="toggleFilterBuilder()"
-                                                class="text-sm font-medium px-3 py-2 rounded border transition"
+                                                class="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-2 rounded border transition"
                                                 :class="(filterBuilder.open || listFilter) ? 'border-primary text-primary bg-blue-50' : 'border-gray-300 text-gray-600 hover:bg-gray-50'">
-                                            Filter<span x-show="listFilter" class="ml-1 inline-flex items-center justify-center text-xs bg-primary text-white rounded-full w-4 h-4">●</span>
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 4h18l-7 8v6l-4 2v-8z"/></svg>
+                                            <span>Filter</span>
+                                            <span x-show="listFilter"
+                                                  style="min-width:1.25rem"
+                                                  class="inline-flex items-center justify-center text-xs font-semibold bg-primary text-white rounded-full h-5 px-1"
+                                                  x-text="activeFilterCount()"></span>
                                         </button>
                                     </template>
                                 </div>
@@ -392,20 +397,38 @@
                                         <div class="space-y-2">
                                             <template x-for="(row, i) in filterBuilder.rows" :key="i">
                                                 <div class="flex flex-wrap items-center gap-2">
-                                                    <select x-model="row.field" class="form-select rounded border-gray-300 text-sm">
+                                                    <!-- x-effect re-applies the bound value after the x-for options
+                                                         render, so a select built from a loaded filter reflects
+                                                         row.field/row.op instead of defaulting to the first option. -->
+                                                    <select x-model="row.field" x-effect="filterFields(); $nextTick(() => $el.value = row.field)" class="form-select rounded border-gray-300 text-sm">
                                                         <template x-for="f in filterFields()" :key="f.key">
                                                             <option :value="f.key" x-text="f.label"></option>
                                                         </template>
                                                     </select>
-                                                    <select x-model="row.op" class="form-select rounded border-gray-300 text-sm">
+                                                    <select x-model="row.op" x-effect="$nextTick(() => $el.value = row.op)" class="form-select rounded border-gray-300 text-sm">
                                                         <template x-for="o in filterOps" :key="o.op">
                                                             <option :value="o.op" x-text="o.label"></option>
                                                         </template>
                                                     </select>
-                                                    <input type="text" x-model="row.value" placeholder="value"
-                                                           @keydown.enter="applyFilterBuilder()"
-                                                           style="min-width:8rem"
-                                                           class="form-input rounded border-gray-300 text-sm flex-1">
+                                                    <!-- Relation fields (e.g. a guest's Node) get a name picker whose
+                                                         options are the matching objects present in the list; plain
+                                                         fields get a free-text value input. -->
+                                                    <template x-if="filterFieldDef(row.field) && filterFieldDef(row.field).optionsCache">
+                                                        <select x-model="row.value" x-effect="filterValueOptions(row.field); $nextTick(() => $el.value = row.value)"
+                                                                style="min-width:8rem"
+                                                                class="form-select rounded border-gray-300 text-sm flex-1">
+                                                            <option value="">(any)</option>
+                                                            <template x-for="o in filterValueOptions(row.field)" :key="o.id">
+                                                                <option :value="String(o.id)" x-text="o.name"></option>
+                                                            </template>
+                                                        </select>
+                                                    </template>
+                                                    <template x-if="!(filterFieldDef(row.field) && filterFieldDef(row.field).optionsCache)">
+                                                        <input type="text" x-model="row.value" placeholder="value"
+                                                               @keydown.enter="applyFilterBuilder()"
+                                                               style="min-width:8rem"
+                                                               class="form-input rounded border-gray-300 text-sm flex-1">
+                                                    </template>
                                                     <button @click="removeFilterRow(i)" title="Remove condition"
                                                             class="text-gray-400 hover:text-red-600 text-lg leading-none px-1">×</button>
                                                 </div>

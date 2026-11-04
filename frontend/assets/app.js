@@ -232,7 +232,9 @@ function app() {
                         { key: 'status', label: 'Status' },
                         { key: 'type', label: 'Type' },
                         { key: 'proxmox_id', label: 'VMID' },
-                        { key: 'instance_id', label: 'Node ID' },
+                        // Filter by node by NAME: the value becomes a picker of the
+                        // nodes that actually host a guest in the current list.
+                        { key: 'instance_id', label: 'Node', optionsCache: 'instances' },
                         { key: 'id', label: 'ID' },
                     ],
                     columns: [
@@ -1249,7 +1251,9 @@ function app() {
                 filterFields: [
                     { key: 'type', label: 'Subject type' },
                     { key: 'subject_id', label: 'Subject ID' },
-                    { key: targetKey, label: targetLabel + ' ID' },
+                    // The target (guest or node) is picked by NAME, limited to the
+                    // targets that appear in the current rules.
+                    { key: targetKey, label: targetLabel, optionsCache: targetCache },
                     { key: 'id', label: 'ID' },
                 ],
                 columns: [
@@ -1413,15 +1417,67 @@ function app() {
             for (const field of Object.keys(obj)) {
                 const label = this.filterFieldLabel(field);
                 for (const op of Object.keys(obj[field])) {
-                    parts.push(label + ' ' + this.opLabel(op) + ' "' + obj[field][op] + '"');
+                    const shown = this.filterValueLabel(field, obj[field][op]);
+                    parts.push(label + ' ' + this.opLabel(op) + ' "' + shown + '"');
                 }
             }
             return parts.length ? 'Filtered: ' + parts.join(', ') : '';
         },
 
+        // activeFilterCount is the small badge number on the Filter button: the
+        // number of conditions in a simple filter, or the count of top-level
+        // fields for an advanced one. 0 when no filter is set.
+        activeFilterCount() {
+            if (!this.listFilter) return 0;
+            if (!this.filterBuilder.advanced) return this.filterBuilder.rows.length;
+            try {
+                const obj = JSON.parse(this.listFilter);
+                return (obj && typeof obj === 'object') ? Object.keys(obj).length : 1;
+            } catch (_) { return 1; }
+        },
+
         filterFieldLabel(key) {
             const f = this.filterFields().find((x) => x.key === key);
             return f ? f.label : key;
+        },
+
+        // filterFieldDef returns the field definition for a key (or null), used to
+        // decide whether the value input is free text or a name picker.
+        filterFieldDef(key) {
+            return this.filterFields().find((x) => x.key === key) || null;
+        },
+
+        // filterValueOptions returns the {id, name} choices for a relation field
+        // (one with optionsCache, e.g. a guest's Node). The list is restricted to
+        // the ids that actually appear in the current rows for that field, so the
+        // picker only offers values that would match something -- "deeper objects
+        // only when they appear in the list". Falls back to the full cache if the
+        // rows carry no such ids yet.
+        filterValueOptions(fieldKey) {
+            const def = this.filterFieldDef(fieldKey);
+            if (!def || !def.optionsCache) return null;
+            const all = this.cache[def.optionsCache] || [];
+            const present = new Set();
+            for (const row of (this.rows || [])) {
+                const v = row[fieldKey];
+                if (v !== undefined && v !== null && v !== '') present.add(String(v));
+            }
+            const scoped = present.size
+                ? all.filter((o) => present.has(String(o.id)))
+                : all;
+            // Keep a stable, name-sorted order.
+            return scoped.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
+        },
+
+        // filterValueLabel resolves a relation value id to its display name, for
+        // the banner summary (so it reads "Node equals rome", not "… 1").
+        filterValueLabel(fieldKey, value) {
+            const def = this.filterFieldDef(fieldKey);
+            if (def && def.optionsCache) {
+                const opt = (this.cache[def.optionsCache] || []).find((o) => String(o.id) === String(value));
+                if (opt) return opt.name;
+            }
+            return value;
         },
         opLabel(op) {
             const o = this.filterOps.find((x) => x.op === op);
