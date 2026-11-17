@@ -255,6 +255,17 @@ type guestEntry struct {
 	Status string `json:"status"`
 }
 
+// lxcConfigResponse is the subset of GET /nodes/{node}/lxc/{vmid}/config we
+// read. Proxmox reports unprivileged as the integer 1 for an unprivileged
+// container and OMITS the key (or reports 0) for a privileged one, so a plain
+// int whose zero value is 0 maps a missing key to privileged -- the safe
+// default. See models.Guest.Unprivileged.
+type lxcConfigResponse struct {
+	Data struct {
+		Unprivileged int `json:"unprivileged"`
+	} `json:"data"`
+}
+
 // --- internal helpers ---
 
 // doGet performs an authenticated GET and returns the response body.
@@ -320,14 +331,44 @@ func (c *APIClient) getNodeGuests(ctx context.Context, node, kind string, guestT
 
 	guests := make([]*models.Guest, 0, len(resp.Data))
 	for _, entry := range resp.Data {
-		guests = append(guests, &models.Guest{
+		g := &models.Guest{
 			Type:      guestType,
 			ProxmoxID: entry.VMID,
 			Name:      entry.Name,
 			Status:    normalizeStatus(entry.Status),
-		})
+		}
+		// Privilege is a container concept: a VM has no user namespace,
+		// and only the lxc config endpoint reports the flag. Reading it
+		// is what lets a command entering a PRIVILEGED container skip
+		// nsenter -U, which would otherwise fail with EINVAL. A fetch
+		// error leaves Unprivileged at its false (privileged) default --
+		// the safe choice, see models.Guest.Unprivileged.
+		if guestType == models.GuestTypeCT {
+			unpriv, err := c.getLXCUnprivileged(ctx, node, entry.VMID)
+			if err != nil {
+				return nil, fmt.Errorf("get lxc %d config on node %s: %w", entry.VMID, node, err)
+			}
+			g.Unprivileged = unpriv
+		}
+		guests = append(guests, g)
 	}
 	return guests, nil
+}
+
+// getLXCUnprivileged reports whether container vmid on node runs unprivileged,
+// read from GET /nodes/{node}/lxc/{vmid}/config. A privileged container (the
+// key absent or 0) returns false.
+func (c *APIClient) getLXCUnprivileged(ctx context.Context, node string, vmid int) (bool, error) {
+	path := fmt.Sprintf("/api2/json/nodes/%s/lxc/%d/config", node, vmid)
+	body, err := c.doGet(ctx, path)
+	if err != nil {
+		return false, err
+	}
+	var resp lxcConfigResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return false, fmt.Errorf("decode lxc config response: %w", err)
+	}
+	return resp.Data.Unprivileged == 1, nil
 }
 
 // Compile-time check: *APIClient must satisfy GuestDiscoverer.

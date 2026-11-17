@@ -98,12 +98,23 @@ type ProxmoxInstance struct {
 }
 
 type Guest struct {
-	ID         int64     `json:"id"`
-	Type       GuestType `json:"type"`
-	Name       string    `json:"name"`
-	Status     Status    `json:"status"`
-	ProxmoxID  int       `json:"proxmox_id"`
-	InstanceID int64     `json:"instance_id"`
+	ID        int64     `json:"id"`
+	Type      GuestType `json:"type"`
+	Name      string    `json:"name"`
+	Status    Status    `json:"status"`
+	ProxmoxID int       `json:"proxmox_id"`
+	// Unprivileged reports whether an LXC container runs in its own user
+	// namespace. It decides whether a command entering the container asks
+	// for the user namespace (nsenter -U): a privileged container shares
+	// the host's user namespace, so requesting -U makes setns fail with
+	// EINVAL. Only meaningful for GuestTypeCT; a VM leaves it false.
+	//
+	// The zero value is false (privileged), which is the SAFE default: on a
+	// genuinely unprivileged container, omitting -U only degrades writes to
+	// nobody:nogroup, whereas emitting -U on a privileged one is a hard
+	// failure. See internal/guesthelper/exec.go (enterArgs).
+	Unprivileged bool  `json:"unprivileged"`
+	InstanceID   int64 `json:"instance_id"`
 }
 
 type Client struct {

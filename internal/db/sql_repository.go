@@ -547,21 +547,21 @@ func (r *sqlRepo) UpsertGuest(ctx context.Context, guest *models.Guest) error {
 		guest.ProxmoxID, guest.InstanceID).Scan(&guest.ID)
 	if err == sql.ErrNoRows {
 		return r.queryRow(ctx,
-			`INSERT INTO guests (type, name, status, proxmox_id, instance_id)
-			 VALUES (?, ?, ?, ?, ?) RETURNING id`,
-			guest.Type, guest.Name, guest.Status, guest.ProxmoxID, guest.InstanceID,
+			`INSERT INTO guests (type, name, status, proxmox_id, instance_id, unprivileged)
+			 VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
+			guest.Type, guest.Name, guest.Status, guest.ProxmoxID, guest.InstanceID, guest.Unprivileged,
 		).Scan(&guest.ID)
 	} else if err != nil {
 		return err
 	}
 	_, err = r.exec(ctx,
-		"UPDATE guests SET type=?, name=?, status=? WHERE id=?",
-		guest.Type, guest.Name, guest.Status, guest.ID)
+		"UPDATE guests SET type=?, name=?, status=?, unprivileged=? WHERE id=?",
+		guest.Type, guest.Name, guest.Status, guest.Unprivileged, guest.ID)
 	return err
 }
 
 func (r *sqlRepo) ListGuests(ctx context.Context) ([]*models.Guest, error) {
-	rows, err := r.query(ctx, "SELECT id, type, name, status, proxmox_id, instance_id FROM guests")
+	rows, err := r.query(ctx, "SELECT id, type, name, status, proxmox_id, instance_id, unprivileged FROM guests")
 	if err != nil {
 		return nil, err
 	}
@@ -569,7 +569,7 @@ func (r *sqlRepo) ListGuests(ctx context.Context) ([]*models.Guest, error) {
 	var list []*models.Guest
 	for rows.Next() {
 		g := &models.Guest{}
-		if err := rows.Scan(&g.ID, &g.Type, &g.Name, &g.Status, &g.ProxmoxID, &g.InstanceID); err != nil {
+		if err := rows.Scan(&g.ID, &g.Type, &g.Name, &g.Status, &g.ProxmoxID, &g.InstanceID, &g.Unprivileged); err != nil {
 			return nil, err
 		}
 		list = append(list, g)
@@ -580,8 +580,8 @@ func (r *sqlRepo) ListGuests(ctx context.Context) ([]*models.Guest, error) {
 func (r *sqlRepo) GetGuestByID(ctx context.Context, id int64) (*models.Guest, error) {
 	g := &models.Guest{}
 	err := r.queryRow(ctx,
-		"SELECT id, type, name, status, proxmox_id, instance_id FROM guests WHERE id = ?", id).
-		Scan(&g.ID, &g.Type, &g.Name, &g.Status, &g.ProxmoxID, &g.InstanceID)
+		"SELECT id, type, name, status, proxmox_id, instance_id, unprivileged FROM guests WHERE id = ?", id).
+		Scan(&g.ID, &g.Type, &g.Name, &g.Status, &g.ProxmoxID, &g.InstanceID, &g.Unprivileged)
 	if err != nil {
 		return nil, err
 	}
