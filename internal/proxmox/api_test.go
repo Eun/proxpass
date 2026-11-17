@@ -380,3 +380,54 @@ func TestHTTPClientReusesSharedTransport(t *testing.T) {
 		t.Error("shared transport has no MaxIdleConns bound")
 	}
 }
+
+// TestAPIClientDiscoverGuestsPrivilege verifies that DiscoverGuests reads each
+// container's privilege from its lxc config: an unprivileged container reports
+// Unprivileged=true, a privileged one false. This is what keeps a privileged
+// container from being handed nsenter -U, which fails with EINVAL.
+func TestAPIClientDiscoverGuestsPrivilege(t *testing.T) {
+	api := testenv.NewMockAPIServer(testTokenID, testTokenSecret)
+	defer api.Close()
+
+	api.AddLXCUnprivileged(testNode1, 100, "unpriv", "running")
+	api.AddLXC(testNode1, 101, "priv", "running") // privileged: config omits the key
+	api.AddQEMU(testNode1, 200, "vm1", "running") // VMs have no privilege concept
+
+	inst := &models.ProxmoxInstance{
+		APIURL:         api.URL(),
+		InsecureTLS:    true,
+		APITokenID:     testTokenID,
+		APITokenSecret: testTokenSecret,
+		SSHHost:        testNode1,
+	}
+
+	client, err := proxmox.NewAPIClient(inst)
+	if err != nil {
+		t.Fatalf("NewAPIClient: %v", err)
+	}
+	guests, err := client.DiscoverGuests(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverGuests: %v", err)
+	}
+
+	byID := map[int]*models.Guest{}
+	for _, g := range guests {
+		byID[g.ProxmoxID] = g
+	}
+
+	if g := byID[100]; g == nil {
+		t.Fatal("unprivileged container 100 missing from discovery")
+	} else if !g.Unprivileged {
+		t.Errorf("container 100: got Unprivileged=false, want true")
+	}
+	if g := byID[101]; g == nil {
+		t.Fatal("privileged container 101 missing from discovery")
+	} else if g.Unprivileged {
+		t.Errorf("container 101 (privileged): got Unprivileged=true, want false")
+	}
+	if g := byID[200]; g == nil {
+		t.Fatal("vm 200 missing from discovery")
+	} else if g.Unprivileged {
+		t.Errorf("vm 200: got Unprivileged=true, want false (VMs have no user namespace)")
+	}
+}

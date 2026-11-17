@@ -90,10 +90,13 @@ func (d *Deps) runGuestCommand(ctx context.Context, guest *models.Guest, command
 	}
 	defer func() { _ = runner.Close() }()
 
-	// Assume unprivileged, the Proxmox default: entering the user
-	// namespace of a privileged container fails, and that is reported by
-	// the command itself at run time rather than guessed here.
-	const unprivileged = true
+	// Use the container's real privilege, learned at discovery from the
+	// Proxmox lxc config. A PRIVILEGED container shares the host's user
+	// namespace, so asking nsenter for -U makes setns fail with
+	// "reassociate to namespaces failed: Invalid argument"; a privileged
+	// guest leaves Unprivileged false, so -U is omitted. See
+	// models.Guest.Unprivileged and guesthelper.enterArgs.
+	unprivileged := guest.Unprivileged
 
 	d.Logger.Printf("%s: command on %s (%s%d) on %s",
 		d.IdentityName, guest.Name, guest.Type, guest.ProxmoxID, inst.Name)

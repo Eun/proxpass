@@ -323,6 +323,73 @@ func TestGuestUpsert(t *testing.T) {
 	}
 }
 
+// TestGuestUnprivilegedRoundTrip verifies the unprivileged flag survives insert,
+// read-back and a privilege-changing upsert. A privileged container must read
+// back false so the command path does not hand nsenter -U, which would EINVAL.
+func TestGuestUnprivilegedRoundTrip(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+
+	// A privileged container: Unprivileged defaults to false.
+	priv := &models.Guest{Type: models.GuestTypeCT, Name: "priv", Status: models.StatusRunning, ProxmoxID: 145, InstanceID: 1}
+	if err := repo.UpsertGuest(ctx, priv); err != nil {
+		t.Fatal(err)
+	}
+	fetched, err := repo.GetGuestByID(ctx, priv.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetched.Unprivileged {
+		t.Errorf("privileged guest read back Unprivileged=true, want false")
+	}
+
+	// An unprivileged container persists and reads back true.
+	unpriv := &models.Guest{
+		Type: models.GuestTypeCT, Name: "unpriv", Status: models.StatusRunning,
+		ProxmoxID: 146, InstanceID: 1, Unprivileged: true,
+	}
+	if err := repo.UpsertGuest(ctx, unpriv); err != nil {
+		t.Fatal(err)
+	}
+	fetched, err = repo.GetGuestByID(ctx, unpriv.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fetched.Unprivileged {
+		t.Errorf("unprivileged guest read back Unprivileged=false, want true")
+	}
+
+	// A later upsert must update the flag (e.g. a CT rebuilt as unprivileged).
+	flipped := &models.Guest{
+		Type: models.GuestTypeCT, Name: "priv", Status: models.StatusRunning,
+		ProxmoxID: 145, InstanceID: 1, Unprivileged: true,
+	}
+	if err := repo.UpsertGuest(ctx, flipped); err != nil {
+		t.Fatal(err)
+	}
+	if flipped.ID != priv.ID {
+		t.Fatalf("expected same row on upsert, got %d vs %d", flipped.ID, priv.ID)
+	}
+	fetched, err = repo.GetGuestByID(ctx, priv.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fetched.Unprivileged {
+		t.Errorf("upsert did not update Unprivileged to true")
+	}
+
+	// ListGuests reports the flag too.
+	list, err := repo.ListGuests(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range list {
+		if g.ProxmoxID == 146 && !g.Unprivileged {
+			t.Errorf("ListGuests: container 146 lost its Unprivileged flag")
+		}
+	}
+}
+
 func TestClients(t *testing.T) {
 	repo := newTestRepo(t)
 	ctx := context.Background()

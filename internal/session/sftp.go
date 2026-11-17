@@ -223,10 +223,11 @@ func (d *Deps) serveSFTP(info *ConnectInfo) int {
 	d.Logger.Printf("%s: sftp to %s (%s%d) on %s",
 		d.IdentityName, guest.Name, guest.Type, guest.ProxmoxID, inst.Name)
 
-	// Assume unprivileged, the Proxmox default: entering the user
-	// namespace of a privileged container fails, and that is reported by
-	// the command itself at run time rather than guessed here.
-	const unprivileged = true
+	// The container's real privilege, learned at discovery. The transfer
+	// path uses lxc-attach, which reads the container's own idmap and
+	// ignores this flag (see guesthelper.LaunchCommand) -- but it is passed
+	// correctly rather than hardcoded, so the two transports agree.
+	unprivileged := guest.Unprivileged
 
 	sess, err := guesthelper.Start(nodeAdapter{runner}, guest.ProxmoxID, unprivileged, d.Logger)
 	if err != nil {

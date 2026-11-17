@@ -44,6 +44,10 @@ type mockGuest struct {
 	VMID   int    `json:"vmid"`
 	Name   string `json:"name"`
 	Status string `json:"status"`
+	// Unprivileged is served by the lxc config endpoint as the integer 1
+	// (unprivileged) or, when false, by omitting the key -- matching how a
+	// real Proxmox reports a privileged container. Ignored for QEMU.
+	Unprivileged bool `json:"-"`
 }
 
 // NewMockAPIServer creates a mock Proxmox API server with the given
@@ -141,12 +145,22 @@ func (m *MockAPIServer) SetLocalNode(node string) {
 	m.ensureNode(node)
 }
 
-// AddLXC adds a mock LXC container to a node.
+// AddLXC adds a mock LXC container to a node. The container is privileged
+// (unprivileged=false); use AddLXCUnprivileged for the other case.
 func (m *MockAPIServer) AddLXC(node string, vmid int, name, status string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	n := m.ensureNode(node)
 	n.LXC = append(n.LXC, mockGuest{VMID: vmid, Name: name, Status: status})
+}
+
+// AddLXCUnprivileged adds a mock unprivileged LXC container, whose config
+// endpoint reports unprivileged=1.
+func (m *MockAPIServer) AddLXCUnprivileged(node string, vmid int, name, status string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := m.ensureNode(node)
+	n.LXC = append(n.LXC, mockGuest{VMID: vmid, Name: name, Status: status, Unprivileged: true})
 }
 
 // AddQEMU adds a mock QEMU VM to a node.
@@ -274,6 +288,12 @@ func (m *MockAPIServer) handleNodePaths(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// /api2/json/nodes/{node}/lxc/{vmid}/config
+	if len(parts) == 4 && parts[1] == guestTypeLXC && parts[3] == "config" && r.Method == http.MethodGet {
+		m.handleLXCConfig(w, r, nodeName, parts[2])
+		return
+	}
+
 	// /api2/json/nodes/{node}/lxc or /api2/json/nodes/{node}/qemu
 	if len(parts) == 2 {
 		m.handleNodeGuests(w, r, nodeName, parts[1])
@@ -305,6 +325,34 @@ func (m *MockAPIServer) handleNodeGuests(w http.ResponseWriter, _ *http.Request,
 	}
 
 	writeJSON(w, map[string]any{apiDataKey: guests})
+}
+
+// handleLXCConfig serves GET /api2/json/nodes/{node}/lxc/{vmid}/config.
+//
+// It mirrors Proxmox: an unprivileged container reports "unprivileged": 1,
+// while a privileged one OMITS the key entirely. A guest the mock does not
+// know is a 404, as a real node would answer for a nonexistent vmid.
+func (m *MockAPIServer) handleLXCConfig(w http.ResponseWriter, r *http.Request, nodeName, vmidStr string) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	n := m.nodes[nodeName]
+	if n == nil {
+		http.NotFound(w, r)
+		return
+	}
+	for _, g := range n.LXC {
+		if fmt.Sprintf("%d", g.VMID) != vmidStr {
+			continue
+		}
+		cfg := map[string]any{}
+		if g.Unprivileged {
+			cfg["unprivileged"] = 1
+		}
+		writeJSON(w, map[string]any{apiDataKey: cfg})
+		return
+	}
+	http.NotFound(w, r)
 }
 
 func (m *MockAPIServer) handleTermProxy(w http.ResponseWriter, _ *http.Request, nodeName, kind, vmidStr string) {
