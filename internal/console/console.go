@@ -13,6 +13,7 @@ import (
 	"log"
 	"os"
 
+	"proxpass/internal/guesthelper"
 	"proxpass/internal/models"
 )
 
@@ -160,10 +161,36 @@ func (t *Terminal) normalize() {
 }
 
 // guestConsoleCmd returns the Proxmox command that opens the guest console.
+//
+// # Why a CT console uses nsenter, not `pct enter`
+//
+// For a container the console enters the guest with the SAME nsenter
+// mechanism a command uses (guesthelper.ShellCommand with an empty command,
+// which yields a `/bin/sh -l` login shell). It used to run `pct enter`, and
+// that is the difference the user hit: `pct enter` runs under lxc-attach, so
+// the container's seccomp filter and LSM profile are loaded (measured:
+// Seccomp 2, /proc/self/attr/current confined), while a COMMAND arrives over
+// nsenter, which loads neither (Seccomp 0, unconfined). The two transports
+// therefore behaved differently for the same guest -- an interactive shell
+// could not do things a one-shot command could (e.g. nsenter/setns, which the
+// seccomp filter blocks), and on an unprivileged container the two even
+// reported different user-namespace mappings.
+//
+// Routing the console through guesthelper.ShellCommand makes `ssh ct@host`
+// and `ssh ct@host cmd` cross into the guest identically. The empty-command
+// login-shell branch already exists and is tested (see
+// internal/guesthelper/namespaces_test.go), and guest.Unprivileged drives the
+// `-U` decision exactly as it does for a command. The accepted trade-off is
+// nsenter's: unconfined / Seccomp 0 / dropped supplementary groups -- which is
+// precisely the parity with command mode that this change exists to provide.
+// See internal/guesthelper/exec.go (ExecCommand, enterArgs) for the detail.
+//
+// VMs keep `qm terminal`: nsenter is a container mechanism and has no meaning
+// for a VM, which is reached through its own serial console.
 func guestConsoleCmd(guest *models.Guest) (string, error) {
 	switch guest.Type {
 	case models.GuestTypeCT:
-		return fmt.Sprintf("pct enter %d", guest.ProxmoxID), nil
+		return guesthelper.ShellCommand(guest.ProxmoxID, guest.Unprivileged, ""), nil
 	case models.GuestTypeVM:
 		return fmt.Sprintf("qm terminal %d", guest.ProxmoxID), nil
 	default:
