@@ -16,7 +16,8 @@ import (
 )
 
 // connectSSH attaches the terminal to a guest console by SSHing into the
-// Proxmox host and running "pct enter" / "qm terminal" there.
+// Proxmox host and running the guest-console command there: an nsenter
+// login shell for a container (see guestConsoleCmd) or "qm terminal" for a VM.
 //
 // This is the outbound half of proxpass: proxpass is an SSH *client* here.
 // The inbound half is handled by sshd.

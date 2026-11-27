@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,8 +23,9 @@ import (
 )
 
 // MockSSHServer simulates a Proxmox host's SSH server.
-// It accepts exec requests for "pct enter N" and "qm terminal N"
-// and echoes back input prefixed with the guest info.
+// It accepts exec requests for a container console entry (legacy "pct enter N"
+// or the nsenter form proxpass now emits) and "qm terminal N", and echoes back
+// input prefixed with the guest info.
 type MockSSHServer struct {
 	listener net.Listener
 	config   *gossh.ServerConfig
@@ -311,14 +313,36 @@ func (m *MockSSHServer) serveSFTP(ch gossh.Channel) {
 	_ = server.Serve()
 }
 
-// handleExecCommand responds to pct enter / qm terminal commands
-// with a realistic mock console session.
+// ctEnterVMID extracts the container vmid from a console-entry command,
+// whether it is the legacy `pct enter N` form or the nsenter form that
+// guesthelper.ShellCommand now emits for a CT console. The nsenter form
+// carries the vmid in its `lxc-info -n 'N' -p` lookup, so match that rather
+// than the whole (probe-laden) command string. Returns ("", false) when the
+// command is not a container console entry.
+func ctEnterVMID(cmd string) (string, bool) {
+	parts := strings.Fields(cmd)
+	if len(parts) == 3 && parts[0] == "pct" && parts[1] == "enter" {
+		return parts[2], true
+	}
+	if m := ctEnterVMIDRe.FindStringSubmatch(cmd); m != nil {
+		return m[1], true
+	}
+	return "", false
+}
+
+// ctEnterVMIDRe matches the `lxc-info -n '<vmid>' -p` signature of the
+// nsenter console command (see guesthelper.ShellCommand).
+var ctEnterVMIDRe = regexp.MustCompile(`lxc-info -n '(\d+)' -p`)
+
+// handleExecCommand responds to container console (pct enter / nsenter) and
+// qm terminal commands with a realistic mock console session.
 func (m *MockSSHServer) handleExecCommand(ch gossh.Channel, cmd string) {
 	parts := strings.Fields(cmd)
+	ctVMID, isCTEnter := ctEnterVMID(cmd)
 
 	switch {
-	case len(parts) == 3 && parts[0] == "pct" && parts[1] == "enter":
-		vmid := parts[2]
+	case isCTEnter:
+		vmid := ctVMID
 		_, _ = fmt.Fprintf(ch,
 			"entering LXC container %s\r\n"+
 				"Type 'exit' or press Ctrl+D to disconnect.\r\n"+

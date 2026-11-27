@@ -73,7 +73,8 @@ func sshKeyOf(t *testing.T, mock *testenv.MockSSHServer) string {
 
 func discardLogger() *log.Logger { return log.New(io.Discard, "", 0) }
 
-// A container console must run "pct enter <vmid>" on the Proxmox host and
+// A container console must enter the container on the Proxmox host (via the
+// nsenter login-shell command guesthelper.ShellCommand emits for a CT) and
 // bridge its output back to the terminal.
 func TestConnectSSHToContainer(t *testing.T) {
 	mock, err := testenv.NewMockSSHServer()
